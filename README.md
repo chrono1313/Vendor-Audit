@@ -1,10 +1,11 @@
 # Vendor Audit
 
-A lightweight, passive third-party vendor security health check. Audits a
-domain's DNS, email, TLS, HTTP, and web-tier security posture from the outside
-and produces a categorical score, a CSV row, and an optional plain-text report
-suitable for sharing with the vendor. See `example_reports_and_screenshots/`
-for a console screenshot and sample `.txt` and `.csv` outputs.
+A lightweight, passive third-party audit of a vendor's domain maturity,
+security, and health. Audits a domain's DNS, email, TLS, HTTP, and
+web-tier posture from the outside and produces a categorical score, a
+CSV row, and an optional plain-text report suitable for sharing with the
+vendor. See `example_reports_and_screenshots/` for a console screenshot
+and sample `.txt` and `.csv` outputs.
 
 A default-mode run audits 60+ scored data points in roughly a second.
 `--deep` adds two or three seconds for the slower checks. In bulk mode
