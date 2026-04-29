@@ -1684,10 +1684,14 @@ def render(original_domain, audit_domain, r, dns_server):
             # Findings are printed without a label= so they don't register
             # individually in the summary findings panel — the SSL Labs grade
             # itself is already a finding there, and these are sub-detail.
-            findings = ssl_result.get("findings") or []
-            if findings:
-                print(f"  {c(GREY, '·')} Findings ({len(findings)}) — conditions affecting grade:")
-                for f in findings:
+            #
+            # Local name is ssl_findings (NOT findings) to avoid shadowing
+            # the outer findings list of (level, label, score_label) tuples
+            # built by _make_warn_bad_err for the summary panel.
+            ssl_findings = ssl_result.get("findings") or []
+            if ssl_findings:
+                print(f"  {c(GREY, '·')} Findings ({len(ssl_findings)}) — conditions affecting grade:")
+                for f in ssl_findings:
                     print(warn(f))
 
     # ── Page Analysis (SRI, mixed content, third-party, a11y) ──────────────
