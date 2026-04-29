@@ -1675,6 +1675,21 @@ def render(original_domain, audit_domain, r, dns_server):
             else:
                 print(bad(grade_line, f"SSL Labs — grade {worst}", "SSL Labs grade"))
 
+            # Findings: human-readable warnings derived from the endpoint
+            # details object, mirroring the txt report. Empty list = silent
+            # (clean configuration). The list is best-effort — see
+            # _extract_ssllabs_findings in vendor_audit.py for the conditions
+            # checked. The full SSL Labs report is always more comprehensive.
+            #
+            # Findings are printed without a label= so they don't register
+            # individually in the summary findings panel — the SSL Labs grade
+            # itself is already a finding there, and these are sub-detail.
+            findings = ssl_result.get("findings") or []
+            if findings:
+                print(f"  {c(GREY, '·')} Findings ({len(findings)}) — conditions affecting grade:")
+                for f in findings:
+                    print(warn(f))
+
     # ── Page Analysis (SRI, mixed content, third-party, a11y) ──────────────
     page = r.get("page_signals")
     if page is not None and page.get("parsed"):
