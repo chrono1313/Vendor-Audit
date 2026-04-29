@@ -3,7 +3,14 @@
 A lightweight, passive third-party vendor security health check. Audits a
 domain's DNS, email, TLS, HTTP, and web-tier security posture from the outside
 and produces a categorical score, a CSV row, and an optional plain-text report
-suitable for sharing with the vendor.
+suitable for sharing with the vendor. See `example_reports_and_screenshots/`
+for a console screenshot and sample `.txt` and `.csv` outputs.
+
+A default-mode run audits 60+ scored data points in roughly a second.
+`--deep` adds two or three seconds for the slower checks. In bulk mode
+(`--file`), domains are audited 10 at a time in parallel — over 200
+domains in under a minute is typical. `--ssl` is sequential and adds 1–2
+minutes per domain because SSL Labs runs the assessment server-side.
 
 ```
 $ python vendor_audit.py example.com
@@ -21,6 +28,21 @@ $ python vendor_audit.py example.com
 (Point totals shown are the maximum baseline. Detected EOL libraries and
 operating systems add to the denominator dynamically — one point per EOL
 library, three points per EOL OS — and `--ssl` adds the SSL Labs grade.)
+
+## Project scope
+
+Vendor Audit is a lightweight maturity and best-practices audit. The
+guiding constraint is that a default run should complete in about a second.
+New checks that can't meet that bar belong behind `--deep`, and even
+`--deep` checks should add no more than a couple of seconds total.
+
+**Not in scope: anything offensive.** No port scanning, directory
+brute-forcing, file or path guessing, login probing, or other behaviour
+a WAF or firewall would treat as an attack. There are good tools for
+that work; this isn't one of them. Vendor Audit reads what a domain
+voluntarily publishes (DNS records, HTTP responses to a single GET, SMTP
+EHLO banners, public APIs like SSL Labs and RIPEstat) and scores it
+against published standards.
 
 ## What it checks
 
@@ -155,10 +177,8 @@ support floor frequently.
 
 ## Limitations
 
-- **Passive only.** Every check is a DNS lookup, single HTTP GET, SMTP EHLO,
-  or reading an SSL Labs API result. No port scans, no fuzzing, no
-  authentication attempts, no intrusive probes of any kind. Safe to run
-  against any third party without prior coordination.
+- **Passive only.** See "Project scope" above. Safe to run against any
+  third party without prior coordination.
 - **External view only.** A vendor with strong externally-visible posture can
   still have weak internal controls; Vendor Audit makes no claim about what
   it can't see.

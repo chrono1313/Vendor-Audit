@@ -224,12 +224,19 @@ def _resolve_outcsv(value):
     value is one of:
       None                         → user did not pass --outcsv            → None
       _OUTCSV_AUTO_SENTINEL        → user passed bare --outcsv             → auto-named
+      directory-shaped str         → existing dir, or trailing /\\         → auto-named inside it
       str (anything else)          → user passed an explicit path          → that path
     """
     if value is None:
         return None
     if value == _OUTCSV_AUTO_SENTINEL:
         return _auto_outcsv_name()
+    # Directory case: trailing separator or pre-existing directory means
+    # "put an auto-named file in here", not "use this literal string as a
+    # filename" (which would fail on Windows with [Errno 22] Invalid argument).
+    if value.endswith(("/", "\\")) or os.path.isdir(value):
+        os.makedirs(value, exist_ok=True)
+        return os.path.join(value, _auto_outcsv_name())
     return value
 
 
@@ -251,11 +258,20 @@ def _auto_report_name(domain):
 
 def _resolve_report(value, domain):
     """Map an argparse --report value to a final filename or None.
-    Mirrors _resolve_outcsv but needs the domain for auto-naming."""
+    Mirrors _resolve_outcsv but needs the domain for auto-naming.
+
+    Directory-shaped values (existing directory, or string with a trailing
+    / or \\) are treated as "auto-name a file inside this directory" —
+    needed because os.fdopen on a path ending in a separator fails with
+    [Errno 22] on Windows.
+    """
     if value is None:
         return None
     if value == _REPORT_AUTO_SENTINEL:
         return _auto_report_name(domain)
+    if value.endswith(("/", "\\")) or os.path.isdir(value):
+        os.makedirs(value, exist_ok=True)
+        return os.path.join(value, _auto_report_name(domain))
     return value
 
 
