@@ -1537,6 +1537,12 @@ EXIT CODES
      DMARC policy, etc.) do not affect the exit code.
   1  Hard failure: bad arguments, missing --file path, or unrecoverable
      startup error.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROJECT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Source, issues, and contributions:
+  https://github.com/chrono1313/Vendor-Audit
 """,
     )
 
@@ -1653,6 +1659,7 @@ EXIT CODES
     flag_str = ("   [" + " ".join(flags) + "]") if flags else ""
     print(f"vendor_audit.py  v{__version__}{flag_str}")
     print(f"{c(GREY, 'Free software, GNU GPL v3 — no warranty. See LICENSE.')}")
+    print(f"{c(GREY, 'https://github.com/chrono1313/Vendor-Audit')}")
     print()
 
     # ── One-time global configuration ────────────────────────────────────────
@@ -1799,6 +1806,12 @@ EXIT CODES
                 print(f"{c(GREEN, '✔')} Report written to {c(BOLD, report_path)}")
             except OSError as e:
                 print(f"{c(RED, '✘')} Failed to write report: {e}")
+
+    # ── Footer ───────────────────────────────────────────────────────────────
+    # Printed after every real audit run (not after --version or
+    # --sslregistration, which return early before the banner).
+    print()
+    print(c(GREY, "https://github.com/chrono1313/Vendor-Audit"))
 
 
 if __name__ == "__main__":
