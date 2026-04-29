@@ -1,0 +1,294 @@
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  Vendor Audit
+  usa.gov
+  April 29, 2026 at 16:07 UTC   ·   v1.0
+  https://github.com/chrono1313/Vendor-Audit
+════════════════════════════════════════════════════════════════════════════════════════════════════
+
+
+OVERALL SCORE   49 / 65      ██████████████████████░░░░░░░░     75%
+
+  Email          8 /  9      ███████████████████████████░░░     89%
+  DNS            7 /  9      ███████████████████████░░░░░░░     78%
+  Routing        8 /  8      ██████████████████████████████    100%
+  TLS           18 / 18      ██████████████████████████████    100%
+  HTTP           2 /  4      ███████████████░░░░░░░░░░░░░░░     50%
+  Website        6 / 17      ██████████░░░░░░░░░░░░░░░░░░░░     35%
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  EXECUTIVE SUMMARY
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  POSSIBLE ISSUES (12)
+
+    !  Email    SPF soft fail only (~all) - not fully enforcing                              1 / 2
+    ✗  DNS      No Certification Authority Authorization (CAA) records                       0 / 2
+    !  HTTP     HTTP/2 only - HTTP/3 not supported                                           1 / 2
+    !  HTTP     Port 80 open but not redirecting to HTTPS                                    1 / 2
+    ✗  Website  Content Security Policy not set                                              0 / 2
+    ✗  Website  Referrer-Policy not set                                                      0 / 1
+    ✗  Website  Permissions-Policy not set                                                   0 / 1
+    ✗  Website  security.txt not published (RFC 9116)                                        0 / 2
+    ✗  Website  Server clock is significantly skewed from UTC                                0 / 1
+    ✗  Website  Cross-Origin-Opener-Policy not set                                           0 / 1
+    ✗  Website  Cross-Origin-Resource-Policy not set                                         0 / 1
+    ✗  Website  External scripts have no Subresource Integrity (SRI)                         0 / 2
+
+  PASSING (30)
+
+    ✓  Email    SPF lookup count within limit                                                1 / 1
+    ✓  Email    SPF redirect resolves correctly                                              1 / 1
+    ✓  Email    DMARC record present                                                         1 / 1
+    ✓  Email    DMARC policy enforced                                                        2 / 2
+    ✓  Email    DMARC applies to 100% of mail                                                1 / 1
+    ✓  Email    DMARC rua= aggregate reporting set                                           1 / 1
+    ✓  Routing  IPv6 reachable                                                               2 / 2
+    ✓  Routing  IPv4 RPKI valid                                                              2 / 2
+    ✓  Routing  IPv4 route registered in IRR                                                 1 / 1
+    ✓  Routing  IPv6 RPKI valid                                                              2 / 2
+    ✓  Routing  IPv6 route registered in IRR                                                 1 / 1
+    ✓  DNS      TLD is DNSSEC signed                                                         1 / 1
+    ✓  DNS      DNSSEC key published                                                         2 / 2
+    ✓  DNS      DNSSEC chain validated                                                       3 / 3
+    ✓  TLS      TLS connection successful                                                    2 / 2
+    ✓  TLS      TLS 1.3 negotiated                                                           2 / 2
+    ✓  TLS      Certificate auto-renewed (short-lived)                                       2 / 2
+    ✓  TLS      Certificate name matches domain                                              2 / 2
+    ✓  TLS      HSTS header present                                                          2 / 2
+    ✓  TLS      HSTS covers subdomains                                                       1 / 1
+    ✓  TLS      Domain on HSTS preload list                                                  1 / 1
+    ✓  Website  Server header not leaking origin                                             1 / 1
+    ✓  Website  X-Powered-By not disclosed                                                   1 / 1
+    ✓  Website  X-Frame-Options set                                                          1 / 1
+    ✓  Website  X-Content-Type-Options: nosniff                                              1 / 1
+    ✓  TLS      SSL Labs grade: A+                                                           5 / 5
+    ✓  DNS      Two or more authoritative nameservers (RFC 1034)                             1 / 1
+    ✓  TLS      HSTS max-age ≥ 6 months                                                      1 / 1
+    ✓  Website  X-XSS-Protection correctly absent (deprecated header)                        1 / 1
+    ✓  Website  No mixed content in page body                                                1 / 1
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  EMAIL
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  SPF — usa.gov
+
+    !  Soft fail (~all) — receivers will accept-and-mark, not reject
+    ✓  SPF lookup count: 2
+
+    Record published:
+    v=spf1 include:amazonses.com include:532040.spf10.hubspotemail.net ~all
+
+
+  DMARC — usa.gov
+
+    ✓  Policy: reject — strongest enforcement
+    ✓  pct=100 — policy applies to all mail
+    ✓  rua= aggregate reports collected at 2 destinations
+         mailto:dmarcreports@gsa.gov
+         mailto:reports@dmarc.cyber.dhs.gov
+
+    Record published:
+    v=DMARC1; p=reject; pct=100; fo=1; ri=86400; rua=mailto:dmarcreports@gsa.gov,mailto:reports@dmarc.cyber.dhs.gov; ruf=mailto:dmarcfailures@gsa.gov
+
+
+  MX records — usa.gov
+
+    No MX records — domain does not receive email.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  DNS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  DNSSEC
+
+    ✓  .GOV is signed — DNSSEC chain possible
+    ✓  Domain DNSSEC enabled and validated (DNSKEY present, AD flag confirmed)
+
+
+  Nameservers
+
+    ✓  5 authoritative nameservers
+
+       dns.gsa.gov
+       dns2.gsa.gov
+       dns3.gsa.gov
+       dns4.gsa.gov
+       dns5.gsa.gov
+
+       SOA primary    dns.gsa.gov
+       SOA serial     795125233
+
+
+  Certification Authority Authorization (CAA)
+
+    ✗  No CAA records — any public CA can issue certificates for this domain
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  IP / ASN / RPKI
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  IPv4
+
+       Address    23.22.13.113
+       ASN       AS14618 — AMAZON-AES - Amazon.com, Inc.
+       Prefix    23.22.0.0/15
+
+    ✓  RPKI: valid — origin AS authorised by ROA
+    ✓  IRR: prefix seen in RIS routing table
+
+
+  IPv6
+
+       Address    2600:1f18:f88:4313:6df7:f986:f915:78d6
+       ASN       AS14618 — AMAZON-AES - Amazon.com, Inc.
+       Prefix    2600:1f18::/35
+
+    ✓  RPKI: valid — origin AS authorised by ROA
+    ✓  IRR: prefix seen in RIS routing table
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  TLS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    ✓  Negotiated TLSv1.3
+    ✓  Certificate name matches domain
+       Matched by: usa.gov
+    ✓  Certificate lifetime: 89 days — automated issuance likely
+       Issued: 2026-03-21
+       Expires: 2026-06-19
+
+
+  Certificate
+
+       Issuer      R12
+       Issued      2026-03-21
+       Expires     2026-06-19
+       Lifetime    89 days
+
+       SAN names (11):
+         firstgov.gov
+         forms.gov
+         fpisc.gov
+         gobiernousa.gov
+         gsa.gov
+         m.gsa.gov
+         pbrb.gov
+         permitting.gov
+         usa.gov
+         workplace.gsa.gov
+         www.fpisc.gov
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  HTTP
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    !  Response time: 484 ms
+       Includes DNS + TCP + TLS handshake — not a pure HTTP RTT
+    !  HTTP/2 supported, HTTP/3 not advertised
+    !  HTTP port 80 open but no HTTPS redirect (got 404 from http://usa.gov)
+       Verify with: curl -v http://usa.gov
+       Browser behaviour may differ — domain is HSTS preloaded
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  HSTS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    ✓  Strict-Transport-Security header present
+    ✓  max-age=63,072,000 (730 days)
+    ✓  includeSubDomains set
+    ✓  Domain is on the HSTS preload list
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  SERVER & TECHNOLOGY DISCLOSURE
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    ✓  Server header not present
+    ✓  X-Powered-By header not present
+    ✗  Server clock skew: +436s — large skew can break HSTS, OAuth, and certificate validation
+
+
+  Technology stack
+
+       Drupal
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  BROWSER SECURITY HEADERS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    !  Content-Security-Policy not set
+    ✓  X-Frame-Options: DENY
+    ✓  X-Content-Type-Options: nosniff
+    !  Referrer-Policy not set
+    !  Permissions-Policy not set
+    !  Cross-Origin-Opener-Policy not set
+    !  Cross-Origin-Resource-Policy not set
+
+
+  Cookies (on homepage response)
+
+    No Set-Cookie headers on this response (cookies set after login or by JavaScript are not visible
+    here).
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  SECURITY CONTACT (RFC 9116 — security.txt)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    !  security.txt not found
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  SSL LABS (Qualys SSL Labs API · --ssl)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    ·  Assessed: 2026-04-29 15:57 UTC (9 minutes ago)
+    ✓  Grade: A+ (5/5)
+       Re-run anytime: https://www.ssllabs.com/ssltest/analyze.html?d=usa.gov
+
+    ·  Findings (1) — conditions affecting grade:
+    !  OCSP stapling not enabled
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  PAGE ANALYSIS (--deep)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  Parser inventory
+
+       HTML inspected           46 KB
+       <script>                 14
+       <link rel=stylesheet>    2
+       <img>                    9
+       <input>                  2
+       <iframe>                 1
+
+    ✗  No Subresource Integrity on the only external resource — a CDN compromise could inject
+       arbitrary code
+    ✓  No mixed content detected
+    ·  Third-party origins: 2
+         script.crazyegg.com
+         www.googletagmanager.com
+    ·  Iframes on page: 1
+
+
+  Accessibility signals (indicative — not a WAVE/Axe substitute)
+
+    ✓  <html lang="en">
+    ✓  All 9 <img> tag(s) have an alt attribute
+    ✓  All 2 form input(s) have a label
+    !  3 empty <button> element(s) (no text and no aria-label/title)
+    ✓  No empty <a> elements
+
+  A11y signals are not scored — they are reported for awareness only. For a full audit use WebAIM
+  WAVE, Axe DevTools, or pa11y.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  SCAN
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+       Version    v1.0
+       Options    --deep, --ssl
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  Generated by vendor_audit 1.0
+  https://github.com/chrono1313/Vendor-Audit
+════════════════════════════════════════════════════════════════════════════════════════════════════

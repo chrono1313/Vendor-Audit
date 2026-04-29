@@ -1,0 +1,335 @@
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  Vendor Audit
+  fbi.gov
+  April 29, 2026 at 16:07 UTC   ·   v1.0
+  https://github.com/chrono1313/Vendor-Audit
+════════════════════════════════════════════════════════════════════════════════════════════════════
+
+
+OVERALL SCORE   56 / 73      ███████████████████████░░░░░░░     77%
+
+  Email         12 / 17      █████████████████████░░░░░░░░░     71%
+  DNS            8 /  9      ███████████████████████████░░░     89%
+  Routing        8 /  8      ██████████████████████████████    100%
+  TLS           18 / 18      ██████████████████████████████    100%
+  HTTP           4 /  4      ██████████████████████████████    100%
+  Website        6 / 17      ██████████░░░░░░░░░░░░░░░░░░░░     35%
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  EXECUTIVE SUMMARY
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  POSSIBLE ISSUES (12)
+
+    ✗  Email    MTA-STS policy not published — sending servers have no policy preventing     0 / 2
+                fallback to plaintext
+    ✗  Email    TLS-RPT reporting endpoint not published                                     0 / 1
+    ✗  Email    No DANE/TLSA records on any MX host — vulnerable to STARTTLS downgrade       0 / 2
+                attacks
+    !  DNS      CAA present but no iodef= reporting contact                                  1 / 2
+    ✗  Website  Content Security Policy not set                                              0 / 2
+    ✗  Website  Referrer-Policy not set                                                      0 / 1
+    ✗  Website  Permissions-Policy not set                                                   0 / 1
+    ✗  Website  security.txt not published (RFC 9116)                                        0 / 2
+    ✗  Website  Cross-Origin-Opener-Policy not set                                           0 / 1
+    ✗  Website  Cross-Origin-Resource-Policy not set                                         0 / 1
+    ✗  Website  X-XSS-Protection set to a dangerous value                                    0 / 1
+    ✗  Website  External scripts have no Subresource Integrity (SRI)                         0 / 2
+
+  NOT EVALUATED (1)
+
+    ·  Email    DKIM key not found at common selectors (operator may use a custom selector)  0 / 0
+
+  PASSING (35)
+
+    ✓  Email    SPF policy configured                                                        2 / 2
+    ✓  Email    SPF lookup count within limit                                                1 / 1
+    ✓  Email    SPF redirect resolves correctly                                              1 / 1
+    ✓  Email    DMARC record present                                                         1 / 1
+    ✓  Email    DMARC policy enforced                                                        2 / 2
+    ✓  Email    DMARC applies to 100% of mail                                                1 / 1
+    ✓  Email    DMARC rua= aggregate reporting set                                           1 / 1
+    ✓  Email    MX records present                                                           1 / 1
+    ✓  Routing  IPv6 reachable                                                               2 / 2
+    ✓  Routing  IPv4 RPKI valid                                                              2 / 2
+    ✓  Routing  IPv4 route registered in IRR                                                 1 / 1
+    ✓  Routing  IPv6 RPKI valid                                                              2 / 2
+    ✓  Routing  IPv6 route registered in IRR                                                 1 / 1
+    ✓  DNS      TLD is DNSSEC signed                                                         1 / 1
+    ✓  DNS      DNSSEC key published                                                         2 / 2
+    ✓  DNS      DNSSEC chain validated                                                       3 / 3
+    ✓  TLS      TLS connection successful                                                    2 / 2
+    ✓  TLS      TLS 1.3 negotiated                                                           2 / 2
+    ✓  TLS      Certificate auto-renewed (short-lived)                                       2 / 2
+    ✓  TLS      Certificate name matches domain                                              2 / 2
+    ✓  HTTP     HTTP/3 supported                                                             2 / 2
+    ✓  HTTP     HTTP redirects to HTTPS                                                      2 / 2
+    ✓  TLS      HSTS header present                                                          2 / 2
+    ✓  TLS      HSTS covers subdomains                                                       1 / 1
+    ✓  TLS      Domain on HSTS preload list                                                  1 / 1
+    ✓  Website  Server header not leaking origin                                             1 / 1
+    ✓  Website  X-Powered-By not disclosed                                                   1 / 1
+    ✓  Website  X-Frame-Options set                                                          1 / 1
+    ✓  Website  X-Content-Type-Options: nosniff                                              1 / 1
+    ✓  TLS      SSL Labs grade: A+                                                           5 / 5
+    ✓  DNS      Two or more authoritative nameservers (RFC 1034)                             1 / 1
+    ✓  Email    STARTTLS negotiated on MX hosts (TLS 1.3)                                    2 / 2
+    ✓  Website  Server clock in sync with UTC                                                1 / 1
+    ✓  TLS      HSTS max-age ≥ 6 months                                                      1 / 1
+    ✓  Website  No mixed content in page body                                                1 / 1
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  EMAIL
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  SPF — fbi.gov
+
+    ✓  Hard fail (-all) — strict policy
+    ✓  SPF lookup count: 1
+
+    Record published:
+    v=spf1 +mx ip4:153.31.0.0/16 -all
+
+
+  DMARC — fbi.gov
+
+    ✓  Policy: reject — strongest enforcement
+    ✓  pct=100 — policy applies to all mail
+    ✓  rua= aggregate reports collected at 2 destinations
+         mailto:dmarc-feedback@fbi.gov
+         mailto:reports@dmarc.cyber.dhs.gov
+
+    Record published:
+    v=DMARC1; p=reject; rua=mailto:dmarc-feedback@fbi.gov,mailto:reports@dmarc.cyber.dhs.gov; ruf=mailto:dmarc-feedback@fbi.gov; pct=100
+
+
+  MX records — fbi.gov
+
+    Priority   Host
+    ────────   ────────────────────────────────────────────────────────────
+       10      mx-east.fbi.gov
+       20      mx-west.fbi.gov
+
+    (lower priority value = preferred)
+
+
+  Mail transport hardening — fbi.gov
+
+    !  No MTA-STS — sending servers have no policy preventing fallback to plaintext SMTP
+    !  No TLS-RPT — no failure reporting for inbound mail TLS
+    ✗  No DANE/TLSA on any MX host — vulnerable to STARTTLS downgrade attacks
+    !  No DKIM at common selectors (google, default, selector1, selector2, mail, k1)
+       Partial check only — DKIM uses arbitrary selector names; absence at
+       common names proves nothing. Use rua= reports from DMARC to discover
+       the actual selectors in use.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  DNS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  DNSSEC
+
+    ✓  .GOV is signed — DNSSEC chain possible
+    ✓  Domain DNSSEC enabled and validated (DNSKEY present, AD flag confirmed)
+
+
+  Nameservers
+
+    ✓  4 authoritative nameservers
+
+       ns-cloud-e1.googledomains.com
+       ns-cloud-e2.googledomains.com
+       ns-cloud-e3.googledomains.com
+       ns-cloud-e4.googledomains.com
+
+       SOA primary    ns-cloud-e1.googledomains.com
+       SOA serial     1415240977
+
+
+  Certification Authority Authorization (CAA)
+
+    ✓  CAA records published — 6 authorised CAs
+         letsencrypt.org
+         amazon.com
+         digicert.com
+         sectigo.com
+         entrust.net
+         pki.goog
+    !  No security reporting contact (iodef=) — CAs cannot notify you of policy violations
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  IP / ASN / RPKI
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  IPv4
+
+       Address    104.16.149.244
+       ASN       AS13335 — CLOUDFLARENET - Cloudflare, Inc.
+       Prefix    104.16.144.0/20
+
+    ✓  RPKI: valid — origin AS authorised by ROA
+    ✓  IRR: prefix seen in RIS routing table
+
+
+  IPv6
+
+       Addresses (2)    2606:4700::6810:95f4
+                        2606:4700::6810:94f4
+       ASN       AS13335 — CLOUDFLARENET - Cloudflare, Inc.
+       Prefix    2606:4700::/44
+
+    ✓  RPKI: valid — origin AS authorised by ROA
+    ✓  IRR: prefix seen in RIS routing table
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  TLS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    ✓  Negotiated TLSv1.3
+    ✓  Certificate name matches domain
+       Matched by: fbi.gov
+    ✓  Certificate lifetime: 90 days — automated issuance likely
+       Issued: 2026-02-17
+       Expires: 2026-05-18
+
+
+  Certificate
+
+       Issuer      WE1 (Google Trust Services)
+       Issued      2026-02-17
+       Expires     2026-05-18
+       Lifetime    90 days
+
+       SAN names (2):
+         fbi.gov
+         *.fbi.gov
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  HTTP
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    !  Response time: 453 ms
+       Includes DNS + TCP + TLS handshake — not a pure HTTP RTT
+    ✓  HTTP/3 advertised
+       Alt-Svc: h3=":443"; ma=86400
+    ✓  http:// redirects to HTTPS
+       final: https://www.fbi.gov/
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  HSTS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    ✓  Strict-Transport-Security header present
+    ✓  max-age=31,536,000 (365 days)
+    ✓  includeSubDomains set
+    ✓  Domain is on the HSTS preload list
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  SERVER & TECHNOLOGY DISCLOSURE
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    ✓  Server: cloudflare — reverse proxy / CDN
+    ✓  X-Powered-By header not present
+    ✓  Server clock in sync with UTC (skew: +7s)
+
+
+  Technology stack
+
+       Generator: CastleCMS 3.1.0b8
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  BROWSER SECURITY HEADERS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    !  Content-Security-Policy not set
+    ✓  X-Frame-Options: SAMEORIGIN
+    ✓  X-Content-Type-Options: nosniff
+    !  Referrer-Policy not set
+    !  Permissions-Policy not set
+    !  Cross-Origin-Opener-Policy not set
+    !  Cross-Origin-Resource-Policy not set
+    !  X-XSS-Protection: 1; mode=block — header is deprecated; setting it can introduce XSS in older
+       browsers. Recommended: remove or set to 0
+
+
+  Cookies (on homepage response)
+
+    No Set-Cookie headers on this response (cookies set after login or by JavaScript are not visible
+    here).
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  SECURITY CONTACT (RFC 9116 — security.txt)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    !  security.txt not found
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  SSL LABS (Qualys SSL Labs API · --ssl)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    ·  Assessed: 2026-04-28 23:32 UTC (16 hours ago)
+    ✓  Grade: A+ (5/5)
+       Re-run anytime: https://www.ssllabs.com/ssltest/analyze.html?d=fbi.gov
+
+    ·  Findings (1) — conditions affecting grade:
+    !  Session resumption broken (IDs returned but not resumed)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  PAGE ANALYSIS (--deep)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  Parser inventory
+
+       HTML inspected           54 KB
+       <script>                 11
+       <link rel=stylesheet>    7
+       <img>                    27
+       <input>                  2
+       <iframe>                 0
+
+    ✗  No Subresource Integrity on any of the 2 external resources — a CDN compromise could inject
+       arbitrary code
+    ✓  No mixed content detected
+    ·  Third-party origins: 2
+         dap.digitalgov.gov
+         www.googletagmanager.com
+
+
+  Accessibility signals (indicative — not a WAVE/Axe substitute)
+
+    ✓  <html lang="en">
+    !  2/27 <img> tag(s) missing alt attribute (decorative images should still have alt="")
+    !  2/2 form input(s) without an associated label or aria-label
+    !  1 empty <button> element(s) (no text and no aria-label/title)
+    !  34 empty <a> element(s) (no text and no aria-label/title)
+
+  A11y signals are not scored — they are reported for awareness only. For a full audit use WebAIM
+  WAVE, Axe DevTools, or pa11y.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  MX STARTTLS PROBE (--deep)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  Probing port 25 → EHLO → STARTTLS on each MX host. Many networks block port 25 egress; partial
+  results are normal.
+
+    MX Host  mx-east.fbi.gov
+    TLS      TLSv1.3
+    Detail   Issuer: ZeroSSL RSA Domain Secure Site CA  ·  Expires: 2026-06-24
+
+    MX Host  mx-west.fbi.gov
+    TLS      TLSv1.3
+    Detail   Issuer: ZeroSSL RSA Domain Secure Site CA  ·  Expires: 2026-06-24
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  SCAN
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+       Version    v1.0
+       Options    --deep, --ssl
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  Generated by vendor_audit 1.0
+  https://github.com/chrono1313/Vendor-Audit
+════════════════════════════════════════════════════════════════════════════════════════════════════
