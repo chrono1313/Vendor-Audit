@@ -170,14 +170,10 @@ support floor frequently.
 
 ## Contributing
 
-Contributions welcome. The four core `.py` files (`vendor_audit.py`,
-`audit_checks.py`, `audit_render.py`, `audit_txt_report.py`) plus
-`scoring_rubric.json` share a single version number that is enforced at
-startup; bumping it is the first step of any change. (`ssllabs_scan.py` is a
-standalone utility that does not participate in the version lock.) See the
-docstring at the top of `vendor_audit.py` for the versioning policy. New
-checks should map to a published standard and include the reference in the
-rubric's `_comment_*` entry.
+Contributions welcome. New checks should map to a published standard
+(RFC, W3C spec, OWASP, or CA/Browser Forum baseline requirement) — the audit's
+value comes from being able to point at a citation for everything it flags.
+Open an issue or pull request on GitHub.
 
 ## License
 
