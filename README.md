@@ -1,14 +1,14 @@
 # Vendor Audit
 
-A lightweight, passive third-party audit of a vendor's domain maturity,
-security, and health. Audits a domain's DNS, email, TLS, HTTP, and
-web-tier posture from the outside and produces a categorical score, a
-CSV row, and an optional plain-text report suitable for sharing with the
-vendor. See `example_reports_and_screenshots/` for a console screenshot
-and sample `.txt` and `.csv` outputs.
+A passive, lightweight, fast audit of a domain's maturity, security,
+and alignment with best practices. Audits DNS, email, TLS, HTTP, and
+web-tier posture — and produces a categorical score, a CSV row, and
+an optional plain-text report suitable for sharing with the vendor.
+See `example_reports_and_screenshots/` for a console screenshot and
+sample `.txt` and `.csv` outputs.
 
 A default-mode run audits 60+ scored data points in roughly a second.
-`--deep` adds two or three seconds for the slower checks. In bulk mode
+`--deep` adds two or three seconds. In bulk mode
 (`--file`), domains are audited 10 at a time in parallel — over 200
 domains in under a minute is typical. `--ssl` is sequential and adds 1–2
 minutes per domain because SSL Labs runs the assessment server-side.
