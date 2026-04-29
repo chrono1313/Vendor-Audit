@@ -2051,17 +2051,14 @@ def _render_ssl_labs_section(data):
                 f"Re-run anytime: https://www.ssllabs.com/ssltest/analyze.html?d={data.audit_domain}",
             ]))
 
-        # Findings: human-readable warnings derived from the endpoint
-        # details object. Empty list = silent (clean configuration); we
-        # don't emit a "no findings" line. The list is best-effort — see
-        # _extract_ssllabs_findings in vendor_audit.py for which conditions
-        # are checked. The full SSL Labs report is always more
-        # comprehensive than what we surface here.
+        # Conditions reported by SSL Labs. We do not classify which ones
+        # affect the grade and which don't — the grade itself is the verdict,
+        # this list reports the observations.
         findings = ssl_result.get("findings") or []
         if findings:
             parts.append("")
             parts.append(_status("info",
-                f"Findings ({len(findings)}) — conditions affecting grade:"))
+                f"Conditions reported by SSL Labs ({len(findings)}):"))
             for f in findings:
                 parts.append(_status("warn", f))
 
@@ -2268,13 +2265,31 @@ def _render_starttls_section(data):
     # Detail), separated by a blank line. Aligns with the rest of the
     # report's key-value style and avoids the column-rule awkwardness
     # of a horizontal table when the Detail field is long.
+    #
+    # Annotate the negotiated TLS version with what it implies, so the
+    # reader can see how the version corresponds to a finding in the
+    # summary. Our context offers TLS 1.3 by default; if the server
+    # came back with 1.2 it's because 1.3 wasn't offered server-side.
+    def _tls_annotation(ver):
+        if not ver:
+            return ""
+        v = ver.upper()
+        if v in ("TLSV1.3",):
+            return "  ← strong"
+        if v in ("TLSV1.2",):
+            return "  ← TLS 1.3 not offered"
+        if v in ("TLSV1", "TLSV1.0", "TLSV1.1"):
+            return "  ← legacy TLS, vulnerable"
+        return ""
+
     host_list = list(rows.items())
     for i, (host, info_d) in enumerate(host_list):
         if info_d.get("error"):
             tls_val    = "unprobed"
             detail_val = info_d["error"]
         else:
-            tls_val = info_d.get("tls_version") or "?"
+            ver_raw  = info_d.get("tls_version") or "?"
+            tls_val  = f"{ver_raw}{_tls_annotation(ver_raw)}"
             issuer  = _expand_cert_issuer(info_d.get("cert_issuer")) or ""
             expires = info_d.get("cert_expires") or ""
             bits = []

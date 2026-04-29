@@ -1675,22 +1675,18 @@ def render(original_domain, audit_domain, r, dns_server):
             else:
                 print(bad(grade_line, f"SSL Labs — grade {worst}", "SSL Labs grade"))
 
-            # Findings: human-readable warnings derived from the endpoint
-            # details object, mirroring the txt report. Empty list = silent
-            # (clean configuration). The list is best-effort — see
-            # _extract_ssllabs_findings in vendor_audit.py for the conditions
-            # checked. The full SSL Labs report is always more comprehensive.
+            # Conditions reported by SSL Labs. We do not classify which ones
+            # affect the grade and which don't — the grade itself is the
+            # verdict, this list reports the observations.
             #
-            # Findings are printed without a label= so they don't register
-            # individually in the summary findings panel — the SSL Labs grade
-            # itself is already a finding there, and these are sub-detail.
-            #
-            # Local name is ssl_findings (NOT findings) to avoid shadowing
+            # Local name is ssl_findings (not findings) to avoid shadowing
             # the outer findings list of (level, label, score_label) tuples
-            # built by _make_warn_bad_err for the summary panel.
+            # used by the summary panel. Lines are printed without a label=
+            # argument so they don't register individually as findings —
+            # the SSL Labs grade is already a finding.
             ssl_findings = ssl_result.get("findings") or []
             if ssl_findings:
-                print(f"  {c(GREY, '·')} Findings ({len(ssl_findings)}) — conditions affecting grade:")
+                print(f"  {c(GREY, '·')} Conditions reported by SSL Labs ({len(ssl_findings)}):")
                 for f in ssl_findings:
                     print(warn(f))
 
@@ -1904,6 +1900,12 @@ def render(original_domain, audit_domain, r, dns_server):
         # on the warn/bad calls) — the scoring finding is emitted once below
         # via the worst-of aggregation. That keeps the breakdown to one
         # STARTTLS-MX row regardless of MX count.
+        #
+        # Annotate the negotiated TLS version with what it implies, so the
+        # reader can see how each host's version corresponds to the
+        # summary finding. Our context offers TLS 1.3 by default; if the
+        # server came back with 1.2, it's because 1.3 wasn't offered
+        # server-side.
         for host, info_d in (starttls.get("results") or {}).items():
             if info_d.get("error"):
                 print(f"  {c(GREY, '?')} {host}: {c(GREY, info_d['error'])}")
@@ -1924,12 +1926,15 @@ def render(original_domain, audit_domain, r, dns_server):
                 # Two-space gap only when there's something to show.
                 gap = "  " if detail else ""
                 if ver == "TLSv1.3":
-                    print(ok(f"{host}: {c(GREEN, ver)}{gap}{detail}"))
+                    annot = c(GREY, "  ← strong")
+                    print(ok(f"{host}: {c(GREEN, ver)}{annot}{gap}{detail}"))
                 elif ver == "TLSv1.2":
-                    print(warn(f"{host}: {c(YELLOW, ver)}{gap}{detail}",
+                    annot = c(GREY, "  ← TLS 1.3 not offered")
+                    print(warn(f"{host}: {c(YELLOW, ver)}{annot}{gap}{detail}",
                                None, None))
                 else:
-                    print(bad(f"{host}: {c(RED, ver)}{gap}{detail}",
+                    annot = c(GREY, "  ← legacy TLS, vulnerable") if ver in ("TLSv1", "TLSv1.0", "TLSv1.1") else ""
+                    print(bad(f"{host}: {c(RED, ver)}{annot}{gap}{detail}",
                               None, None))
 
         # ── STARTTLS-MX scoring finding (one per scan, worst-of) ─────────

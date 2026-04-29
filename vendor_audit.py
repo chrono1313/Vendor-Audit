@@ -799,142 +799,294 @@ def cmd_sslregistration():
         print(c(RED, f"\n  ✘ Unexpected error: {exc}"))
 
 
-def _extract_ssllabs_findings(endpoint):
-    """Decode a single SSL Labs endpoint's details into human-readable findings.
+# ── SSL Labs response decoder ────────────────────────────────────────────────
+# Single helper that walks the SSL Labs response and returns a list of
+# observations: things SSL Labs measured that the user might want to address.
+#
+# Design choice: we do NOT try to classify which observations affect the grade
+# and which don't. SSL Labs's grading rules are richer than the public Rating
+# Guide documents (warnings, A→A- demotions, scoring nuances), and pretending
+# to know which signals are grade-relevant would mislead readers. The grade
+# itself is the verdict; this list reports the conditions SSL Labs saw.
+#
+# Field reference:   https://github.com/ssllabs/ssllabs-scan/blob/master/ssllabs-api-docs-v4.md
+# Rating guide:      https://github.com/ssllabs/research/wiki/SSL-Server-Rating-Guide
 
-    SSL Labs does not return a flat 'warnings' list — the warnings shown in
-    the web UI are derived by inspecting individual fields in the details
-    object (booleans, status integers, bitfields). This function reproduces
-    that decoding for the conditions most commonly responsible for grade
-    caps and A→A- demotions.
+def _ssllabs_leaf_cert(host_data):
+    """Find the leaf (server) certificate in the response's top-level certs[]
+    array. The leaf is the one referenced by the endpoint's certChains.certIds
+    in position 0 — but as a robust fallback we pick the first cert whose
+    subject matches the assessed hostname. Returns None if not findable."""
+    certs = host_data.get("certs") or []
+    if not certs:
+        return None
 
-    Returns a list of strings. Each string is one finding. Empty list means
-    nothing wrong was detected — but absence of evidence isn't evidence of
-    absence: SSL Labs's grading criteria evolve, and we only check the
-    dozen-or-so most common conditions. The full report is always one click
-    away on ssllabs.com.
+    # Fast path: certChains[0].certIds[0] points to the leaf.
+    for ep in host_data.get("endpoints") or []:
+        chains = (ep.get("details") or {}).get("certChains") or []
+        for chain in chains:
+            cert_ids = chain.get("certIds") or []
+            if cert_ids:
+                leaf_id = cert_ids[0]
+                for c in certs:
+                    if c.get("id") == leaf_id:
+                        return c
 
-    Conventions:
-      - boolean True = problem (vulnBeast, heartbleed, freak, …)
-      - status ints: 1 means "not vulnerable"; 0 = unknown, -1 = test failed,
-        ≥2 = some flavour of vulnerable. We surface ≥2 only.
-      - bitfields (renegSupport, forwardSecrecy, certChain.issues) are
-        decoded bit-by-bit; only the problematic bits emit findings.
+    # Fallback: pick the first cert whose subject CN equals the host.
+    host = (host_data.get("host") or "").lower()
+    for c in certs:
+        subj = (c.get("subject") or "").lower()
+        if f"cn={host}" in subj:
+            return c
 
-    Field reference: https://github.com/ssllabs/ssllabs-scan/blob/master/ssllabs-api-docs-v4.md#endpointdetails
+    # Last resort: just return the first cert.
+    return certs[0]
+
+
+def _ssllabs_protocols_set(details):
+    """Return a set of protocol-version strings, e.g. {'TLS 1.2', 'TLS 1.3'}.
+    Empty set if no protocol info present."""
+    out = set()
+    for p in details.get("protocols") or []:
+        ver = p.get("version")
+        name = p.get("name") or "TLS"
+        if ver:
+            out.add(f"{name} {ver}")
+    return out
+
+
+def _extract_ssllabs_findings(host_data):
+    """Decode SSL Labs response into a list of human-readable observations.
+
+    Returns a deduped list of strings. Empty list = SSL Labs reported nothing
+    we know how to surface. We do not interpret which observations affect the
+    grade — the grade itself is the verdict; this list reports what SSL Labs
+    saw. Wording is plain ("Vulnerable to Heartbleed (CVE-2014-0160)"), with
+    no inference about grade impact.
     """
     findings = []
-    details  = endpoint.get("details") or {}
+    seen     = set()
 
-    # ── Protocols ─────────────────────────────────────────────────────────────
-    # Each entry: {"name": "TLS", "version": "1.2", ...}.
-    # Obsolete protocols cap the grade. Missing TLS 1.3 is not a grade cap
-    # but is widely treated as a posture warning, and other parts of this
-    # audit already check it locally — surfacing it here lets the SSL Labs
-    # section tell a complete story.
-    #
-    # When the protocols list is missing entirely (failed assessment, no
-    # details object) we emit no protocol findings — absence of data is
-    # not evidence the protocol is missing.
-    protocols = details.get("protocols")
-    if protocols:
-        proto_versions = {f"{p.get('name', 'TLS')} {p.get('version', '')}".strip()
-                          for p in protocols if p.get("version")}
-        for obsolete in ("SSL 2.0", "SSL 3.0", "TLS 1.0", "TLS 1.1"):
-            if obsolete in proto_versions:
-                findings.append(f"Obsolete protocol supported: {obsolete}")
-        if "TLS 1.3" not in proto_versions:
-            findings.append("TLS 1.3 not supported")
+    def add(msg):
+        if msg not in seen:
+            seen.add(msg)
+            findings.append(msg)
 
-    # ── Named vulnerability tests (boolean) ───────────────────────────────────
-    bool_vulns = [
-        ("vulnBeast",        "Vulnerable to BEAST"),
-        ("heartbleed",       "Vulnerable to Heartbleed (CVE-2014-0160)"),
-        ("poodle",           "Vulnerable to POODLE (SSLv3)"),
-        ("freak",            "Vulnerable to FREAK (export-grade RSA)"),
-        ("logjam",           "Vulnerable to Logjam (weak DH parameters <1024 bits)"),
-        ("drownVulnerable",  "Vulnerable to DROWN"),
-    ]
-    for field, message in bool_vulns:
-        if details.get(field) is True:
-            findings.append(message)
+    LONG_MAX_AGE = 15552000   # 180 days; the SSL Labs threshold for A+
 
-    # ── Named vulnerability tests (status integers) ──────────────────────────
-    # Per spec: 1 = not vulnerable, 0 = unknown, -1 = test failed,
-    # higher values indicate degrees of vulnerability. We flag any value ≥2.
-    status_vulns = [
-        ("openSslCcs",              "Vulnerable to OpenSSL CCS injection (CVE-2014-0224)"),
-        ("openSSLLuckyMinus20",     "Vulnerable to Lucky Minus 20 (CVE-2016-2107)"),
-        ("ticketbleed",             "Vulnerable to Ticketbleed (CVE-2016-9244)"),
-        ("bleichenbacher",          "Vulnerable to ROBOT (Bleichenbacher's oracle)"),
-        ("zombiePoodle",            "Vulnerable to Zombie POODLE"),
-        ("goldenDoodle",            "Vulnerable to GOLDENDOODLE"),
-        ("zeroLengthPaddingOracle", "Vulnerable to 0-Length Padding Oracle (CVE-2019-1559)"),
-        ("sleepingPoodle",          "Vulnerable to Sleeping POODLE"),
-        ("poodleTls",               "Vulnerable to POODLE TLS"),
-    ]
-    for field, message in status_vulns:
-        v = details.get(field)
-        if isinstance(v, int) and v >= 2:
-            findings.append(message)
+    for ep in host_data.get("endpoints") or []:
+        details = ep.get("details") or {}
 
-    # ── Cipher / key exchange posture ────────────────────────────────────────
-    if details.get("supportsRc4") is True:
-        findings.append("RC4 cipher suites supported")
-    # forwardSecrecy is a bitfield: bit 2 (4) = FS with all simulated clients.
-    # Healthy value is 7 (1+2+4). Anything less is a warning condition.
-    fs = details.get("forwardSecrecy")
-    if isinstance(fs, int) and not (fs & 4):
-        findings.append("Forward secrecy not achieved with all reference clients")
+        # ── Protocol support ─────────────────────────────────────────────────
+        protocols = _ssllabs_protocols_set(details)
+        if protocols:
+            for obsolete in ("SSL 2.0", "SSL 3.0", "TLS 1.0", "TLS 1.1"):
+                if obsolete in protocols:
+                    add(f"Obsolete protocol supported: {obsolete}")
+            if "TLS 1.2" not in protocols:
+                add("TLS 1.2 not supported")
+            if "TLS 1.3" not in protocols:
+                add("TLS 1.3 not supported")
 
-    # ── Renegotiation ────────────────────────────────────────────────────────
-    # bit 0 (1) = insecure client-initiated renegotiation supported (bad).
-    reneg = details.get("renegSupport")
-    if isinstance(reneg, int) and (reneg & 1):
-        findings.append("Insecure client-initiated renegotiation supported")
+        # TLS 1.3 mandatory cipher suite.
+        if details.get("implementsTLS13MandatoryCS") is False and "TLS 1.3" in protocols:
+            add("TLS 1.3 mandatory cipher suite (TLS_AES_128_GCM_SHA256) not implemented")
 
-    # ── Session resumption ───────────────────────────────────────────────────
-    # 0 = not enabled, 1 = IDs returned but not resumed, 2 = working.
-    sr = details.get("sessionResumption")
-    if sr == 0:
-        findings.append("Session resumption not enabled")
-    elif sr == 1:
-        findings.append("Session resumption broken (IDs returned but not resumed)")
+        # ── Named vulnerabilities (boolean fields) ───────────────────────────
+        bool_vulns = [
+            ("vulnBeast",        "Vulnerable to BEAST"),
+            ("heartbleed",       "Vulnerable to Heartbleed (CVE-2014-0160)"),
+            ("poodle",           "Vulnerable to POODLE (SSLv3)"),
+            ("freak",            "Vulnerable to FREAK"),
+            ("logjam",           "Vulnerable to Logjam (weak DH parameters)"),
+            ("drownVulnerable",  "Vulnerable to DROWN"),
+        ]
+        for field, message in bool_vulns:
+            if details.get(field) is True:
+                add(message)
 
-    # ── OCSP stapling ────────────────────────────────────────────────────────
-    if details.get("ocspStapling") is False:
-        findings.append("OCSP stapling not enabled")
+        # ── Named vulnerabilities (status integers) ──────────────────────────
+        # Convention: 1 = not vulnerable, 0 = unknown, -1 = test failed,
+        # ≥2 = vulnerable in some form.
+        status_vulns = [
+            ("openSslCcs",              "Vulnerable to OpenSSL CCS injection (CVE-2014-0224)"),
+            ("openSSLLuckyMinus20",     "Vulnerable to Lucky Minus 20 (CVE-2016-2107)"),
+            ("ticketbleed",             "Vulnerable to Ticketbleed (CVE-2016-9244)"),
+            ("bleichenbacher",          "Vulnerable to ROBOT (Bleichenbacher's oracle)"),
+            ("zombiePoodle",            "Vulnerable to Zombie POODLE"),
+            ("goldenDoodle",            "Vulnerable to GOLDENDOODLE"),
+            ("zeroLengthPaddingOracle", "Vulnerable to 0-Length Padding Oracle (CVE-2019-1559)"),
+            ("sleepingPoodle",          "Vulnerable to Sleeping POODLE"),
+            ("poodleTls",               "Vulnerable to POODLE TLS"),
+        ]
+        for field, message in status_vulns:
+            v = details.get(field)
+            if isinstance(v, int) and v >= 2:
+                add(message)
 
-    # ── DH parameter reuse / weak primes ─────────────────────────────────────
-    if details.get("dhYsReuse") is True:
-        findings.append("DH ephemeral server value reused")
-    if details.get("ecdhParameterReuse") is True:
-        findings.append("ECDHE parameters reused")
-    dh_known = details.get("dhUsesKnownPrimes")
-    if dh_known == 2:
-        findings.append("Weak well-known DH primes in use")
+        # ── Cipher / key-exchange posture ────────────────────────────────────
+        if details.get("supportsRc4") is True:
+            add("RC4 cipher suites supported")
+        if details.get("rc4Only") is True:
+            add("Server supports ONLY RC4 cipher suites")
+        if details.get("supportsAead") is False:
+            add("AEAD cipher suites not supported")
 
-    # ── 0-RTT (TLS 1.3 replay vector) ─────────────────────────────────────────
-    if details.get("zeroRTTEnabled") == 1:
-        findings.append("TLS 1.3 0-RTT enabled (replay attack vector)")
+        # forwardSecrecy is a bitfield. Bit 2 (4) = FS with all simulated
+        # clients. 0 = no FS at all. 1-3 = partial FS.
+        fs = details.get("forwardSecrecy")
+        if isinstance(fs, int):
+            if fs == 0:
+                add("Forward secrecy not supported")
+            elif not (fs & 4):
+                add("Forward secrecy not achieved with all reference clients")
 
-    # ── Certificate chain issues ─────────────────────────────────────────────
-    # certChains[].issues bitfield: bit 1 (2) incomplete, bit 2 (4) unrelated/
-    # duplicate certs, bit 3 (8) wrong order, bit 5 (32) couldn't validate.
-    # We pick the worst across all chains.
-    chain_issues = 0
-    for chain in details.get("certChains") or []:
-        ci = chain.get("issues")
-        if isinstance(ci, int):
-            chain_issues |= ci
-    if chain_issues & 2:
-        findings.append("Certificate chain incomplete")
-    if chain_issues & 4:
-        findings.append("Certificate chain contains unrelated or duplicate certs")
-    if chain_issues & 8:
-        findings.append("Certificate chain in incorrect order")
-    if chain_issues & 32:
-        findings.append("Certificate chain could not be validated")
+        # ── Renegotiation ────────────────────────────────────────────────────
+        # bit 0 (1) = insecure client-initiated renegotiation supported.
+        reneg = details.get("renegSupport")
+        if isinstance(reneg, int) and (reneg & 1):
+            add("Insecure client-initiated renegotiation supported")
+
+        # ── DH parameters ────────────────────────────────────────────────────
+        dh_known = details.get("dhUsesKnownPrimes")
+        if dh_known == 2:
+            add("Weak well-known DH primes in use")
+        elif dh_known == 1:
+            add("Common DH primes in use (potential Logjam exposure)")
+        if details.get("dhYsReuse") is True:
+            add("DH ephemeral server value reused across sessions")
+        if details.get("ecdhParameterReuse") is True:
+            add("ECDHE parameters reused across sessions")
+
+        # ── 0-RTT (TLS 1.3 replay surface) ───────────────────────────────────
+        if details.get("zeroRTTEnabled") == 1:
+            add("TLS 1.3 0-RTT enabled (replay attack surface)")
+
+        # ── Certificate chain issues ─────────────────────────────────────────
+        # certChains[].issues bitfield: bit 1 (2) incomplete, bit 2 (4)
+        # unrelated/duplicate, bit 3 (8) wrong order, bit 5 (32) couldn't
+        # validate. We OR across all chains and decode bit-by-bit.
+        chain_issues = 0
+        for chain in details.get("certChains") or []:
+            ci = chain.get("issues")
+            if isinstance(ci, int):
+                chain_issues |= ci
+        if chain_issues & 2:
+            add("Certificate chain incomplete")
+        if chain_issues & 4:
+            add("Certificate chain contains unrelated or duplicate certs")
+        if chain_issues & 8:
+            add("Certificate chain in incorrect order")
+        if chain_issues & 32:
+            add("Certificate chain could not be validated")
+
+        # ── HSTS ─────────────────────────────────────────────────────────────
+        hsts = details.get("hstsPolicy") or {}
+        hsts_status = hsts.get("status")
+        if hsts_status in ("absent", "missing", "disabled", "invalid"):
+            add(f"HSTS not properly configured: {hsts_status}")
+        elif hsts_status == "present":
+            max_age = hsts.get("maxAge")
+            if isinstance(max_age, int) and max_age < LONG_MAX_AGE:
+                days = max_age // 86400
+                add(f"HSTS max-age is {max_age} seconds ({days} days); 6 months (15552000) recommended")
+            if hsts.get("includeSubDomains") is False:
+                add("HSTS missing 'includeSubDomains' directive")
+            if hsts.get("preload") is False:
+                add("HSTS missing 'preload' directive")
+
+        # ── HSTS preload list status ─────────────────────────────────────────
+        # Site advertises preload in its HSTS header but isn't actually on
+        # any browser's preload list. Common — preload submission is a
+        # separate step at hstspreload.org.
+        preloads = details.get("hstsPreloads") or []
+        absent_sources = [p.get("source") for p in preloads
+                          if p.get("status") in ("absent", "unknown")]
+        if preloads and len(absent_sources) == len(preloads):
+            if hsts.get("preload") is True:
+                add("HSTS header claims 'preload' but host is not on any browser preload list")
+
+        # ── OCSP stapling ────────────────────────────────────────────────────
+        if details.get("ocspStapling") is False:
+            add("OCSP stapling not enabled")
+
+        # ── Session resumption / tickets ─────────────────────────────────────
+        # 0 = not enabled, 1 = IDs returned but not resumed, 2 = working.
+        sr = details.get("sessionResumption")
+        if sr == 0:
+            add("Session resumption not enabled")
+        elif sr == 1:
+            add("Session resumption: IDs returned but not resumed")
+        if details.get("sessionTickets") == 0:
+            add("TLS session tickets not enabled")
+
+        # ── Weak cipher suites offered ───────────────────────────────────────
+        # Each suite in the suites list has a 'q' flag — non-zero = weak per
+        # SSL Labs' own classification (CBC mode, RSA key exchange without
+        # forward secrecy, etc.).
+        weak_suite_names = []
+        for suite_grp in details.get("suites") or []:
+            for s in suite_grp.get("list") or []:
+                if s.get("q"):
+                    name = s.get("name")
+                    if name and name not in weak_suite_names:
+                        weak_suite_names.append(name)
+        if weak_suite_names:
+            count = len(weak_suite_names)
+            sample = ", ".join(weak_suite_names[:3])
+            more = f" + {count - 3} more" if count > 3 else ""
+            add(f"{count} weak cipher suite(s) offered: {sample}{more}")
+
+    # ── Cert-level checks (run once on the leaf cert across endpoints) ──────
+    leaf = _ssllabs_leaf_cert(host_data)
+    if leaf:
+        # Insecure signature algorithms.
+        sig_alg = (leaf.get("sigAlg") or "").upper()
+        if "MD5" in sig_alg or "MD2" in sig_alg:
+            add(f"Insecure certificate signature algorithm: {sig_alg}")
+        elif "SHA1" in sig_alg:
+            add(f"Certificate signed with SHA1 ({sig_alg})")
+
+        # Weak key sizes.
+        key_alg  = leaf.get("keyAlg") or ""
+        key_size = leaf.get("keySize")
+        if isinstance(key_size, int):
+            if key_alg == "RSA" and key_size < 2048:
+                add(f"Weak certificate key: {key_alg} {key_size} bits")
+            elif key_alg == "EC" and key_size < 256:
+                add(f"Weak certificate key: {key_alg} {key_size} bits")
+
+        # Cert.issues is a bitfield. Decode the documented bits.
+        ci = leaf.get("issues")
+        if isinstance(ci, int) and ci:
+            if ci & 1:
+                add("Certificate: no chain of trust")
+            if ci & 2:
+                add("Certificate: not before date is in the future")
+            if ci & 4:
+                add("Certificate: expired")
+            if ci & 8:
+                add("Certificate: hostname mismatch")
+            if ci & 16:
+                add("Certificate: revoked")
+            if ci & 32:
+                add("Certificate: bad common name")
+            if ci & 64:
+                add("Certificate: self-signed")
+            if ci & 128:
+                add("Certificate: blacklisted")
+            if ci & 256:
+                add("Certificate: insecure signature")
+            if ci & 512:
+                add("Certificate: insecure key")
+
+        # CAA DNS record.
+        if leaf.get("dnsCaa") is False:
+            add("CAA DNS record not published")
+
+        # Certificate transparency — no SCT in leaf cert.
+        if leaf.get("sct") is False:
+            add("Certificate transparency: no SCT embedded in leaf cert")
 
     return findings
 
@@ -1131,19 +1283,10 @@ def cmd_ssl_scan(domain, email, publish=False, from_cache=True, max_age=24):
 
     _tprint(c(GREEN, f"  ✔ SSL Labs grade: {worst_grade}"))
 
-    # Merge findings across endpoints. Most domains have one endpoint, but
-    # multi-IP setups can have several — usually a load-balancer pool with
-    # near-identical configuration, occasionally with drift between nodes.
-    # Per design choice: merge into a single deduped list (order preserved)
-    # rather than reporting per-IP, since the score reflects the worst
-    # grade across endpoints anyway.
-    merged_findings = []
-    seen_findings   = set()
-    for ep in endpoints:
-        for f in _extract_ssllabs_findings(ep):
-            if f not in seen_findings:
-                seen_findings.add(f)
-                merged_findings.append(f)
+    # Decode the SSL Labs response into a single deduped list of observations.
+    # The extractor walks endpoints internally and merges results — multi-IP
+    # setups usually have near-identical configuration.
+    merged_findings = _extract_ssllabs_findings(data)
 
     return {
         "worst_grade":      worst_grade,
