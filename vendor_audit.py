@@ -206,16 +206,29 @@ _BULK_SCORE_YELLOW = audit_checks.RUBRIC["thresholds"]["score_color_yellow_pct"]
 # by _resolve_outcsv() into a real filename.
 _OUTCSV_AUTO_SENTINEL = "__AUTO__"
 
+# Default output directory for auto-named CSV and TXT reports. Created on
+# first auto-name; ignored when the user passes an explicit path. Keeping
+# generated files out of the project root makes batch runs cleaner.
+_DEFAULT_REPORTS_DIR = "reports"
+
+
+def _ensure_reports_dir() -> str:
+    """Create the default reports directory if it doesn't exist and return
+    its path. Used by both auto-name helpers below."""
+    os.makedirs(_DEFAULT_REPORTS_DIR, exist_ok=True)
+    return _DEFAULT_REPORTS_DIR
+
 
 def _auto_outcsv_name() -> str:
-    """Generate a timestamped filename for auto-named CSVs.
+    """Generate a timestamped path for auto-named CSVs, inside ./reports/.
 
-    Format: vendor_audit_2026-04-26T13-42-09.csv (ISO 8601 date + 'T' separator
-    + dash-separated time; no colons since some filesystems and shells dislike
-    them). Local time, since CSVs are typically reviewed by an operator on the
-    same machine that produced them.
+    Format: reports/vendor_audit_2026-04-26T13-42-09.csv (ISO 8601 date +
+    'T' separator + dash-separated time; no colons since some filesystems
+    and shells dislike them). Local time, since CSVs are typically reviewed
+    by an operator on the same machine that produced them.
     """
-    return datetime.now().strftime("vendor_audit_%Y-%m-%dT%H-%M-%S.csv")
+    fname = datetime.now().strftime("vendor_audit_%Y-%m-%dT%H-%M-%S.csv")
+    return os.path.join(_ensure_reports_dir(), fname)
 
 
 def _resolve_outcsv(value):
@@ -236,7 +249,10 @@ def _resolve_outcsv(value):
     # filename" (which would fail on Windows with [Errno 22] Invalid argument).
     if value.endswith(("/", "\\")) or os.path.isdir(value):
         os.makedirs(value, exist_ok=True)
-        return os.path.join(value, _auto_outcsv_name())
+        # Just the bare filename — caller specified the directory, so we
+        # do NOT use _auto_outcsv_name() here (it would prefix ./reports/).
+        fname = datetime.now().strftime("vendor_audit_%Y-%m-%dT%H-%M-%S.csv")
+        return os.path.join(value, fname)
     return value
 
 
@@ -247,13 +263,26 @@ def _resolve_outcsv(value):
 _REPORT_AUTO_SENTINEL = "__AUTO__"
 
 
-def _auto_report_name(domain):
-    """Return a default --report filename for the given domain. Uses
-    the same ISO-with-time format as the CSV auto-naming so timestamps
-    sort lexicographically and a CSV + TXT pair from the same scan
-    sit next to each other in a directory listing."""
+def _auto_report_name(domain, in_default_dir: bool = True):
+    """Return a default --report path (or filename) for the given domain.
+
+    Uses the same ISO-with-time format as the CSV auto-naming so timestamps
+    sort lexicographically and a CSV + TXT pair from the same scan sit next
+    to each other in a directory listing.
+
+    in_default_dir=True   → returns reports/<domain>_<ISO>.txt and creates
+                            the dir. New auto-naming default.
+    in_default_dir=False  → returns just <domain>_<ISO>.txt (bare filename) —
+                            for callers that already have a destination
+                            directory in hand: bulk mode with an explicit
+                            --report DIR, or the directory-shaped path
+                            branch in _resolve_report.
+    """
     safe_domain = domain.replace("/", "_").replace("\\", "_")
-    return datetime.now().strftime(f"{safe_domain}_%Y-%m-%dT%H-%M-%S.txt")
+    fname = datetime.now().strftime(f"{safe_domain}_%Y-%m-%dT%H-%M-%S.txt")
+    if in_default_dir:
+        return os.path.join(_ensure_reports_dir(), fname)
+    return fname
 
 
 def _resolve_report(value, domain):
@@ -271,7 +300,7 @@ def _resolve_report(value, domain):
         return _auto_report_name(domain)
     if value.endswith(("/", "\\")) or os.path.isdir(value):
         os.makedirs(value, exist_ok=True)
-        return os.path.join(value, _auto_report_name(domain))
+        return os.path.join(value, _auto_report_name(domain, in_default_dir=False))
     return value
 
 
@@ -339,20 +368,35 @@ def normalize_domain(raw):
 
 # ── Single-domain audit ───────────────────────────────────────────────────────
 
-def run_audit(domain):
+def run_audit(domain, ssl_active: bool = False):
     """Run all checks for a single domain. Thread-safe.
 
     Returns (original_domain, audit_domain, results, timestamp_utc).
 
     Global configuration (DNS server, HTTP timeout) must be set once before
     any worker thread starts via set_dns_server() and set_http_timeout().
+
+    ssl_active is informational only — used to label the "Running checks"
+    line so the reader can see at a glance which flags are in effect.
+    The actual SSL Labs assessment is run separately by the caller (it
+    has its own rate-limit / sequencing rules that don't fit the
+    per-domain check pipeline).
     """
     domain = normalize_domain(domain)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     deep = audit_checks.is_deep()
 
+    # Build the same flag list the banner builds (--deep, --ssl), so the
+    # per-domain progress line agrees with the top-of-output banner.
+    active_flags = []
+    if deep:
+        active_flags.append("--deep")
+    if ssl_active:
+        active_flags.append("--ssl")
+    flag_suffix = c(YELLOW, "  [" + " ".join(active_flags) + "]") if active_flags else ""
+
     _tprint(f"\n{c(GREY, 'Running checks for')} {c(BOLD, domain)}{c(GREY, '...')}"
-            + (c(YELLOW, "  [--deep]") if deep else ""))
+            + flag_suffix)
 
     # ── Per-check timing — used by render() for the "Scan info" footer and by
     # CSV output. A check-name -> seconds dict so we can spot which network
@@ -1167,7 +1211,7 @@ def run_bulk(domains, outcsv_path, ssl_args=None, concurrency=None, report_dir=N
         if not report_dir:
             return False
         try:
-            filename = _auto_report_name(original)
+            filename = _auto_report_name(original, in_default_dir=False)
             path = os.path.join(report_dir, filename)
             audit_txt_report.write_txt_report(
                 original_domain=original,
@@ -1188,7 +1232,7 @@ def run_bulk(domains, outcsv_path, ssl_args=None, concurrency=None, report_dir=N
         # Sequential when --ssl is on: each domain fully complete before the next.
         for idx, raw in enumerate(domains):
             try:
-                original, audit, results, ts = run_audit(raw)
+                original, audit, results, ts = run_audit(raw, ssl_active=True)
                 ssl_result = cmd_ssl_scan(
                     audit,
                     email=ssl_args["email"],
@@ -1701,12 +1745,12 @@ PROJECT
         # In bulk mode --report (when given) means "one .txt per domain".
         # The argparse value is interpreted as a destination *directory*
         # rather than a single filename — a single path can't hold N
-        # reports. Sentinel (bare flag) → cwd; explicit value → that
+        # reports. Sentinel (bare flag) → ./reports/; explicit value → that
         # directory, created if it does not exist; None → reports off.
         report_dir = None
         if args.report is not None:
             if args.report == _REPORT_AUTO_SENTINEL:
-                report_dir = "."
+                report_dir = _ensure_reports_dir()
             else:
                 report_dir = args.report
                 try:
@@ -1750,7 +1794,7 @@ PROJECT
                 "a domain is required — pass it positionally, via --domain, or use --file"
             )
 
-        original, audit_domain, results, timestamp = run_audit(domain)
+        original, audit_domain, results, timestamp = run_audit(domain, ssl_active=bool(args.ssl))
 
         # SSL Labs runs before render so the grade feeds into the score.
         if args.ssl:
