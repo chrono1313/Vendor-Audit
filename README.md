@@ -1,0 +1,188 @@
+# Vendor Audit
+
+A lightweight, passive third-party vendor security health check. Audits a
+domain's DNS, email, TLS, HTTP, and web-tier security posture from the outside
+and produces a categorical score, a CSV row, and an optional plain-text report
+suitable for sharing with the vendor.
+
+```
+$ python vendor_audit.py example.com
+
+  OVERALL SCORE   54 / 88   ████████████████████░░  61%
+
+    Email     ███████░░░  11/19  (58%)
+    DNS       █████████░  7/9    (78%)
+    Routing   ████████░░  6/8    (75%)
+    TLS       █████████░  14/19  (74%)
+    HTTP      █████░░░░░  3/5    (60%)
+    Website   ███░░░░░░░  13/28  (46%)
+```
+
+(Point totals shown are the maximum baseline. Detected EOL libraries and
+operating systems add to the denominator dynamically — one point per EOL
+library, three points per EOL OS — and `--ssl` adds the SSL Labs grade.)
+
+## What it checks
+
+Vendor Audit groups checks into six categories. Every check maps to a published
+standard (RFC, W3C spec, OWASP, or CA/Browser Forum baseline requirement) — no
+made-up checks.
+
+**Email** — SPF (record presence, lookup count, `redirect=` resolution),
+DKIM (common-selector probe), DMARC (presence, `p=` policy, `pct=`, `sp=`,
+`rua=` reporting address), MX records, MTA-STS, TLS-RPT, DANE TLSA on MX
+(`--deep`), STARTTLS-MX (`--deep`).
+
+**DNS** — DNSSEC chain validation (TLD signing, DNSKEY, AD flag), CAA records,
+nameserver count. SOA serial is reported for change tracking but not scored.
+
+**Routing** — IPv6 reachability, IPv4 / IPv6 RPKI ROA coverage, IPv4 / IPv6
+IRR/RIS presence (via RIPEstat). ASN is reported for context but not scored.
+
+**TLS** — Cert validity, SAN coverage, lifetime, name match, `www`-variant
+coverage, TLS 1.3 support, HSTS (presence, `includeSubDomains`, preload list,
+`max-age` strength), and an optional SSL Labs grade with per-condition
+findings (`--ssl`).
+
+**HTTP** — HTTP/2 / HTTP/3 (Alt-Svc) support, HTTP→HTTPS redirect presence,
+first-hop redirect hygiene. Response time and clock skew are captured but not
+scored.
+
+**Website** — Server / X-Powered-By header disclosure, security headers (CSP
+analyzed Google-Evaluator-style with sub-scoring for `script-src`,
+`object-src`, `base-uri`, `frame-ancestors`, and enforcement mode;
+X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy,
+Cross-Origin-Opener-Policy, Cross-Origin-Resource-Policy, X-XSS-Protection
+deprecation), cookie attributes (Secure, HttpOnly, SameSite, `__Host-` /
+`__Secure-` prefixes), security.txt, server-side EOL OS detection from
+headers, client-side EOL library detection, and under `--deep` a regex-light
+page parse for Subresource Integrity, mixed content, third-party origins,
+and a basic accessibility subset.
+
+## Installation
+
+Python 3.10 or later. Clone the repo and install dependencies:
+
+```bash
+git clone https://github.com/<your-username>/vendor-audit.git
+cd vendor-audit
+pip install -r requirements.txt
+```
+
+## Usage
+
+### Single domain
+
+```bash
+python vendor_audit.py example.com                    # terminal report only
+python vendor_audit.py example.com --outcsv out.csv   # also write CSV
+python vendor_audit.py example.com --report           # also write .txt report
+python vendor_audit.py example.com --json             # raw JSON for piping
+```
+
+### Bulk (one domain per line)
+
+```bash
+python vendor_audit.py --file domains.txt --outcsv results.csv
+python vendor_audit.py --file domains.txt --outcsv results.csv --report reports/
+```
+
+In bulk mode, domains are audited in parallel (10 at a time by default,
+adjustable via `--concurrency`). With `--report`, each successfully-audited
+domain produces a separate `<domain>_<ISO>.txt` report in the given directory.
+
+### Deep mode
+
+`--deep` enables three extra checks that are slower or have a higher false-
+positive rate on bot-mitigated sites:
+
+- DANE TLSA on each MX host (DNS queries that often time out on non-DNSSEC
+  zones)
+- STARTTLS-MX cert probe (port 25 egress; blocked on most cloud providers and
+  residential ISPs)
+- HTML page parse for Subresource Integrity, mixed content, third-party
+  origins, and accessibility signals
+
+Default-mode runs typically complete in 1–2 seconds per domain. `--deep` adds
+2–5 seconds depending on MX count and server responsiveness.
+
+### SSL Labs
+
+`--ssl your@email.com` requests an SSL Labs API v4 assessment for the domain.
+Requires a one-time email registration with Qualys (free):
+
+```bash
+python vendor_audit.py --sslregistration --ssl your@email.com
+```
+
+The grade contributes 5 points to the score, and the report includes a
+Findings list explaining the conditions affecting the grade (vulnerable
+protocols, named CVEs like Heartbleed/ROBOT/POODLE, missing forward secrecy,
+certificate chain issues, etc.).
+
+SSL Labs assessments take 60–120 seconds per domain and are run sequentially
+to respect the API rate limit; cached reports up to 24 hours old are accepted
+by default (override with `--ssl-no-cache`).
+
+## Output
+
+Three output formats, used independently or together:
+
+- **Terminal report** (default) — color-coded, scrollable, suitable for
+  interactive review.
+- **CSV** (`--outcsv`) — one row per domain with every measured field. The CSV
+  schema is versioned (`meta_schema_version`); upgrades that change the schema
+  cause Vendor Audit to refuse to append to the old file.
+- **Plain-text report** (`--report`) — 100-column UTF-8, severity-grouped
+  findings, suitable for sharing with the vendor's technical team.
+
+## End-of-life data
+
+`library_eol.json` and `os_eol.json` carry hand-curated end-of-life dates for
+client-side libraries and server operating systems. The detector recognises
+~185 client-side libraries; 28 of those (jQuery, Bootstrap, Angular, Vue,
+Drupal, etc.) have curated EOL annotations and are flagged with their last-
+release dates when an old major is detected. The remaining ~150 are reported
+with their version but no EOL judgment.
+
+OS detection covers RHEL, Ubuntu, CentOS, Debian, FreeBSD, IIS / Windows
+Server, etc. — best-effort, from the `Server` HTTP header.
+
+Both JSON files have a `_verified_on` field and `_note` entries explaining
+how each support floor was set. Periodic review is recommended — projects
+that ship a new major every six months (Angular, Ionic, Vuetify) move their
+support floor frequently.
+
+## Limitations
+
+- **Passive only.** Every check is a DNS lookup, single HTTP GET, SMTP EHLO,
+  or reading an SSL Labs API result. No port scans, no fuzzing, no
+  authentication attempts, no intrusive probes of any kind. Safe to run
+  against any third party without prior coordination.
+- **External view only.** A vendor with strong externally-visible posture can
+  still have weak internal controls; Vendor Audit makes no claim about what
+  it can't see.
+- **Single point in time.** The report reflects the moment of the scan.
+  Re-run periodically or wire into a scheduled CI job for trend tracking.
+- **Bot-mitigated sites.** Cloudflare / Akamai / AWS WAF challenge pages
+  produce unreliable page-level findings, which is why page parsing is
+  gated behind `--deep` rather than running by default.
+
+## Contributing
+
+Contributions welcome. The four core `.py` files (`vendor_audit.py`,
+`audit_checks.py`, `audit_render.py`, `audit_txt_report.py`) plus
+`scoring_rubric.json` share a single version number that is enforced at
+startup; bumping it is the first step of any change. (`ssllabs_scan.py` is a
+standalone utility that does not participate in the version lock.) See the
+docstring at the top of `vendor_audit.py` for the versioning policy. New
+checks should map to a published standard and include the reference in the
+rubric's `_comment_*` entry.
+
+## License
+
+GNU General Public License v3.0 or later. See `LICENSE` for the full text.
+
+This is free software: you are welcome to redistribute and modify it under
+the terms of the GPL. There is **NO WARRANTY**, to the extent permitted by
+applicable law.

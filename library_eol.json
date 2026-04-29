@@ -1,0 +1,283 @@
+{
+    "_comment": "End-of-life data for client-side JavaScript / CSS libraries detected in static HTML. Schema: each library has 'min_supported_major' (integer; any major below this is EOL by definition) and optional 'eol_majors' map keyed by major version with specific last-release info. The detector flags any version whose major is below min_supported_major OR explicitly listed in eol_majors. Versions at or above min_supported_major and not in eol_majors are reported without annotation — we deliberately do not claim 'current' for any version because that requires constant updates and risks staleness. Libraries detected but not present in this file are reported with their version and no EOL annotation. To mark every version of a library as EOL, set min_supported_major to 999 (used for projects whose maintainers have themselves declared the project legacy / dead).",
+    "_verified_on": "2026-04-28",
+    "_schema_version": "1",
+
+    "jquery": {
+        "min_supported_major": 3,
+        "_note": "1.x and 2.x both EOL since 2016. 3.x receives critical security patches only since 4.x release. 4.x is current.",
+        "eol_majors": {
+            "1": {"last_release": "2016-05-20", "last_version": "1.12.4"},
+            "2": {"last_release": "2016-05-20", "last_version": "2.2.4"}
+        }
+    },
+
+    "jquery-ui": {
+        "min_supported_major_minor": "1.14",
+        "_note": "jQuery UI uses 1.x.y throughout its history; 'major' here means the minor segment. 1.13 was EOL'd when 1.14 shipped (Aug 5 2024). 1.14 is in maintenance mode but receives security fixes.",
+        "eol_majors": {
+            "1.8":  {"last_release": "2012-11-15", "last_version": "1.8.24"},
+            "1.9":  {"last_release": "2012-11-23", "last_version": "1.9.2"},
+            "1.10": {"last_release": "2014-06-26", "last_version": "1.10.4"},
+            "1.11": {"last_release": "2015-10-12", "last_version": "1.11.4"},
+            "1.12": {"last_release": "2016-09-14", "last_version": "1.12.1"},
+            "1.13": {"last_release": "2024-04-26", "last_version": "1.13.3"}
+        }
+    },
+
+    "bootstrap": {
+        "min_supported_major": 5,
+        "_note": "v3 EOL 2019-07-24, v4 EOL 2023-01-01, v5 active.",
+        "eol_majors": {
+            "2": {"last_release": "2013-07-26", "last_version": "2.3.2"},
+            "3": {"last_release": "2019-07-24", "last_version": "3.4.1"},
+            "4": {"last_release": "2023-01-01", "last_version": "4.6.2"}
+        }
+    },
+
+    "angularjs": {
+        "min_supported_major": 999,
+        "_note": "AngularJS (1.x). Entire project EOL Dec 31 2021, last release 1.8.3 (April 7 2022). All versions EOL; min_supported_major=999 is the convention for fully-dead projects.",
+        "eol_majors": {
+            "1": {"last_release": "2022-04-07", "last_version": "1.8.3"}
+        }
+    },
+
+    "angular": {
+        "min_supported_major": 19,
+        "_note": "Modern Angular (2+). 18-month support window per major (6mo active + 12mo LTS). v21 in active support (until ~May 2027). v20 in LTS until Nov 28 2026. v19 in LTS until May 19 2026 (~3 weeks from this verification date — floor will need to bump to 20 then). v18 reached EOL Nov 21 2025. New majors ship every ~6 months, so this floor needs frequent review.",
+        "eol_majors": {
+            "2":  {"last_release": "2017-03-23"},
+            "4":  {"last_release": "2018-09-21"},
+            "5":  {"last_release": "2019-04-05"},
+            "6":  {"last_release": "2019-11-04"},
+            "7":  {"last_release": "2020-04-07"},
+            "8":  {"last_release": "2020-11-19"},
+            "9":  {"last_release": "2021-08-09"},
+            "10": {"last_release": "2022-01-26"},
+            "11": {"last_release": "2022-05-04"},
+            "12": {"last_release": "2022-11-08"},
+            "13": {"last_release": "2023-05-04"},
+            "14": {"last_release": "2023-11-09"},
+            "15": {"last_release": "2024-05-08"},
+            "16": {"last_release": "2024-11-19"},
+            "17": {"last_release": "2025-05-13"},
+            "18": {"last_release": "2025-11-21"}
+        }
+    },
+
+    "font-awesome": {
+        "min_supported_major": 6,
+        "_note": "v3, v4, v5 all EOL. v6 in LTS (critical bug fixes only) since v7 release. v7 is current.",
+        "eol_majors": {
+            "3": {"last_release": "2013-08-27"},
+            "4": {"last_release": "2016-10-24", "last_version": "4.7.0"},
+            "5": {"last_release": "2022-10-24"}
+        }
+    },
+
+    "modernizr": {
+        "min_supported_major": 3,
+        "_note": "Project's own website is broken; npm marks the package as 'Inactive maintenance'. v3.13.1 (Aug 2024) is the last release. v1 and v2 are deeply EOL.",
+        "eol_majors": {
+            "1": {"last_release": "2011-07-13"},
+            "2": {"last_release": "2014-12-26", "last_version": "2.8.3"}
+        }
+    },
+
+    "moment": {
+        "min_supported_major": 999,
+        "_note": "Moment.js declared itself a legacy project in September 2020. Project recommends choosing a different library for new development. Entire library effectively EOL.",
+        "eol_majors": {
+            "2": {"last_release": "legacy-mode-since-2020-09"}
+        }
+    },
+
+    "drupal": {
+        "min_supported_major": 10,
+        "_note": "Drupal 7 EOL Jan 5 2025. Drupal 8 EOL Nov 2 2021. Drupal 9 EOL Nov 1 2023. Drupal 10 still supported (EOL Dec 9 2026). Drupal 11 active.",
+        "eol_majors": {
+            "6": {"last_release": "2016-02-24"},
+            "7": {"last_release": "2025-01-05"},
+            "8": {"last_release": "2021-11-02"},
+            "9": {"last_release": "2023-11-01"}
+        }
+    },
+
+    "vue": {
+        "min_supported_major": 3,
+        "_note": "Vue 2 reached EOL Dec 31 2023. Final release was 2.7.16 (Dec 23 2023). Commercial extended support is available via HeroDevs NES, but the open-source project is no longer maintained for 2.x. Vue 3 is current. Vue 1.x predates the 2.x EOL announcement and is well past end of life.",
+        "eol_majors": {
+            "1": {"last_release": "2016-10-09"},
+            "2": {"last_release": "2023-12-23", "last_version": "2.7.16"}
+        }
+    },
+
+    "vuetify": {
+        "min_supported_major": 3,
+        "_note": "Vuetify 2 reached EOL Jan 25 2025. Tied to Vue 2's lifecycle. Vuetify 3 is current.",
+        "eol_majors": {
+            "1": {"last_release": "2019-09-09"},
+            "2": {"last_release": "2025-01-25"}
+        }
+    },
+
+    "material-ui": {
+        "min_supported_major": 999,
+        "_note": "Legacy package name (@material-ui/core) used through v4. Active development moved to @mui/material starting with v5 (released Sept 2021). v4 reached end of active development June 11 2020 (release v4.10.2 noted '⚠️ This release marks the end of the active development on the v4.x versions'); patches continued briefly but the package is no longer maintained. Detection of 'material-ui' implies legacy v0.x-v4.x. Modern code uses 'mui' (handled separately).",
+        "eol_majors": {
+            "0": {"last_release": "2018-09-22"},
+            "1": {"last_release": "2018-10-28"},
+            "3": {"last_release": "2018-12-04"},
+            "4": {"last_release": "2022-02-03", "last_version": "4.12.4"}
+        }
+    },
+
+    "mui": {
+        "min_supported_major": 5,
+        "_note": "Modern MUI (@mui/material). v5 released Sept 2021 (replacement for material-ui v4). v6 and v7 are current. v5 is in maintenance per MUI's deprecation policy.",
+        "eol_majors": {}
+    },
+
+    "polymer": {
+        "min_supported_major": 999,
+        "_note": "Entire Polymer Library is in maintenance mode. The official Polymer Project recommends Lit for all new development. Polymer 3.0 (the current stable line) receives only critical patches. Polymer 1.x and 2.x are deeply EOL.",
+        "eol_majors": {
+            "1": {"last_release": "2018-05-24"},
+            "2": {"last_release": "2019-12-09"},
+            "3": {"last_release": "2024-05-21"}
+        }
+    },
+
+    "mootools": {
+        "min_supported_major": 999,
+        "_note": "MooTools maintainers themselves stated (issue #2798, 2018) that MooTools should not be used for new projects. Last MooTools Core release 1.6.0 (Jan 2016). The library predates a number of TC39 prototype-extension decisions and has been archived in spirit.",
+        "eol_majors": {
+            "1": {"last_release": "2016-01-15", "last_version": "1.6.0"}
+        }
+    },
+
+    "prototype": {
+        "min_supported_major": 999,
+        "_note": "Prototype JavaScript Framework. Last release 1.7.3 (Sept 2015). Project effectively abandoned; Rails switched away from Prototype to jQuery in Rails 3 (2010). All versions are well past end of life.",
+        "eol_majors": {
+            "1": {"last_release": "2015-09-22", "last_version": "1.7.3"}
+        }
+    },
+
+    "scriptaculous": {
+        "min_supported_major": 999,
+        "_note": "script.aculo.us. Built on top of Prototype.js (also EOL). GitHub repo last updated 2010-era. No active maintenance.",
+        "eol_majors": {
+            "1": {"last_release": "2010-05-04", "last_version": "1.9.0"}
+        }
+    },
+
+    "yui": {
+        "min_supported_major": 999,
+        "_note": "Yahoo User Interface Library. Yahoo announced cessation of all active development on August 29 2014. Repository was archived. YUI 2 was deprecated even earlier (2011). All versions EOL.",
+        "eol_majors": {
+            "2": {"last_release": "2011-09-14", "last_version": "2.9.0"},
+            "3": {"last_release": "2014-04-01", "last_version": "3.18.1"}
+        }
+    },
+
+    "jquery-mobile": {
+        "min_supported_major": 999,
+        "_note": "jQuery Mobile fully deprecated Oct 7 2021; the GitHub repo was archived Oct 8 2021. Last stable release was 1.4.5 (Oct 2014); a 1.5 alpha was attempted but never released as stable. The jQuery team explicitly advises against new development with jQuery Mobile.",
+        "eol_majors": {
+            "1": {"last_release": "2014-10-31", "last_version": "1.4.5"}
+        }
+    },
+
+    "swfobject": {
+        "min_supported_major": 999,
+        "_note": "SWFObject embeds Adobe Flash content. Adobe Flash Player itself reached end of life Dec 31 2020. The SWFObject GitHub repository was archived Nov 27 2018, with maintainers stating the project is no longer in active development. All versions EOL by virtue of the underlying technology being dead.",
+        "eol_majors": {
+            "1": {"last_release": "2007-10-21"},
+            "2": {"last_release": "2013-04-22", "last_version": "2.2.0"}
+        }
+    },
+
+    "ckeditor": {
+        "min_supported_major": 5,
+        "_note": "CKEditor 4 reached EOL June 30 2023. Last open-source release was 4.22.1; the LTS continuation requires a commercial Extended Support Model license (available through Dec 2028). CKEditor 5 is current. Versions ≤3 are very old (CKEditor renamed from FCKeditor in 2009).",
+        "eol_majors": {
+            "3": {"last_release": "2012-04-26", "last_version": "3.6.6"},
+            "4": {"last_release": "2023-06-29", "last_version": "4.22.1"}
+        }
+    },
+
+    "tinymce": {
+        "min_supported_major": 7,
+        "_note": "TinyMCE 4 EOL Dec 31 2020. TinyMCE 5 EOL April 20 2023. TinyMCE 6 open-source EOL Oct 31 2024 (commercial EOL June 6 2025). TinyMCE 7 is in support; TinyMCE 8 is current. Tiny supports the latest two majors plus a paid TinyMCE 5 LTS option.",
+        "eol_majors": {
+            "3": {"last_release": "2013-04-18"},
+            "4": {"last_release": "2020-12-31", "last_version": "4.9.11"},
+            "5": {"last_release": "2023-04-20", "last_version": "5.10.9"},
+            "6": {"last_release": "2024-10-31", "last_version": "6.8.5"}
+        }
+    },
+
+    "element-ui": {
+        "min_supported_major": 999,
+        "_note": "Element UI is Vue 2-only by design; the Element team ships Element Plus for Vue 3. With Vue 2 itself EOL since Dec 31 2023, the entire Element UI line is effectively legacy. The package's own README directs new development to Element Plus.",
+        "eol_majors": {
+            "1": {"last_release": "2017-12-08"},
+            "2": {"last_release": "2024-09-03", "last_version": "2.15.14"}
+        }
+    },
+
+    "element-plus": {
+        "min_supported_major": 2,
+        "_note": "Successor to Element UI for Vue 3. Stable since Feb 7 2022. v1.x was a pre-release line; v2.x is current.",
+        "eol_majors": {
+            "1": {"last_release": "2021-12-30"}
+        }
+    },
+
+    "ext": {
+        "min_supported_major": 7,
+        "_note": "Sencha Ext JS (commercial). v8.0 released around April 2026. v7.x line received maintenance through 7.8.0 (Dec 2023). Sencha does not publish formal community EOL dates for older majors; v1-v6 are old commercial releases without ongoing support and are flagged as EOL on that basis. Older majors do not have specific last-release dates because Sencha's commercial release notes are not always publicly verifiable.",
+        "eol_majors": {
+            "3": {"last_release": "2012-11-08"},
+            "4": {"last_release": "2014-04-08"},
+            "5": {"last_release": "2015-03-23"},
+            "6": {"last_release": "2018-08-27"}
+        }
+    },
+
+    "ionic": {
+        "min_supported_major": 8,
+        "_note": "Ionic Framework. v8.0 released Feb 2024; v8.x is current (v8.8.4 as of this verification date). Ionic provides ~6 months of critical bug/security fixes for the previous major, then maintenance ends. v7 EOL'd ~Aug 2024 when v8 shipped. v1-v6 are all well past their windows. Floor needs review when v9 ships (announced as next major; not yet released).",
+        "eol_majors": {
+            "1": {"last_release": "2017-04-25"},
+            "2": {"last_release": "2017-09-07"},
+            "3": {"last_release": "2019-09-12"},
+            "4": {"last_release": "2021-04-15"},
+            "5": {"last_release": "2022-08-31"},
+            "6": {"last_release": "2023-09-13"},
+            "7": {"last_release": "2024-08-31"}
+        }
+    },
+
+    "wordpress": {
+        "min_supported_major": 6,
+        "_note": "WordPress core. The project officially supports only the latest major release for security updates, but historically backports critical fixes to several previous majors. As of this verification date, 6.x is the only line receiving active updates; 5.x and earlier should be considered EOL for security purposes. Floor may need adjustment as new majors ship.",
+        "eol_majors": {
+            "3": {"last_release": "2014-04-16"},
+            "4": {"last_release": "2017-03-06"},
+            "5": {"last_release": "2022-05-10"}
+        }
+    },
+
+    "joomla": {
+        "min_supported_major": 4,
+        "_note": "Joomla 3.x EOL Aug 17 2023. Joomla 4.x in maintenance; Joomla 5.x is current. Joomla 1.x and 2.x are very old and unsupported.",
+        "eol_majors": {
+            "1": {"last_release": "2012-04-15"},
+            "2": {"last_release": "2014-09-24"},
+            "3": {"last_release": "2023-08-17", "last_version": "3.10.12"}
+        }
+    }
+}

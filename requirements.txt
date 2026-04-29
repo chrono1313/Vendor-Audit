@@ -1,0 +1,15 @@
+# Vendor Audit runtime dependencies.
+#
+# Minimum versions chosen for the features actually used:
+#   - dnspython 2.4+   resolver.timeout/lifetime semantics, current dnssec module
+#   - requests 2.31+   recent CVE fixes, modern SSL handling
+#   - httpx 0.25+      stable HTTP/2 support, sync client, connection-pool fixes
+#   - tldextract 5.0+  bundled PSL with regular updates, modern Python support
+#
+# Upper bounds intentionally not pinned — these libraries are stable and
+# follow semver. If a future major release breaks something, pin then.
+
+dnspython>=2.4
+requests>=2.31
+httpx[http2]>=0.25
+tldextract>=5.0

@@ -1,0 +1,1066 @@
+{
+    "rubric_version": "1.0",
+    "compatible_with": "vendor_audit 1.x",
+    "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
+    "thresholds": {
+        "spf_lookup_limit": 10,
+        "cert_lifetime_max_days": 199,
+        "score_color_green_pct": 80,
+        "score_color_yellow_pct": 50,
+        "hsts_max_age_min_seconds": 15768000,
+        "min_nameservers": 2,
+        "clock_skew_warn_seconds": 30,
+        "clock_skew_bad_seconds": 300,
+        "csp_nonce_min_bytes": 8,
+        "response_slow_ms": 1000,
+        "response_fast_ms": 200
+    },
+    "dkim_common_selectors": [
+        "google",
+        "default",
+        "selector1",
+        "selector2",
+        "mail",
+        "k1"
+    ],
+    "_comment_categories": "Each scored item maps to one of six top-level categories used in both the detailed sections and the summary. Categories: Email, DNS, Routing, TLS, HTTP, Website. Items not listed here fall back to 'Website' which is the catch-all for origin-side concerns.",
+    "categories": {
+        "Email": [
+            "SPF policy",
+            "SPF lookup count",
+            "SPF redirect",
+            "DMARC present",
+            "DMARC policy",
+            "DMARC pct",
+            "DMARC sp",
+            "DMARC rua reporting",
+            "MX records",
+            "MTA-STS",
+            "TLS-RPT",
+            "DANE TLSA on MX",
+            "STARTTLS-MX",
+            "DKIM (common selectors)"
+        ],
+        "DNS": [
+            "DNSSEC TLD signed",
+            "DNSSEC DNSKEY",
+            "DNSSEC AD flag",
+            "CAA records",
+            "Nameserver count"
+        ],
+        "Routing": [
+            "IPv6",
+            "IPv4 RPKI",
+            "IPv4 IRR/RIS",
+            "IPv6 RPKI",
+            "IPv6 IRR/RIS"
+        ],
+        "TLS": [
+            "TLS connection",
+            "TLS 1.3",
+            "Certificate lifetime",
+            "Certificate name match",
+            "Cert covers www variant",
+            "HSTS present",
+            "HSTS includeSubDomains",
+            "HSTS preloaded",
+            "HSTS max-age strength",
+            "SSL Labs grade"
+        ],
+        "HTTP": [
+            "HTTP version",
+            "HTTP\u2192HTTPS redirect",
+            "Redirect first-hop hygiene"
+        ],
+        "Website": [
+            "Server header",
+            "X-Powered-By absent",
+            "CSP",
+            "X-Frame-Options",
+            "X-Content-Type-Options",
+            "Referrer-Policy",
+            "Permissions-Policy",
+            "CSP script-src safety",
+            "CSP object-src",
+            "CSP base-uri",
+            "CSP frame-ancestors",
+            "CSP enforcement mode",
+            "Cross-Origin-Opener-Policy",
+            "Cross-Origin-Resource-Policy",
+            "X-XSS-Protection deprecated",
+            "Cookie Secure",
+            "Cookie HttpOnly",
+            "Cookie SameSite",
+            "Cookie name prefixes",
+            "security.txt",
+            "Server clock accuracy",
+            "Subresource Integrity",
+            "Mixed content (in-page)"
+        ]
+    },
+    "weights": {
+        "_comment_email": "Email - SPF/DMARC are the highest-impact controls a domain can publish; weighted accordingly.",
+        "SPF policy": {
+            "null_sender": {
+                "earned": 2,
+                "possible": 2
+            },
+            "hardfail": {
+                "earned": 2,
+                "possible": 2
+            },
+            "softfail": {
+                "earned": 1,
+                "possible": 2
+            },
+            "neutral": {
+                "earned": 1,
+                "possible": 2
+            },
+            "no_all_mechanism": {
+                "earned": 1,
+                "possible": 2
+            },
+            "redirect_no_all": {
+                "earned": 1,
+                "possible": 2
+            },
+            "redirect_target_no_spf": {
+                "earned": 1,
+                "possible": 2
+            },
+            "pass_all_DANGEROUS": {
+                "earned": 0,
+                "possible": 2
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "SPF lookup count": {
+            "within_limit": {
+                "earned": 1,
+                "possible": 1
+            },
+            "exceeds_limit": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "SPF redirect": {
+            "resolves": {
+                "earned": 1,
+                "possible": 1
+            }
+        },
+        "DMARC present": {
+            "present": {
+                "earned": 1,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "DMARC policy": {
+            "reject": {
+                "earned": 2,
+                "possible": 2
+            },
+            "quarantine": {
+                "earned": 1,
+                "possible": 2
+            },
+            "none": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "DMARC pct": {
+            "full": {
+                "earned": 1,
+                "possible": 1
+            },
+            "partial": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "DMARC sp": {
+            "enforced": {
+                "earned": 1,
+                "possible": 1
+            },
+            "none": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "_comment_dmarc_rua": "Without rua=, operators can't see who's spoofing them or whether legit mail is being rejected, so a deployment is operating blind.",
+        "DMARC rua reporting": {
+            "present": {
+                "earned": 1,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "MX records": {
+            "present": {
+                "earned": 1,
+                "possible": 1
+            }
+        },
+        "_comment_email_transport": "Mail transport hardening - only scored when MX exists.",
+        "MTA-STS": {
+            "enforce": {
+                "earned": 2,
+                "possible": 2
+            },
+            "testing": {
+                "earned": 1,
+                "possible": 2
+            },
+            "none": {
+                "earned": 0,
+                "possible": 2
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "TLS-RPT": {
+            "present": {
+                "earned": 1,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "DANE TLSA on MX": {
+            "all_mx": {
+                "earned": 2,
+                "possible": 2
+            },
+            "some_mx": {
+                "earned": 1,
+                "possible": 2
+            },
+            "no_mx": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "_comment_starttls_mx": "STARTTLS-MX probe (--deep). For each MX host we open TCP/25, EHLO, STARTTLS, and inspect the negotiated TLS version. Worst-of aggregation across hosts: an attacker can MITM the lowest-preference MX, so the weakest host defines the actual exposure. tls_1_3 → 2/2 (full credit, modern TLS); tls_1_2 → 1.5/2 (acceptable but TLS 1.3 is now widely supported and a half-point penalty rewards operators who upgrade); tls_legacy → 1/2 (TLS 1.0/1.1 negotiated; encrypted but vulnerable); no_starttls → 0/2 (server didn't advertise STARTTLS at EHLO, mail is plaintext on the wire); unprobed → 0/0 (port 25 blocked egress, connection timeout, or other network error — we couldn't conclude anything). The unprobed row is intentionally still emitted into the breakdown (rather than silently dropped) so the operator sees the check was attempted and the reason it produced no signal — silent disappearance would let an operator wrongly conclude STARTTLS is fine when it was just unprobed.",
+        "STARTTLS-MX": {
+            "tls_1_3": {
+                "earned": 2,
+                "possible": 2
+            },
+            "tls_1_2": {
+                "earned": 1.5,
+                "possible": 2
+            },
+            "tls_legacy": {
+                "earned": 1,
+                "possible": 2
+            },
+            "no_starttls": {
+                "earned": 0,
+                "possible": 2
+            },
+            "unprobed": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "_comment_dkim": "DKIM common-selector probe is a partial check - selectors are operator-chosen and arbitrary, so absence at our six common names proves nothing. Score 'found' as 1/1 (positive evidence). Score 'not_found' as 0/0 (no evidence either way - drops out of the denominator entirely so we don't penalise domains using uncommon selector names).",
+        "DKIM (common selectors)": {
+            "found": {
+                "earned": 1,
+                "possible": 1
+            },
+            "not_found": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "_comment_routing": "Routing - IPv6 reachability + RPKI/IRR per address family.",
+        "IPv6": {
+            "present": {
+                "earned": 2,
+                "possible": 2
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "IPv4 RPKI": {
+            "valid": {
+                "earned": 2,
+                "possible": 2
+            },
+            "not-found": {
+                "earned": 1,
+                "possible": 2
+            },
+            "invalid": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "IPv4 IRR/RIS": {
+            "in_ris": {
+                "earned": 1,
+                "possible": 1
+            },
+            "not_in_ris": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "IPv6 RPKI": {
+            "valid": {
+                "earned": 2,
+                "possible": 2
+            },
+            "not-found": {
+                "earned": 1,
+                "possible": 2
+            },
+            "invalid": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "IPv6 IRR/RIS": {
+            "in_ris": {
+                "earned": 1,
+                "possible": 1
+            },
+            "not_in_ris": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "_comment_dnssec": "DNSSEC weighting rationale: the TLD being signed is not the operator's choice (most are signed by default), so it's worth 1 not 3. The AD flag is the only check that proves the validation chain actually works end-to-end - that's worth 3.",
+        "DNSSEC TLD signed": {
+            "signed": {
+                "earned": 1,
+                "possible": 1
+            },
+            "unsigned": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "DNSSEC DNSKEY": {
+            "present": {
+                "earned": 2,
+                "possible": 2
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "DNSSEC AD flag": {
+            "set": {
+                "earned": 3,
+                "possible": 3
+            },
+            "unset": {
+                "earned": 0,
+                "possible": 3
+            }
+        },
+        "_comment_dns_hygiene": "DNS hygiene - CAA + nameserver count.",
+        "CAA records": {
+            "with_iodef": {
+                "earned": 2,
+                "possible": 2
+            },
+            "present": {
+                "earned": 1,
+                "possible": 2
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "Nameserver count": {
+            "two_or_more": {
+                "earned": 1,
+                "possible": 1
+            },
+            "single": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "_comment_tls": "TLS / certificate / HSTS - together describe the transport-security posture.",
+        "TLS connection": {
+            "ok": {
+                "earned": 2,
+                "possible": 2
+            },
+            "cert_error": {
+                "earned": 1,
+                "possible": 2
+            },
+            "no_tls": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "TLS 1.3": {
+            "negotiated": {
+                "earned": 2,
+                "possible": 2
+            },
+            "tls_1_2": {
+                "earned": 1,
+                "possible": 2
+            },
+            "older": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "Certificate lifetime": {
+            "short_lived": {
+                "earned": 2,
+                "possible": 2
+            },
+            "long_lived": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "Certificate name match": {
+            "match": {
+                "earned": 2,
+                "possible": 2
+            },
+            "cert_error": {
+                "earned": 1,
+                "possible": 2
+            },
+            "no_match": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "Cert covers www variant": {
+            "covers": {
+                "earned": 1,
+                "possible": 1
+            },
+            "missing_variant": {
+                "earned": 0,
+                "possible": 1
+            },
+            "no_redirect": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "HSTS present": {
+            "present": {
+                "earned": 2,
+                "possible": 2
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "HSTS includeSubDomains": {
+            "set": {
+                "earned": 1,
+                "possible": 1
+            },
+            "unset": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "HSTS preloaded": {
+            "preloaded": {
+                "earned": 1,
+                "possible": 1
+            },
+            "preload_directive": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "not_preloaded": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "HSTS max-age strength": {
+            "six_months_plus": {
+                "earned": 1,
+                "possible": 1
+            },
+            "less_than_six": {
+                "earned": 0,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "_comment_ssl_labs": "SSL Labs is weighted at 5 points. A higher weight would make it the single largest contributor and overlap substantially with the locally-checked TLS items above. Five points is enough to materially reward A+/A grades and penalise F/T/M, while leaving the locally-checked TLS posture (TLS 1.3, cert lifetime, name match, HSTS) as the dominant signal in this category.",
+        "SSL Labs grade": {
+            "A+": {
+                "earned": 5,
+                "possible": 5
+            },
+            "A": {
+                "earned": 4.5,
+                "possible": 5
+            },
+            "A-": {
+                "earned": 4,
+                "possible": 5
+            },
+            "B": {
+                "earned": 3,
+                "possible": 5
+            },
+            "C": {
+                "earned": 2,
+                "possible": 5
+            },
+            "D": {
+                "earned": 1,
+                "possible": 5
+            },
+            "E": {
+                "earned": 0.5,
+                "possible": 5
+            },
+            "F": {
+                "earned": 0,
+                "possible": 5
+            },
+            "M": {
+                "earned": 1.5,
+                "possible": 5
+            },
+            "T": {
+                "earned": 1,
+                "possible": 5
+            },
+            "no_tls_at_all": {
+                "earned": 0,
+                "possible": 5
+            }
+        },
+        "_comment_http": "HTTP - version + redirect hygiene. 'HTTP version' uses three tiers: http3=2/2 (modern, full credit), http2=1/2 (legacy but still encrypted, half credit), http1=0/2 (no HTTP/2 support — server should be retired).",
+        "HTTP version": {
+            "http3": {
+                "earned": 2,
+                "possible": 2
+            },
+            "http2": {
+                "earned": 1,
+                "possible": 2
+            },
+            "http1": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "HTTP\u2192HTTPS redirect": {
+            "https_only": {
+                "earned": 2,
+                "possible": 2
+            },
+            "http_error": {
+                "earned": 1,
+                "possible": 2
+            },
+            "http_available": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "Redirect first-hop hygiene": {
+            "https_same_host": {
+                "earned": 1,
+                "possible": 1
+            },
+            "off_host_first": {
+                "earned": 0,
+                "possible": 1
+            },
+            "no_redirect": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "_comment_website": "Website - origin-side hygiene: server header disclosure, security headers, cookies, security.txt, clock, page-level deep checks.",
+        "Server header": {
+            "absent_or_proxy": {
+                "earned": 1,
+                "possible": 1
+            },
+            "origin_no_version": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "origin_with_version": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "X-Powered-By absent": {
+            "absent": {
+                "earned": 1,
+                "possible": 1
+            },
+            "present": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "CSP": {
+            "present": {
+                "earned": 2,
+                "possible": 2
+            },
+            "permissive": {
+                "earned": 1,
+                "possible": 2
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "X-Frame-Options": {
+            "set": {
+                "earned": 1,
+                "possible": 1
+            },
+            "unset": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "X-Content-Type-Options": {
+            "nosniff": {
+                "earned": 1,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "Referrer-Policy": {
+            "strong": {
+                "earned": 1,
+                "possible": 1
+            },
+            "weak": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "Permissions-Policy": {
+            "set": {
+                "earned": 1,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "Cookie Secure": {
+            "all_secure": {
+                "earned": 1,
+                "possible": 1
+            },
+            "some_insecure": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "Cookie HttpOnly": {
+            "all_httponly": {
+                "earned": 1,
+                "possible": 1
+            },
+            "some_not": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "Cookie SameSite": {
+            "strict_or_lax": {
+                "earned": 1,
+                "possible": 1
+            },
+            "none_with_secure": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "missing_or_bad": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "Cookie name prefixes": {
+            "valid": {
+                "earned": 1,
+                "possible": 1
+            },
+            "invalid_prefix": {
+                "earned": 0,
+                "possible": 1
+            },
+            "no_prefixed": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "security.txt": {
+            "present_with_expiry": {
+                "earned": 2,
+                "possible": 2
+            },
+            "present_no_expiry": {
+                "earned": 1,
+                "possible": 2
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "_comment_csp_detail": "Detailed CSP analysis derived from Google CSP Evaluator.",
+        "CSP script-src safety": {
+            "strict": {
+                "earned": 3,
+                "possible": 3
+            },
+            "nonce_or_hash": {
+                "earned": 2,
+                "possible": 3
+            },
+            "host_allowlist": {
+                "earned": 1,
+                "possible": 3
+            },
+            "unsafe_inline": {
+                "earned": 0,
+                "possible": 3
+            },
+            "wildcard_or_scheme": {
+                "earned": 0,
+                "possible": 3
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 3
+            }
+        },
+        "CSP object-src": {
+            "none_or_self": {
+                "earned": 1,
+                "possible": 1
+            },
+            "unrestricted": {
+                "earned": 0,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "CSP base-uri": {
+            "set": {
+                "earned": 1,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "CSP frame-ancestors": {
+            "set": {
+                "earned": 1,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "CSP enforcement mode": {
+            "enforced": {
+                "earned": 1,
+                "possible": 1
+            },
+            "report_only": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "Cross-Origin-Opener-Policy": {
+            "same_origin": {
+                "earned": 1,
+                "possible": 1
+            },
+            "same_origin_allow_popups": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "Cross-Origin-Resource-Policy": {
+            "same_origin_or_site": {
+                "earned": 1,
+                "possible": 1
+            },
+            "cross_origin": {
+                "earned": 0,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "X-XSS-Protection deprecated": {
+            "absent_or_zero": {
+                "earned": 1,
+                "possible": 1
+            },
+            "set_dangerous": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "Server clock accuracy": {
+            "in_sync": {
+                "earned": 1,
+                "possible": 1
+            },
+            "minor_skew": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "bad_skew": {
+                "earned": 0,
+                "possible": 1
+            },
+            "no_date": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "_comment_deep": "--deep-only checks. Only counted toward score when --deep was used.",
+        "Subresource Integrity": {
+            "all_external_have_sri": {
+                "earned": 2,
+                "possible": 2
+            },
+            "some_external_have_sri": {
+                "earned": 1,
+                "possible": 2
+            },
+            "no_external_scripts": {
+                "earned": 2,
+                "possible": 2
+            },
+            "external_without_sri": {
+                "earned": 0,
+                "possible": 2
+            }
+        },
+        "Mixed content (in-page)": {
+            "none": {
+                "earned": 1,
+                "possible": 1
+            },
+            "passive_only": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "active": {
+                "earned": 0,
+                "possible": 1
+            }
+        }
+    },
+    "strong_referrer_policies": [
+        "no-referrer",
+        "same-origin",
+        "strict-origin",
+        "strict-origin-when-cross-origin"
+    ],
+    "good_proxies": [
+        "cloudflare",
+        "fastly",
+        "varnish",
+        "squid",
+        "envoy",
+        "awselb",
+        "amazon",
+        "akamai",
+        "cdn",
+        "nginx"
+    ],
+    "origin_servers": [
+        "apache",
+        "iis",
+        "microsoft-iis",
+        "lighttpd",
+        "tomcat",
+        "jetty",
+        "gunicorn",
+        "uwsgi",
+        "kestrel",
+        "cherokee",
+        "litespeed",
+        "openresty"
+    ],
+    "ssl_grade_order": [
+        "F",
+        "E",
+        "T",
+        "D",
+        "M",
+        "C",
+        "B",
+        "A-",
+        "A",
+        "A+"
+    ],
+    "ssl_grade_colors": {
+        "A+": "GREEN",
+        "A": "GREEN",
+        "A-": "GREEN",
+        "B": "YELLOW",
+        "C": "YELLOW",
+        "D": "RED",
+        "E": "RED",
+        "F": "RED",
+        "M": "RED",
+        "T": "RED"
+    },
+    "score_label_display": {
+        "SPF policy": "SPF policy configured",
+        "SPF lookup count": "SPF lookup count within limit",
+        "SPF redirect": "SPF redirect resolves correctly",
+        "DMARC present": "DMARC record present",
+        "DMARC policy": "DMARC policy enforced",
+        "DMARC pct": "DMARC applies to 100% of mail",
+        "DMARC sp": "DMARC subdomain policy set",
+        "DMARC rua reporting": "DMARC rua= aggregate reporting set",
+        "MX records": "MX records present",
+        "IPv6": "IPv6 reachable",
+        "IPv4 RPKI": "IPv4 RPKI valid",
+        "IPv4 IRR/RIS": "IPv4 route registered in IRR",
+        "IPv6 RPKI": "IPv6 RPKI valid",
+        "IPv6 IRR/RIS": "IPv6 route registered in IRR",
+        "DNSSEC TLD signed": "TLD is DNSSEC signed",
+        "DNSSEC DNSKEY": "DNSSEC key published",
+        "DNSSEC AD flag": "DNSSEC chain validated",
+        "TLS connection": "TLS connection successful",
+        "TLS 1.3": "TLS 1.3 negotiated",
+        "Certificate lifetime": "Certificate auto-renewed (short-lived)",
+        "Certificate name match": "Certificate name matches domain",
+        "HTTP version": "HTTP/3 supported",
+        "HTTP\u2192HTTPS redirect": "HTTP redirects to HTTPS",
+        "HSTS present": "HSTS header present",
+        "HSTS includeSubDomains": "HSTS covers subdomains",
+        "HSTS preloaded": "Domain on HSTS preload list",
+        "Server header": "Server header not leaking origin",
+        "X-Powered-By absent": "X-Powered-By not disclosed",
+        "CSP": "Content-Security-Policy set",
+        "X-Frame-Options": "X-Frame-Options set",
+        "X-Content-Type-Options": "X-Content-Type-Options: nosniff",
+        "Referrer-Policy": "Referrer-Policy set",
+        "Permissions-Policy": "Permissions-Policy set",
+        "security.txt": "Security contact published (security.txt, RFC 9116)",
+        "SSL Labs grade": "SSL Labs grade",
+        "MTA-STS": "MTA-STS policy published",
+        "TLS-RPT": "TLS-RPT reporting endpoint published",
+        "DANE TLSA on MX": "DANE/TLSA records on MX hosts",
+        "STARTTLS-MX": "STARTTLS negotiated on MX hosts (TLS 1.3)",
+        "DKIM (common selectors)": "DKIM key found at common selector(s)",
+        "CAA records": "CAA records restrict certificate issuance",
+        "Nameserver count": "Two or more authoritative nameservers (RFC 1034)",
+        "CSP script-src safety": "CSP script-src is strict (nonce/hash/strict-dynamic)",
+        "CSP object-src": "CSP object-src restricted",
+        "CSP base-uri": "CSP base-uri restricted (prevents <base> hijack)",
+        "CSP frame-ancestors": "CSP frame-ancestors restricted (clickjacking)",
+        "CSP enforcement mode": "CSP enforced (not Report-Only)",
+        "Cross-Origin-Opener-Policy": "Cross-Origin-Opener-Policy set",
+        "Cross-Origin-Resource-Policy": "Cross-Origin-Resource-Policy set",
+        "X-XSS-Protection deprecated": "X-XSS-Protection correctly absent (deprecated header)",
+        "HSTS max-age strength": "HSTS max-age \u2265 6 months",
+        "Cookie name prefixes": "Cookies use __Host-/__Secure- prefixes correctly",
+        "Redirect first-hop hygiene": "First redirect hop goes to HTTPS on same host",
+        "Server clock accuracy": "Server clock in sync with UTC",
+        "Cert covers www variant": "Certificate covers www / apex variant",
+        "Subresource Integrity": "External scripts use Subresource Integrity",
+        "Mixed content (in-page)": "No mixed content in page body"
+    },
+    "partial_label": {
+        "SSL Labs grade": "SSL Labs grade",
+        "TLS 1.3": "TLS 1.2 only - TLS 1.3 not negotiated",
+        "HTTP version": "HTTP/2 only - HTTP/3 not supported",
+        "IPv4 RPKI": "IPv4 RPKI not-found - no ROA published, prefix unprotected",
+        "IPv6 RPKI": "IPv6 RPKI not-found - no ROA published, prefix unprotected",
+        "HTTP\u2192HTTPS redirect": "Port 80 open but not redirecting to HTTPS",
+        "HSTS preloaded": "HSTS preload directive present but not on preload list yet",
+        "Server header": "Server header discloses software name (no version)",
+        "Referrer-Policy": "Referrer-Policy present but using a weak value",
+        "CSP": "CSP present but permissive (wildcard src detected)",
+        "security.txt": "security.txt present but Expires: field missing or expired",
+        "Cookie SameSite": "Some cookies use SameSite=None (cross-site embed)",
+        "DMARC policy": "DMARC policy: quarantine - not yet at reject",
+        "SPF policy": "SPF soft fail only (~all) - not fully enforcing",
+        "TLS connection": "TLS running but certificate is untrusted (self-signed/expired)",
+        "Certificate name match": "TLS running but certificate is untrusted (self-signed/expired)",
+        "Certificate lifetime": "Certificate lifetime exceeds 199 days - manual renewal likely",
+        "MTA-STS": "MTA-STS in testing mode (not enforced)",
+        "DANE TLSA on MX": "DANE/TLSA on some but not all MX hosts",
+        "STARTTLS-MX": "STARTTLS-MX: TLS 1.2 negotiated (TLS 1.3 not offered)",
+        "CSP script-src safety": "CSP script-src uses host allowlist (weaker than nonce/hash)",
+        "Cross-Origin-Opener-Policy": "Cross-Origin-Opener-Policy set to same-origin-allow-popups (partial isolation)",
+        "Mixed content (in-page)": "Passive mixed content present (images/media over HTTP)",
+        "Server clock accuracy": "Server clock skew is small but noticeable",
+        "Subresource Integrity": "Some external scripts have SRI but not all",
+        "CAA records": "CAA present but no iodef= reporting contact"
+    },
+    "_comment_scoring_policy_eol": "Per-library 0/1 scoring for detected EOL libraries, per-OS 0/3 scoring for detected EOL operating systems. Both implementations work the same way: score_results() in audit_checks.py iterates the relevant list (results['versioned_libs']['libraries'] for libs, results['os_eol']['os_findings'] for OSes) after all other checks and appends per-finding tuples with hardcoded weights (libraries are 0/1, OSes are 0/3). The rubric does NOT contain weight entries for these labels — they're appended directly. Category resolution falls through to 'Website' (the catch-all), which is the correct destination.",
+    "_comment_starttls_mx_aggregation": "STARTTLS-MX is scored worst-CONFIRMED-of across MX hosts. Severity ordering of confirmed outcomes (worst → best): no_starttls > tls_legacy > tls_1_2 > tls_1_3. Unprobed hosts are dropped from the aggregation when ANY confirmed result exists — a network error on one host (port 25 blocked egress, timeout, refused connection) does not pull down the score for a domain where other MX hosts produced clean handshakes. Only when EVERY host was unprobed does the entire check evaluate to 'unprobed' (0/0). The 0/0 row still appears in the breakdown rather than being silently dropped, so the operator sees the check ran but produced no signal."
+}

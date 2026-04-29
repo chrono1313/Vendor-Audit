@@ -1,0 +1,83 @@
+{
+    "_comment": "End-of-life data for server operating systems detected via HTTP server headers and TLS fingerprinting. Schema mirrors library_eol.json: each OS entry has 'min_supported_major' (versions below this are EOL by definition) and 'eol_majors' map keyed by major version with last_release / last_version info. The detector flags any version whose major is below min_supported_major OR explicitly listed in eol_majors. Versions at or above min_supported_major and not in eol_majors are reported without annotation. OSes detected but not in this file are reported with version only and no annotation. To mark every version as EOL, set min_supported_major to 999. Detection is best-effort and limited to high-confidence signals: a distro name with version in an Apache/Nginx Server header parens annotation, or an IIS version that maps unambiguously to a single Windows Server release. Lower-confidence TLS-fingerprint signals (TLS 1.0/1.1/SSLv3 negotiated, weak ciphers offered) are recorded as corroborating evidence but do not by themselves identify a specific OS.",
+    "_verified_on": "2026-04-28",
+    "_schema_version": "1",
+
+    "centos": {
+        "min_supported_major": 999,
+        "_note": "All CentOS Linux releases are now EOL. CentOS 6 ended Nov 30 2020; CentOS 7 ended Jun 30 2024 (the final CentOS Linux release); CentOS 8 was cut short to Dec 31 2021 when Red Hat shifted focus to CentOS Stream. Any 'CentOS' string in a Server header indicates an EOL operating system. CentOS Stream is a separate rolling-release product that follows the RHEL upstream lifecycle and is detected separately.",
+        "eol_majors": {
+            "5": {"last_release": "2017-03-31"},
+            "6": {"last_release": "2020-11-30"},
+            "7": {"last_release": "2024-06-30"},
+            "8": {"last_release": "2021-12-31"}
+        }
+    },
+
+    "rhel": {
+        "min_supported_major": 8,
+        "_note": "Red Hat Enterprise Linux. RHEL 6 maintenance ended Nov 30 2020 (ELS available through Jun 2024). RHEL 7 maintenance ended Jun 30 2024 (ELS available through Jun 2028). RHEL 8 is in Maintenance Support through May 31 2029. RHEL 9 and 10 are active. Floor set to 8 because that is the lowest major still receiving non-paid security errata as of this verification date.",
+        "eol_majors": {
+            "4": {"last_release": "2012-02-29"},
+            "5": {"last_release": "2017-03-31"},
+            "6": {"last_release": "2020-11-30"},
+            "7": {"last_release": "2024-06-30"}
+        }
+    },
+
+    "ubuntu": {
+        "min_supported_major_minor": "22.04",
+        "_note": "Ubuntu LTS releases get 5 years of standard security support. Ubuntu Pro / ESM extends another 5 years for paying customers, but we score against standard support since we cannot tell from outside whether a given server has Pro. Floor is 22.04 (Jammy, ends Apr 2027). 14.04 ended Apr 2019, 16.04 ended Apr 2021, 18.04 ended May 2023, 20.04 ended May 2025. 24.04 is current. Non-LTS interim releases (e.g. 19.10, 21.04) get 9 months of support and are essentially always EOL by the time they show up in an audit; we track only the LTS lineage here because interim version strings rarely appear in Server header annotations anyway.",
+        "eol_majors": {
+            "10.04": {"last_release": "2015-04-30"},
+            "12.04": {"last_release": "2017-04-28"},
+            "14.04": {"last_release": "2019-04-25"},
+            "16.04": {"last_release": "2021-04-30"},
+            "18.04": {"last_release": "2023-05-31"},
+            "20.04": {"last_release": "2025-05-29"}
+        }
+    },
+
+    "debian": {
+        "min_supported_major": 11,
+        "_note": "Debian releases get 3 years of full security support followed by 2 years of LTS. After LTS, ELTS (commercial) is available for another 5 years but is not an official Debian project. Debian 9 LTS ended Jul 2022. Debian 10 LTS ended Jun 30 2024. Debian 11 LTS ends Jun 30 2026 (still supported). Debian 12 LTS ends Jun 10 2028. Debian 13 (trixie) is current. Floor set to 11 because that is the lowest major still receiving LTS as of this verification date — needs review when Debian 11 LTS ends.",
+        "eol_majors": {
+            "7":  {"last_release": "2018-05-31"},
+            "8":  {"last_release": "2020-06-30"},
+            "9":  {"last_release": "2022-06-30"},
+            "10": {"last_release": "2024-06-30"}
+        }
+    },
+
+    "windows-server": {
+        "min_supported_major": 2016,
+        "_note": "Microsoft Windows Server. Versioned by year. Extended Support is the relevant EOL date (Mainstream Support ending only stops new features, not security updates). 2003/R2 ended Jul 14 2015. 2008/R2 ended Jan 14 2020 (Azure ESU through Jan 9 2024). 2012/R2 ended Oct 10 2023 (ESU through Oct 13 2026). 2016 extended support ends Jan 12 2027 — still supported as of this verification date. 2019 ends Jan 9 2029. 2022 ends Oct 14 2031. 2025 ends Oct 9 2034. Floor set to 2016 (lowest still in Extended Support without a paid ESU).",
+        "eol_majors": {
+            "2003": {"last_release": "2015-07-14"},
+            "2008": {"last_release": "2020-01-14"},
+            "2012": {"last_release": "2023-10-10"}
+        }
+    },
+
+    "iis": {
+        "min_supported_major": 10,
+        "_note": "Microsoft IIS version → Windows Server lifecycle mapping. IIS leaks its version cleanly in the Server header (Microsoft-IIS/7.5, etc.) and the IIS version maps unambiguously to a Windows Server major for IIS ≤8.5: IIS 6.0 = Server 2003, IIS 7.0 = Server 2008, IIS 7.5 = Server 2008 R2, IIS 8.0 = Server 2012, IIS 8.5 = Server 2012 R2, all of which are EOL. IIS 10.0 ships on Server 2016, 2019, 2022, AND 2025 — those are not distinguishable from the IIS version alone, so IIS 10.0 is reported without an EOL annotation. The min_supported_major is set to 10 to flag everything older as EOL via the floor. The .5 minor split (7.0/7.5, 8.0/8.5) is encoded in the per-minor underlying_os refinements that check_os_eol applies after the lookup — both pairs share an EOL date so a single major-version JSON entry suffices for scoring, but the rendering layer wants the precise underlying OS name.",
+        "eol_majors": {
+            "5": {"last_release": "2010-07-13", "last_version": "5.1", "underlying_os": "Windows 2000 / XP"},
+            "6": {"last_release": "2015-07-14", "last_version": "6.0", "underlying_os": "Windows Server 2003"},
+            "7": {"last_release": "2020-01-14", "last_version": "7.5", "underlying_os": "Windows Server 2008 / 2008 R2"},
+            "8": {"last_release": "2023-10-10", "last_version": "8.5", "underlying_os": "Windows Server 2012 / 2012 R2"}
+        }
+    },
+
+    "freebsd": {
+        "min_supported_major": 13,
+        "_note": "FreeBSD releases get Standard support for 24 months from initial X.0 release. Older STABLE branches drop off as new ones ship. Floor of 13 because 12.x supportability ended Dec 31 2023; 13.x and 14.x are in support. FreeBSD versions sometimes appear in default Apache Server headers as 'FreeBSD' parens annotation; less commonly with explicit version.",
+        "eol_majors": {
+            "9":  {"last_release": "2016-12-31"},
+            "10": {"last_release": "2018-10-31"},
+            "11": {"last_release": "2021-09-30"},
+            "12": {"last_release": "2023-12-31"}
+        }
+    }
+}
