@@ -30,6 +30,24 @@ $ python vendor_audit.py example.com
 operating systems add to the denominator dynamically — one point per EOL
 library, three points per EOL OS — and `--ssl` adds the SSL Labs grade.)
 
+## How it's meant to be used
+
+Vendor Audit is a due-diligence tool. Run it on a vendor's domain before
+purchasing a product or service to get a quick, evidence-based read on
+how their domain configuration aligns with current best practices.
+A weak score isn't a deal-breaker on its own, but it's a useful
+conversation starter and a data point alongside everything else you're
+evaluating.
+
+**Please share the report with the vendor.** The plain-text output
+(`--report`) is designed to be readable by their technical team, and
+every finding cites the standard it's measured against — so the report
+reads as feedback, not as an accusation. Most vendors appreciate a
+heads-up they can act on; the report gives them one in a form they can
+take straight to the people who can address it. When more than one
+prospect shares these reports with the same vendor, they're more likely
+to prioritize the issues raised.
+
 ## Project scope
 
 Vendor Audit is a lightweight maturity and best-practices audit. The
