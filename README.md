@@ -112,6 +112,7 @@ On Linux via apt:
 sudo apt install python3-dnspython python3-requests python3-httpx python3-tldextract
 git clone https://github.com/chrono1313/vendor-audit.git
 cd vendor-audit
+python3 vendor_audit.py --help
 
 ```
 
@@ -121,6 +122,7 @@ On Windows:
 git clone https://github.com/chrono1313/vendor-audit.git
 cd vendor-audit
 pip install -r requirements.txt
+python3 vendor_audit.py --help
 ```
 
 ## Usage
