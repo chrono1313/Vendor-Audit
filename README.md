@@ -122,7 +122,7 @@ On Windows:
 git clone https://github.com/chrono1313/vendor-audit.git
 cd vendor-audit
 pip install -r requirements.txt
-python3 vendor_audit.py --help
+python vendor_audit.py --help
 ```
 
 ## Usage
