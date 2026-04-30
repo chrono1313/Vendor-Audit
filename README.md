@@ -106,6 +106,17 @@ and a basic accessibility subset.
 
 Python 3.10 or later. Clone the repo and install dependencies:
 
+On Linux via apt:
+
+```bash
+sudo apt install python3-dnspython python3-requests python3-httpx python3-tldextract
+git clone https://github.com/chrono1313/vendor-audit.git
+cd vendor-audit
+
+```
+
+On Windows:
+
 ```bash
 git clone https://github.com/chrono1313/vendor-audit.git
 cd vendor-audit
