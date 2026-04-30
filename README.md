@@ -230,7 +230,9 @@ support floor frequently.
   Re-run periodically or wire into a scheduled CI job for trend tracking.
 - **Bot-mitigated sites.** Cloudflare / Akamai / AWS WAF challenge pages
   produce unreliable page-level findings, which is why page parsing is
-  gated behind `--deep` rather than running by default.
+  gated behind `--deep` rather than running by default. These reverse-proxy's
+  may obscure other findings like outdated server OS's, but the report should
+  still be accurate as to external exposure and configuration.
 
 ## Contributing
 
