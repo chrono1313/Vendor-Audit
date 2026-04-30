@@ -13,7 +13,6 @@ A default-mode run audits 60+ scored data points in roughly a second.
 domains in under a minute is typical. `--ssl` is sequential and adds 1–2
 minutes per domain because SSL Labs runs the assessment server-side.
 
-```
 ## Demo Video
 
 ```bash
