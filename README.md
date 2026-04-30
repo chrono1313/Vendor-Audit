@@ -30,6 +30,8 @@ $ python vendor_audit.py example.com
 operating systems add to the denominator dynamically — one point per EOL
 library, three points per EOL OS — and `--ssl` adds the SSL Labs grade.)
 
+## Demo Video
+
 [vendor_audit_example.webm](https://github.com/user-attachments/assets/a35e5c2f-12ad-42db-957f-41ac44dee42d)
 
 ## How it's meant to be used
