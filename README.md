@@ -38,6 +38,8 @@ python '.\vendor_audit.py' --ssl email@example.com --deep --report --domain addy
 
 [vendor_audit_example.webm](https://github.com/user-attachments/assets/a35e5c2f-12ad-42db-957f-41ac44dee42d)
 
+In this example, the full output is generated in about ~2 seconds and a report is created. 
+See example_reports_and_screenshots for this report.
 
 
 ## How it's meant to be used
