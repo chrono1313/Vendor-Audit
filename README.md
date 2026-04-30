@@ -14,22 +14,6 @@ domains in under a minute is typical. `--ssl` is sequential and adds 1–2
 minutes per domain because SSL Labs runs the assessment server-side.
 
 ```
-$ python vendor_audit.py example.com
-
-  OVERALL SCORE   54 / 88   ████████████████████░░  61%
-
-    Email     ███████░░░  11/19  (58%)
-    DNS       █████████░  7/9    (78%)
-    Routing   ████████░░  6/8    (75%)
-    TLS       █████████░  14/19  (74%)
-    HTTP      █████░░░░░  3/5    (60%)
-    Website   ███░░░░░░░  13/28  (46%)
-```
-
-(Point totals shown are the maximum baseline. Detected EOL libraries and
-operating systems add to the denominator dynamically — one point per EOL
-library, three points per EOL OS — and `--ssl` adds the SSL Labs grade.)
-
 ## Demo Video
 
 ```bash
