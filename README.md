@@ -30,6 +30,8 @@ $ python vendor_audit.py example.com
 operating systems add to the denominator dynamically — one point per EOL
 library, three points per EOL OS — and `--ssl` adds the SSL Labs grade.)
 
+[vendor_audit_example.webm](https://github.com/user-attachments/assets/a35e5c2f-12ad-42db-957f-41ac44dee42d)
+
 ## How it's meant to be used
 
 Vendor Audit is a due-diligence tool. Run it on a vendor's domain before
@@ -105,7 +107,7 @@ and a basic accessibility subset.
 Python 3.10 or later. Clone the repo and install dependencies:
 
 ```bash
-git clone https://github.com/<your-username>/vendor-audit.git
+git clone https://github.com/chrono1313/vendor-audit.git
 cd vendor-audit
 pip install -r requirements.txt
 ```
