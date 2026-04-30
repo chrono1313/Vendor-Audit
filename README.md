@@ -32,7 +32,13 @@ library, three points per EOL OS — and `--ssl` adds the SSL Labs grade.)
 
 ## Demo Video
 
+```bash
+python '.\vendor_audit.py' --ssl email@example.com --deep --report --domain addy.io
+```
+
 [vendor_audit_example.webm](https://github.com/user-attachments/assets/a35e5c2f-12ad-42db-957f-41ac44dee42d)
+
+
 
 ## How it's meant to be used
 
