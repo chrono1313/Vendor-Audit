@@ -1,35 +1,47 @@
 ════════════════════════════════════════════════════════════════════════════════════════════════════
   Vendor Audit
-  addy.io
-  April 29, 2026 at 15:51 UTC   ·   v1.0
+  fbi.gov
+  April 30, 2026 at 20:12 UTC   ·   v1.0
   https://github.com/chrono1313/Vendor-Audit
 ════════════════════════════════════════════════════════════════════════════════════════════════════
 
 
-OVERALL SCORE   76 / 82      ████████████████████████████░░     93%
+OVERALL SCORE   56 / 73      ███████████████████████░░░░░░░     77%
 
-  Email         19 / 19      ██████████████████████████████    100%
-  DNS            9 /  9      ██████████████████████████████    100%
+  Email         12 / 17      █████████████████████░░░░░░░░░     71%
+  DNS            8 /  9      ███████████████████████████░░░     89%
   Routing        8 /  8      ██████████████████████████████    100%
-  TLS           16 / 18      ███████████████████████████░░░     89%
-  HTTP           3 /  4      ██████████████████████░░░░░░░░     75%
-  Website       21 / 24      ██████████████████████████░░░░     88%
+  TLS           18 / 18      ██████████████████████████████    100%
+  HTTP           4 /  4      ██████████████████████████████    100%
+  Website        6 / 17      ██████████░░░░░░░░░░░░░░░░░░░░     35%
 
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   EXECUTIVE SUMMARY
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-  POSSIBLE ISSUES (6)
+  POSSIBLE ISSUES (12)
 
-    !  TLS      TLS 1.2 only - TLS 1.3 not negotiated                                        1 / 2
-    !  TLS      SSL Labs grade: A-                                                           4 / 5
-    !  HTTP     HTTP/2 only - HTTP/3 not supported                                           1 / 2
+    ✗  Email    MTA-STS policy not published — sending servers have no policy preventing     0 / 2
+                fallback to plaintext
+    ✗  Email    TLS-RPT reporting endpoint not published                                     0 / 1
+    ✗  Email    No DANE/TLSA records on any MX host — vulnerable to STARTTLS downgrade       0 / 2
+                attacks
+    !  DNS      CAA present but no iodef= reporting contact                                  1 / 2
+    ✗  Website  Content Security Policy not set                                              0 / 2
+    ✗  Website  Referrer-Policy not set                                                      0 / 1
+    ✗  Website  Permissions-Policy not set                                                   0 / 1
+    ✗  Website  security.txt not published (RFC 9116)                                        0 / 2
     ✗  Website  Cross-Origin-Opener-Policy not set                                           0 / 1
     ✗  Website  Cross-Origin-Resource-Policy not set                                         0 / 1
-    !  Website  CSP script-src uses host allowlist (weaker than nonce/hash)                  2 / 3
+    ✗  Website  X-XSS-Protection set to a dangerous value                                    0 / 1
+    ✗  Website  External scripts have no Subresource Integrity (SRI)                         0 / 2
 
-  PASSING (48)
+  NOT EVALUATED (1)
+
+    ·  Email    DKIM key not found at common selectors (operator may use a custom selector)  0 / 0
+
+  PASSING (35)
 
     ✓  Email    SPF policy configured                                                        2 / 2
     ✓  Email    SPF lookup count within limit                                                1 / 1
@@ -37,7 +49,6 @@ OVERALL SCORE   76 / 82      █████████████████
     ✓  Email    DMARC record present                                                         1 / 1
     ✓  Email    DMARC policy enforced                                                        2 / 2
     ✓  Email    DMARC applies to 100% of mail                                                1 / 1
-    ✓  Email    DMARC subdomain policy set                                                   1 / 1
     ✓  Email    DMARC rua= aggregate reporting set                                           1 / 1
     ✓  Email    MX records present                                                           1 / 1
     ✓  Routing  IPv6 reachable                                                               2 / 2
@@ -49,78 +60,69 @@ OVERALL SCORE   76 / 82      █████████████████
     ✓  DNS      DNSSEC key published                                                         2 / 2
     ✓  DNS      DNSSEC chain validated                                                       3 / 3
     ✓  TLS      TLS connection successful                                                    2 / 2
+    ✓  TLS      TLS 1.3 negotiated                                                           2 / 2
     ✓  TLS      Certificate auto-renewed (short-lived)                                       2 / 2
     ✓  TLS      Certificate name matches domain                                              2 / 2
+    ✓  HTTP     HTTP/3 supported                                                             2 / 2
     ✓  HTTP     HTTP redirects to HTTPS                                                      2 / 2
     ✓  TLS      HSTS header present                                                          2 / 2
     ✓  TLS      HSTS covers subdomains                                                       1 / 1
     ✓  TLS      Domain on HSTS preload list                                                  1 / 1
     ✓  Website  Server header not leaking origin                                             1 / 1
     ✓  Website  X-Powered-By not disclosed                                                   1 / 1
-    ✓  Website  Content-Security-Policy set                                                  2 / 2
     ✓  Website  X-Frame-Options set                                                          1 / 1
     ✓  Website  X-Content-Type-Options: nosniff                                              1 / 1
-    ✓  Website  Referrer-Policy set                                                          1 / 1
-    ✓  Website  Permissions-Policy set                                                       1 / 1
-    ✓  Website  Security contact published (security.txt, RFC 9116)                          2 / 2
-    ✓  DNS      CAA records restrict certificate issuance                                    2 / 2
+    ✓  TLS      SSL Labs grade: A+                                                           5 / 5
     ✓  DNS      Two or more authoritative nameservers (RFC 1034)                             1 / 1
-    ✓  Email    MTA-STS policy published                                                     2 / 2
-    ✓  Email    TLS-RPT reporting endpoint published                                         1 / 1
-    ✓  Email    DANE/TLSA records on MX hosts                                                2 / 2
     ✓  Email    STARTTLS negotiated on MX hosts (TLS 1.3)                                    2 / 2
-    ✓  Email    DKIM key found at common selector(s)                                         1 / 1
     ✓  Website  Server clock in sync with UTC                                                1 / 1
     ✓  TLS      HSTS max-age ≥ 6 months                                                      1 / 1
-    ✓  Website  CSP object-src restricted                                                    1 / 1
-    ✓  Website  CSP base-uri restricted (prevents <base> hijack)                             1 / 1
-    ✓  Website  CSP frame-ancestors restricted (clickjacking)                                1 / 1
-    ✓  Website  CSP enforced (not Report-Only)                                               1 / 1
-    ✓  Website  X-XSS-Protection correctly absent (deprecated header)                        1 / 1
-    ✓  Website  External scripts use Subresource Integrity                                   2 / 2
     ✓  Website  No mixed content in page body                                                1 / 1
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   EMAIL
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-  SPF — addy.io
+  SPF — fbi.gov
 
     ✓  Hard fail (-all) — strict policy
-    ✓  SPF lookup count: 0
+    ✓  SPF lookup count: 1
 
     Record published:
-    v=spf1 ip4:213.108.105.57 ip4:185.70.196.149 ip4:94.237.47.233 ip6:2a00:c6c0:0:108:3::10 ip6:2a04:3544:8000:1000:e8b5:6ff:fe29:56c ip6:2a04:3544:1000:1510:e8b5:6ff:fe29:1d32 -all
+    v=spf1 +mx ip4:153.31.0.0/16 -all
 
 
-  DMARC — addy.io
+  DMARC — fbi.gov
 
     ✓  Policy: reject — strongest enforcement
     ✓  pct=100 — policy applies to all mail
-    ✓  sp=reject — subdomain policy explicitly enforced
-    ✓  rua= aggregate reports collected at mailto:dmarc@anonaddy.uriports.com
+    ✓  rua= aggregate reports collected at 2 destinations
+         mailto:dmarc-feedback@fbi.gov
+         mailto:reports@dmarc.cyber.dhs.gov
 
     Record published:
-    v=DMARC1; p=reject; pct=100; rua=mailto:dmarc@anonaddy.uriports.com; ruf=mailto:dmarc@anonaddy.uriports.com; sp=reject; aspf=r; fo=1:d:s
+    v=DMARC1; p=reject; rua=mailto:dmarc-feedback@fbi.gov,mailto:reports@dmarc.cyber.dhs.gov; ruf=mailto:dmarc-feedback@fbi.gov; pct=100
 
 
-  MX records — addy.io
+  MX records — fbi.gov
 
     Priority   Host
     ────────   ────────────────────────────────────────────────────────────
-       10      mail.anonaddy.me
-       20      mail2.anonaddy.me
+       10      mx-east.fbi.gov
+       20      mx-west.fbi.gov
 
     (lower priority value = preferred)
 
 
-  Mail transport hardening — addy.io
+  Mail transport hardening — fbi.gov
 
-    ✓  MTA-STS published — mode=enforce (id=1750771576)
-    ✓  TLS-RPT reporting enabled — mailto:tlsrpt@anonaddy.uriports.com
-    ✓  DANE/TLSA published on all 2 MX hosts
-    ✓  DKIM key found at common selector(s): default
-       Checked: google, default, selector1, selector2, mail, k1
+    !  No MTA-STS — sending servers have no policy preventing fallback to plaintext SMTP
+    !  No TLS-RPT — no failure reporting for inbound mail TLS
+    ✗  No DANE/TLSA on any MX host — vulnerable to STARTTLS downgrade attacks
+    !  No DKIM at common selectors (google, default, selector1, selector2, mail, k1)
+       Partial check only — DKIM uses arbitrary selector names; absence at
+       common names proves nothing. Use rua= reports from DMARC to discover
+       the actual selectors in use.
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   DNS
@@ -128,26 +130,33 @@ OVERALL SCORE   76 / 82      █████████████████
 
   DNSSEC
 
-    ✓  .IO is signed — DNSSEC chain possible
+    ✓  .GOV is signed — DNSSEC chain possible
     ✓  Domain DNSSEC enabled and validated (DNSKEY present, AD flag confirmed)
 
 
   Nameservers
 
-    ✓  2 authoritative nameservers
+    ✓  4 authoritative nameservers
 
-       ns1.desec.io
-       ns2.desec.org
+       ns-cloud-e1.googledomains.com
+       ns-cloud-e2.googledomains.com
+       ns-cloud-e3.googledomains.com
+       ns-cloud-e4.googledomains.com
 
-       SOA primary    get.desec.io
-       SOA serial     2026045239
+       SOA primary    ns-cloud-e1.googledomains.com
+       SOA serial     1415240977
 
 
   Certification Authority Authorization (CAA)
 
-    ✓  CAA records published — 1 authorised CA
+    ✓  CAA records published — 6 authorised CAs
+         digicert.com
+         entrust.net
+         pki.goog
+         sectigo.com
+         amazon.com
          letsencrypt.org
-    ✓  Security reporting contact (iodef=) set
+    !  No security reporting contact (iodef=) — CAs cannot notify you of policy violations
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   IP / ASN / RPKI
@@ -155,9 +164,9 @@ OVERALL SCORE   76 / 82      █████████████████
 
   IPv4
 
-       Address    185.70.196.149
-       ASN       AS202053 — UPCLOUD UpCloud Ltd
-       Prefix    185.70.196.0/22
+       Address    104.16.148.244
+       ASN       AS13335 — CLOUDFLARENET - Cloudflare, Inc.
+       Prefix    104.16.144.0/20
 
     ✓  RPKI: valid — origin AS authorised by ROA
     ✓  IRR: prefix seen in RIS routing table
@@ -165,9 +174,10 @@ OVERALL SCORE   76 / 82      █████████████████
 
   IPv6
 
-       Address    2a04:3544:8000:1000:e8b5:6ff:fe29:56c
-       ASN       AS202053 — UPCLOUD UpCloud Ltd
-       Prefix    2a04:3544:8000::/34
+       Addresses (2)    2606:4700::6810:94f4
+                        2606:4700::6810:95f4
+       ASN       AS13335 — CLOUDFLARENET - Cloudflare, Inc.
+       Prefix    2606:4700::/44
 
     ✓  RPKI: valid — origin AS authorised by ROA
     ✓  IRR: prefix seen in RIS routing table
@@ -176,42 +186,42 @@ OVERALL SCORE   76 / 82      █████████████████
   TLS
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-    !  Negotiated TLSv1.2 — TLS 1.3 not supported
+    ✓  Negotiated TLSv1.3
     ✓  Certificate name matches domain
-       Matched by: addy.io
-    ✓  Certificate lifetime: 89 days — automated issuance likely
-       Issued: 2026-03-25
-       Expires: 2026-06-23
+       Matched by: fbi.gov
+    ✓  Certificate lifetime: 90 days — automated issuance likely
+       Issued: 2026-02-17
+       Expires: 2026-05-18
 
 
   Certificate
 
-       Issuer      E7
-       Issued      2026-03-25
-       Expires     2026-06-23
-       Lifetime    89 days
+       Issuer      WE1 (Google Trust Services)
+       Issued      2026-02-17
+       Expires     2026-05-18
+       Lifetime    90 days
 
-       SAN names (3):
-         *.addy.io
-         addy.io
-         mta-sts.help.addy.io
+       SAN names (2):
+         fbi.gov
+         *.fbi.gov
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   HTTP
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-    ✗  Response time: 1,235 ms
+    ✓  Response time: 156 ms
        Includes DNS + TCP + TLS handshake — not a pure HTTP RTT
-    !  HTTP/2 supported, HTTP/3 not advertised
+    ✓  HTTP/3 advertised
+       Alt-Svc: h3=":443"; ma=86400
     ✓  http:// redirects to HTTPS
-       final: https://addy.io/
+       final: https://www.fbi.gov/
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   HSTS
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
     ✓  Strict-Transport-Security header present
-    ✓  max-age=63,072,000 (730 days)
+    ✓  max-age=31,536,000 (365 days)
     ✓  includeSubDomains set
     ✓  Domain is on the HSTS preload list
 
@@ -219,30 +229,28 @@ OVERALL SCORE   76 / 82      █████████████████
   SERVER & TECHNOLOGY DISCLOSURE
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-    ✓  Server: nginx — reverse proxy / CDN
+    ✓  Server: cloudflare — reverse proxy / CDN
     ✓  X-Powered-By header not present
-    ✓  Server clock in sync with UTC (skew: +4s)
+    ✓  Server clock in sync with UTC (skew: +2s)
+
+
+  Technology stack
+
+       Generator: CastleCMS 3.1.0b8
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   BROWSER SECURITY HEADERS
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-    ✓  Content-Security-Policy set
-    ✓  CSP script-src: nonce/hash present
-    ✓  CSP object-src restricted ('none' or 'self')
-    ✓  CSP base-uri restricted (prevents <base> hijack)
-    ✓  CSP frame-ancestors restricted
-    ✓  X-Frame-Options: DENY
-       frame-ancestors also set in CSP
+    !  Content-Security-Policy not set
+    ✓  X-Frame-Options: SAMEORIGIN — header sent multiple times
     ✓  X-Content-Type-Options: nosniff
-    ✓  Referrer-Policy: no-referrer
-    ✓  Permissions-Policy set
+    !  Referrer-Policy not set
+    !  Permissions-Policy not set
     !  Cross-Origin-Opener-Policy not set
     !  Cross-Origin-Resource-Policy not set
-    ✓  X-XSS-Protection: 0 — explicitly disabled (correct, header is deprecated)
-
-    Raw Content-Security-Policy:
-    default-src 'none'; base-uri 'none'; form-action 'self' https://news.addy.io; connect-src 'self' https://app.addy.io/default-currency; manifest-src 'self'; frame-ancestors 'none'; script-src 'self' 'sha256-6qQWTVhBNcsGRyT26G26ZSIfLs+60+VhhX0ppPSgd50=' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='; img-src 'self' data:; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=' 'sha256-/8CvIhEkJqzXuPzY8k7p4wTZ1zjLlE7mi3UcNExd8ao='; font-src 'self'; frame-src 'none'; object-src 'none'; upgrade-insecure-requests;
+    !  X-XSS-Protection: 1; mode=block — header is deprecated; setting it can introduce XSS in older
+       browsers. Recommended: remove or set to 0
 
 
   Cookies (on homepage response)
@@ -254,21 +262,20 @@ OVERALL SCORE   76 / 82      █████████████████
   SECURITY CONTACT (RFC 9116 — security.txt)
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-    ✓  Contact: mailto:contact@help.addy.io
-    ✓  Expires: 2027-01-01T00:00:00.000Z
+    !  security.txt not found
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   SSL LABS (Qualys SSL Labs API · --ssl)
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-    ·  Assessed: 2026-04-29 12:01 UTC (3 hours ago)
-    ✓  Grade: A- (4/5)
-       Re-run anytime: https://www.ssllabs.com/ssltest/analyze.html?d=addy.io
+    ·  Assessed: 2026-04-30 10:49 UTC (9 hours ago)
+    ✓  Grade: A+ (5/5)
+       Re-run anytime: https://www.ssllabs.com/ssltest/analyze.html?d=fbi.gov
 
-    ·  Findings (3) — conditions affecting grade:
-    !  TLS 1.3 not supported
-    !  Session resumption broken (IDs returned but not resumed)
-    !  OCSP stapling not enabled
+    ·  Conditions reported by SSL Labs (2):
+    !  Session resumption: IDs returned but not resumed
+    !  14 weak cipher suite(s) offered: TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+       TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 + 11 more
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   PAGE ANALYSIS (--deep)
@@ -276,25 +283,28 @@ OVERALL SCORE   76 / 82      █████████████████
 
   Parser inventory
 
-       HTML inspected           123 KB
-       <script>                 3
-       <link rel=stylesheet>    1
-       <img>                    23
-       <input>                  3
+       HTML inspected           54 KB
+       <script>                 11
+       <link rel=stylesheet>    7
+       <img>                    27
+       <input>                  2
        <iframe>                 0
 
-    ✓  No external scripts/stylesheets — SRI not needed
+    ✗  No Subresource Integrity on any of the 2 external resources — a CDN compromise could inject
+       arbitrary code
     ✓  No mixed content detected
-    ✓  No third-party origins detected on the homepage
+    ·  Third-party origins: 2
+         dap.digitalgov.gov
+         www.googletagmanager.com
 
 
   Accessibility signals (indicative — not a WAVE/Axe substitute)
 
     ✓  <html lang="en">
-    ✓  All 23 <img> tag(s) have an alt attribute
-    ✓  All 3 form input(s) have a label
-    ✓  No empty <button> elements
-    ✓  No empty <a> elements
+    !  2/27 <img> tag(s) missing alt attribute (decorative images should still have alt="")
+    !  2/2 form input(s) without an associated label or aria-label
+    !  1 empty <button> element(s) (no text and no aria-label/title)
+    !  34 empty <a> element(s) (no text and no aria-label/title)
 
   A11y signals are not scored — they are reported for awareness only. For a full audit use WebAIM
   WAVE, Axe DevTools, or pa11y.
@@ -306,13 +316,13 @@ OVERALL SCORE   76 / 82      █████████████████
   Probing port 25 → EHLO → STARTTLS on each MX host. Many networks block port 25 egress; partial
   results are normal.
 
-    MX Host  mail.anonaddy.me
-    TLS      TLSv1.3
-    Detail   Issuer: E8  ·  Expires: 2026-07-07
+    MX Host  mx-east.fbi.gov
+    TLS      TLSv1.3  ← strong
+    Detail   Issuer: ZeroSSL RSA Domain Secure Site CA  ·  Expires: 2026-06-24
 
-    MX Host  mail2.anonaddy.me
-    TLS      TLSv1.3
-    Detail   Issuer: E8  ·  Expires: 2026-07-07
+    MX Host  mx-west.fbi.gov
+    TLS      TLSv1.3  ← strong
+    Detail   Issuer: ZeroSSL RSA Domain Secure Site CA  ·  Expires: 2026-06-24
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   SCAN

@@ -1,7 +1,7 @@
 ════════════════════════════════════════════════════════════════════════════════════════════════════
   Vendor Audit
   usa.gov
-  April 29, 2026 at 16:07 UTC   ·   v1.0
+  April 30, 2026 at 20:12 UTC   ·   v1.0
   https://github.com/chrono1313/Vendor-Audit
 ════════════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -184,7 +184,7 @@ OVERALL SCORE   49 / 65      █████████████████
   HTTP
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-    !  Response time: 484 ms
+    !  Response time: 500 ms
        Includes DNS + TCP + TLS handshake — not a pure HTTP RTT
     !  HTTP/2 supported, HTTP/3 not advertised
     !  HTTP port 80 open but no HTTPS redirect (got 404 from http://usa.gov)
@@ -206,7 +206,7 @@ OVERALL SCORE   49 / 65      █████████████████
 
     ✓  Server header not present
     ✓  X-Powered-By header not present
-    ✗  Server clock skew: +436s — large skew can break HSTS, OAuth, and certificate validation
+    ✗  Server clock skew: +821s — large skew can break HSTS, OAuth, and certificate validation
 
 
   Technology stack
@@ -241,12 +241,14 @@ OVERALL SCORE   49 / 65      █████████████████
   SSL LABS (Qualys SSL Labs API · --ssl)
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-    ·  Assessed: 2026-04-29 15:57 UTC (9 minutes ago)
+    ·  Assessed: 2026-04-30 20:14 UTC (0 minutes ago)
     ✓  Grade: A+ (5/5)
        Re-run anytime: https://www.ssllabs.com/ssltest/analyze.html?d=usa.gov
 
-    ·  Findings (1) — conditions affecting grade:
+    ·  Conditions reported by SSL Labs (3):
     !  OCSP stapling not enabled
+    !  TLS session tickets not enabled
+    !  CAA DNS record not published
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   PAGE ANALYSIS (--deep)
