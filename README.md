@@ -16,7 +16,7 @@ minutes per domain because SSL Labs runs the assessment server-side.
 ## Demo Video
 
 ```bash
-python '.\vendor_audit.py' --ssl email@example.com --deep --report --domain addy.io
+vendor-audit --ssl email@example.com --deep --report --domain addy.io
 ```
 
 [vendor_audit_example.webm](https://github.com/user-attachments/assets/a35e5c2f-12ad-42db-957f-41ac44dee42d)
@@ -97,15 +97,24 @@ and a basic accessibility subset.
 
 ## Installation
 
-### Via pipx (recommended)
-
-[pipx](https://pipx.pypa.io/) installs the tool into its own isolated
-virtualenv and puts a `vendor-audit` command on your `PATH`, so you don't
-have to manage dependencies by hand:
+### Via pipx (recommended, all platforms)
 
 ```bash
 pipx install git+https://github.com/chrono1313/Vendor-Audit.git
 vendor-audit --help
+```
+
+Pipx installs the tool into its own isolated virtualenv and puts a `vendor-audit` 
+command on your `PATH`, so dependenciesdon't collide with anything else on the 
+system. This is the smoothest path on modern Linux distros.
+
+```bash
+# Install pipx itself if you don't already have it
+sudo apt install pipx          # Debian / Ubuntu
+sudo dnf install pipx          # Fedora
+brew install pipx              # macOS
+python -m pip install --user pipx   # Windows or fallback
+pipx ensurepath                 # add pipx's bin dir to PATH; new shell required
 ```
 
 To upgrade later:
@@ -120,48 +129,40 @@ To uninstall cleanly:
 pipx uninstall vendor-audit
 ```
 
-### From a clone
+### From a clone (for development)
 
-Python 3.10 or later. Clone the repo and install dependencies:
+Python 3.10 or later. Use this method if you intend to modify the code.
 
-On Linux via apt:
+```bash
+git clone https://github.com/chrono1313/Vendor-Audit.git
+cd Vendor-Audit
+pip install -r requirements.txt
+python -m vendor_audit --help
+```
+
+On Linux, if `pip install` is blocked by PEP 668 and you'd rather not use a
+venv, the dependencies are also packaged by Debian/Ubuntu:
 
 ```bash
 sudo apt install python3-dnspython python3-requests python3-httpx python3-tldextract
-git clone https://github.com/chrono1313/vendor-audit.git
-cd vendor-audit
-python3 vendor_audit.py --help
-
-```
-
-On Windows:
-
-```bash
-git clone https://github.com/chrono1313/vendor-audit.git
-cd vendor-audit
-pip install -r requirements.txt
-python vendor_audit.py --help
 ```
 
 ## Usage
 
-> If you installed via `pipx`, use `vendor-audit` everywhere the examples
-> below say `python vendor_audit.py`. The flags are identical.
-
 ### Single domain
 
 ```bash
-python vendor_audit.py example.com                    # terminal report only
-python vendor_audit.py example.com --outcsv out.csv   # also write CSV
-python vendor_audit.py example.com --report           # also write .txt report
-python vendor_audit.py example.com --json             # raw JSON for piping
+vendor-audit example.com                    # terminal report only
+vendor-audit example.com --outcsv out.csv   # also write CSV
+vendor-audit example.com --report           # also write .txt report
+vendor-audit example.com --json             # raw JSON for piping
 ```
 
 ### Bulk (one domain per line)
 
 ```bash
-python vendor_audit.py --file domains.txt --outcsv results.csv
-python vendor_audit.py --file domains.txt --outcsv results.csv --report reports/
+vendor-audit --file domains.txt --outcsv results.csv
+vendor-audit --file domains.txt --outcsv results.csv --report reports/
 ```
 
 In bulk mode, domains are audited in parallel (10 at a time by default,
@@ -189,7 +190,7 @@ Default-mode runs typically complete in 1–2 seconds per domain. `--deep` adds
 Requires a one-time email registration with Qualys (free):
 
 ```bash
-python vendor_audit.py --sslregistration --ssl your@email.com
+vendor-audit --sslregistration --ssl your@email.com
 ```
 
 The grade contributes 5 points to the score, and the report includes a
@@ -200,6 +201,9 @@ certificate chain issues, etc.).
 SSL Labs assessments take 60–120 seconds per domain and are run sequentially
 to respect the API rate limit; cached reports up to 24 hours old are accepted
 by default (override with `--ssl-no-cache`).
+
+> **Running from a clone instead of a pipx install?** Replace `vendor-audit`
+> in any example above with `python -m vendor_audit`. The flags are identical.
 
 ## Output
 
