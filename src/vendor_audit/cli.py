@@ -144,8 +144,8 @@ if _MISSING:
     sys.exit(1)
 
 # Now safe to import the rest of the package
-import audit_checks
-from audit_checks import (
+from . import audit_checks
+from .audit_checks import (
     check_spf, check_dmarc, check_mx, check_ip_routing, check_dnssec,
     check_tls, check_http_version, check_hsts, check_redirect,
     check_http_redirect, check_security_txt, check_server_header,
@@ -160,7 +160,7 @@ from audit_checks import (
     # 2.9.0 additions
     check_os_eol,
 )
-from audit_render import (
+from .audit_render import (
     render, results_to_csv_row, error_csv_row, CSV_FIELDS,
     BOLD, GREY, RED, GREEN, YELLOW, CYAN, RESET, c,
 )
@@ -171,8 +171,8 @@ from audit_render import (
 # updated one file but not the others — fail loudly at startup rather than
 # producing subtly wrong scores.
 
-import audit_render  # for version check
-import audit_txt_report  # for version check
+from . import audit_render  # for version check
+from . import audit_txt_report  # for version check
 _RUBRIC_VERSION = audit_checks.RUBRIC.get("rubric_version", "?")
 _VERSIONS = {
     "vendor_audit.py":      __version__,

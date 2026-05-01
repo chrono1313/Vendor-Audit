@@ -97,6 +97,31 @@ and a basic accessibility subset.
 
 ## Installation
 
+### Via pipx (recommended)
+
+[pipx](https://pipx.pypa.io/) installs the tool into its own isolated
+virtualenv and puts a `vendor-audit` command on your `PATH`, so you don't
+have to manage dependencies by hand:
+
+```bash
+pipx install git+https://github.com/chrono1313/Vendor-Audit.git
+vendor-audit --help
+```
+
+To upgrade later:
+
+```bash
+pipx upgrade vendor-audit
+```
+
+To uninstall cleanly:
+
+```bash
+pipx uninstall vendor-audit
+```
+
+### From a clone
+
 Python 3.10 or later. Clone the repo and install dependencies:
 
 On Linux via apt:
@@ -119,6 +144,9 @@ python vendor_audit.py --help
 ```
 
 ## Usage
+
+> If you installed via `pipx`, use `vendor-audit` everywhere the examples
+> below say `python vendor_audit.py`. The flags are identical.
 
 ### Single domain
 
