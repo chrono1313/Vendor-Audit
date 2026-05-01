@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vendor-audit"
+version = "1.0"
+description = "A lightweight, fast, passive security and maturity check for a domain or list of domains."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    { name = "chrono1313" },
+]
+keywords = [
+    "security",
+    "audit",
+    "dns",
+    "tls",
+    "dmarc",
+    "spf",
+    "dnssec",
+    "vendor",
+    "due-diligence",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Name Service (DNS)",
+    "Topic :: Security",
+    "Topic :: System :: Networking :: Monitoring",
+]
+
+# Versions mirror requirements.txt; see that file for rationale.
+dependencies = [
+    "dnspython>=2.4",
+    "requests>=2.31",
+    "httpx[http2]>=0.25",
+    "tldextract>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/chrono1313/Vendor-Audit"
+Repository = "https://github.com/chrono1313/Vendor-Audit"
+Issues = "https://github.com/chrono1313/Vendor-Audit/issues"
+
+[project.scripts]
+vendor-audit = "vendor_audit:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship the JSON data files alongside the Python modules. audit_checks.py loads
+# these via os.path.dirname(__file__) at import time, so they must travel with
+# the package wheel.
+vendor_audit = [
+    "scoring_rubric.json",
+    "library_eol.json",
+    "os_eol.json",
+]

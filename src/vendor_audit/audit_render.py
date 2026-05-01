@@ -38,7 +38,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from audit_checks import (
+from .audit_checks import (
     RUBRIC, classify_server, score_results,
     _org_domain, STRONG_REFERRER_POLICIES,
 )
