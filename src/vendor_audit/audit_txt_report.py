@@ -368,7 +368,7 @@ class _ReportData:
         # Defer import to runtime to avoid a circular dependency at module
         # load time. audit_checks imports nothing from this file, so this
         # cycle exists only because the report needs the score function.
-        from audit_checks import score_results, RUBRIC
+        from .audit_checks import score_results, RUBRIC
 
         earned, possible, breakdown = score_results(results)
         self.earned        = earned
@@ -1572,7 +1572,7 @@ def _render_server_disclosure_section(data):
 
     val = srv.get("server")
     try:
-        from audit_checks import classify_server
+        from .audit_checks import classify_server
         kind = classify_server(val)
     except Exception:
         kind = "unknown"
