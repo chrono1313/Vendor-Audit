@@ -101,7 +101,6 @@ and a basic accessibility subset.
 
 ```bash
 pipx install git+https://github.com/chrono1313/Vendor-Audit.git
-vendor-audit --help
 ```
 
 Pipx installs the tool into its own isolated virtualenv and puts a `vendor-audit` 
