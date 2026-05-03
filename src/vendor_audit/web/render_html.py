@@ -331,8 +331,10 @@ def _render_executive_summary_html(data):
 
     Each row is a (severity, category, display_text, earned, possible)
     tuple. We group fail+warn into "Possible Issues", show info, and
-    fold "pass" into a collapsed details block (passes are useful to
-    confirm but not what someone shares a report to discuss).
+    show passes expanded — passes are evidence the vendor is doing the
+    right thing, and the report's value to a vendor is in seeing what
+    they got right alongside what needs work. Informational stays
+    collapsed by default since it's the lowest-signal group.
     """
     rows = getattr(data, 'finding_rows', None)
     if rows is None:
@@ -358,7 +360,7 @@ def _render_executive_summary_html(data):
                                         open_=False))
     if by_sev["pass"]:
         out.append(_findings_block_html(
-            "Passing", by_sev["pass"], open_=False,
+            "Passing", by_sev["pass"], open_=True,
         ))
 
     if not (issues or by_sev["info"] or by_sev["pass"]):
