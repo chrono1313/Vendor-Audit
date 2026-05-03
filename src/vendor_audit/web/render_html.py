@@ -223,6 +223,17 @@ def render_result(envelope: dict) -> str:
 
     parts.append(_render_header_html(data, domain, audit_domain,
                                      timestamp, duration_ms))
+    # Partial-results banner. When run_audit hits its wall-clock
+    # deadline, results._partial is True and _partial_reason is a
+    # human-readable explanation. We surface this up top so the user
+    # doesn't read the report as a complete audit.
+    if data.results.get("_partial"):
+        parts.append(
+            f'<div class="partial-banner" role="alert">'
+            f'  <strong>Partial audit:</strong> '
+            f'{_h(data.results.get("_partial_reason") or "Some checks did not complete.")}'
+            f'</div>'
+        )
     parts.append(_render_action_bar_html(data, domain))
     parts.append(_render_score_panel_html(data))
     parts.append(_render_executive_summary_html(data))
@@ -801,6 +812,23 @@ body {
   border-left: 3px solid var(--warn);
   border-radius: 0 3px 3px 0;
   font-size: 0.92rem;
+}
+/* Partial-audit banner shown when run_audit hits its wall-clock
+   deadline. Higher visibility than the redirect notice — it's a
+   warning that the report below is incomplete, and the user should
+   know that before they share or score it. */
+.partial-banner {
+  background: var(--fail-bg);
+  color: var(--fail);
+  padding: 0.7rem 1rem;
+  margin: 0 0 1rem;
+  border-left: 4px solid var(--fail);
+  border-radius: 0 4px 4px 0;
+  font-size: 0.95rem;
+}
+.partial-banner strong {
+  font-weight: 600;
+  margin-right: 0.4rem;
 }
 .redirect-notice strong { font-family: ui-monospace, monospace; }
 /* .scan-meta layout is centered (see header block above); these are the

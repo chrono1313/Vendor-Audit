@@ -65,10 +65,15 @@ log = logging.getLogger("vendor_audit.web")
 # on a 2-vCPU VM. Override with VENDOR_AUDIT_WORKERS for tuning.
 WORKERS = int(os.environ.get("VENDOR_AUDIT_WORKERS", "3"))
 
-# Wall-clock cap per audit, in seconds. Tight enough to keep a single-worker
-# stall from cascading; loose enough that a healthy default-mode audit
-# (typically 1-3s, occasionally 5s on a slow vendor) finishes comfortably.
-AUDIT_TIMEOUT_S = int(os.environ.get("VENDOR_AUDIT_TIMEOUT_S", "30"))
+# Wall-clock cap per audit at the web layer. The audit itself has its own
+# internal deadlines (run_audit caps the parallel-checks pool at ~25s and
+# the post-pool jobs at another ~12s — see audit.AUDIT_WALL_DEADLINE_S).
+# This timeout is the *outer* safety net: if even those deadlines are
+# bypassed somehow (a stuck C-level call, a runaway Python loop), the
+# web layer gives up after this many seconds and returns an error page,
+# leaving the worker process to be reaped or recycled by the pool logic.
+# 45s leaves slack above the audit's ~37s worst case.
+AUDIT_TIMEOUT_S = int(os.environ.get("VENDOR_AUDIT_TIMEOUT_S", "45"))
 
 # Per-IP rate limits. Tuned by handoff guidance ("~3 per 10s") but expressed
 # as slowapi-compatible strings. The /audit POST endpoint is the expensive

@@ -36,12 +36,28 @@ from __future__ import annotations
 import logging
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    ThreadPoolExecutor, as_completed,
+    TimeoutError as FutureTimeoutError,
+)
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
 import idna
+
+
+# Wall-clock budget for a single audit. If the parallel-checks pool hasn't
+# completed by this many seconds, we collect what we have, mark the rest as
+# deadline-skipped, and return a partial-results envelope. Without this
+# bound, an unreachable host (one that drops packets rather than refusing
+# them — e.g. localhost.com pointing at 74.125.224.72) ties up a worker
+# until every individual check's timeout fires sequentially, which can
+# total well over a minute. The web layer's per-request timeout is 30s,
+# so we set this to 25s — leaves headroom for post-pool synthesis (CSP
+# analysis, cert variant, exec summary) and for the web layer to render
+# the result page.
+AUDIT_WALL_DEADLINE_S = 25
 
 from . import audit_checks
 from .audit_checks import (
@@ -262,16 +278,44 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
             return None, time.monotonic() - t0, e
 
     pool_t0 = time.monotonic()
+    partial_envelope_reason = None
     with ThreadPoolExecutor(max_workers=len(all_checks)) as ex:
         futures = {ex.submit(_timed, fn, target): key for key, fn, target in all_checks}
-        for future in as_completed(futures):
-            key = futures[future]
-            res, elapsed, exc = future.result()
-            check_timings[key] = round(elapsed, 3)
-            if exc is not None:
-                results[key] = {"error": str(exc)}
-            else:
-                results[key] = res
+        try:
+            for future in as_completed(futures, timeout=AUDIT_WALL_DEADLINE_S):
+                key = futures[future]
+                res, elapsed, exc = future.result()
+                check_timings[key] = round(elapsed, 3)
+                if exc is not None:
+                    results[key] = {"error": str(exc)}
+                else:
+                    results[key] = res
+        except FutureTimeoutError:
+            # Wall-clock deadline tripped while still iterating. Mark
+            # unfinished checks as deadline-skipped and continue.
+            #
+            # Threads that haven't finished cannot be cancelled in Python
+            # (no kill API), but they will wind down on their own — every
+            # network call inside audit_checks has its own _http_timeout
+            # bound. We just stop *waiting* for them. The thread pool's
+            # context manager will block on .join() at exit; that's
+            # bounded by the per-check timeouts, so worst case adds a few
+            # seconds. Acceptable.
+            unfinished = [(fut, key) for fut, key in futures.items() if not fut.done()]
+            for fut, key in unfinished:
+                results[key] = {"error":
+                    f"Skipped: audit deadline ({AUDIT_WALL_DEADLINE_S}s) reached"}
+                check_timings[key] = AUDIT_WALL_DEADLINE_S
+            partial_envelope_reason = (
+                f"{len(unfinished)} of {len(all_checks)} checks did not "
+                f"complete within {AUDIT_WALL_DEADLINE_S}s. The host may "
+                "be unreachable (packets dropped rather than refused). "
+                "Findings shown are based on the checks that completed."
+            )
+            log.warning(
+                "audit deadline exceeded for %s: %d/%d checks unfinished",
+                domain, len(unfinished), len(all_checks),
+            )
     check_timings["_pool_wall"] = round(time.monotonic() - pool_t0, 3)
 
     # ── Post-server-header derived analyses (synchronous, near-instant) ──
@@ -384,21 +428,47 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
 
             with ThreadPoolExecutor(max_workers=len(post_pool_jobs)) as pp_ex:
                 pp_futs = {pp_ex.submit(_timed_call, fn): key for key, fn in post_pool_jobs}
-                for fut in as_completed(pp_futs):
-                    key = pp_futs[fut]
-                    res, elapsed, exc = fut.result()
-                    check_timings[key] = round(elapsed, 3)
-                    if exc is not None:
-                        if key == "page_signals":
-                            results[key] = {"parsed": False, "error": str(exc)}
-                        elif key == "versioned_libs":
-                            results[key] = {"libraries": [], "any_eol": False, "error": str(exc)}
-                        elif key in ("dane", "redirect_target_dane", "starttls_mx"):
-                            results[key] = {"error": str(exc)}
+                # Post-pool deadline: shorter than the main pool's because
+                # these are fewer, mostly faster jobs. Same blackhole-host
+                # protection — without this, mta_sts_policy on an
+                # unreachable domain could hang for the full _http_timeout
+                # plus retries.
+                pp_deadline = max(10, AUDIT_WALL_DEADLINE_S // 2)
+                try:
+                    for fut in as_completed(pp_futs, timeout=pp_deadline):
+                        key = pp_futs[fut]
+                        res, elapsed, exc = fut.result()
+                        check_timings[key] = round(elapsed, 3)
+                        if exc is not None:
+                            if key == "page_signals":
+                                results[key] = {"parsed": False, "error": str(exc)}
+                            elif key == "versioned_libs":
+                                results[key] = {"libraries": [], "any_eol": False, "error": str(exc)}
+                            elif key in ("dane", "redirect_target_dane", "starttls_mx"):
+                                results[key] = {"error": str(exc)}
+                            else:
+                                results[key] = {"fetched": False, "error": str(exc)}
                         else:
-                            results[key] = {"fetched": False, "error": str(exc)}
-                    else:
-                        results[key] = res
+                            results[key] = res
+                except FutureTimeoutError:
+                    # Same handling as the main pool: mark unfinished
+                    # jobs and continue. Surfaces as a partial-results
+                    # banner via the same _partial_reason channel.
+                    unfinished_pp = [(f, k) for f, k in pp_futs.items() if not f.done()]
+                    for fut, key in unfinished_pp:
+                        results[key] = {"error":
+                            f"Skipped: post-pool deadline ({pp_deadline}s) reached"}
+                        check_timings[key] = pp_deadline
+                    if partial_envelope_reason is None:
+                        partial_envelope_reason = (
+                            f"{len(unfinished_pp)} of {len(post_pool_jobs)} "
+                            f"post-pool checks did not complete within "
+                            f"{pp_deadline}s. The host may be unreachable."
+                        )
+                    log.warning(
+                        "post-pool deadline exceeded for %s: %d/%d unfinished",
+                        domain, len(unfinished_pp), len(post_pool_jobs),
+                    )
 
     # ── OS EOL detection (default mode) ──────────────────────────────────
     # Pure CPU on data already collected (Server header + TLS result), so
@@ -430,6 +500,13 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
     }
 
     log.info("done %s (%.1fs)", domain, scan_elapsed)
+
+    # If the wall-clock deadline tripped, surface that to the renderer so
+    # the user sees "audit is partial" up front, not just missing data
+    # in the per-section views.
+    if partial_envelope_reason is not None:
+        results["_partial"] = True
+        results["_partial_reason"] = partial_envelope_reason
 
     return {
         "domain":       domain,

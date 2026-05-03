@@ -2392,6 +2392,17 @@ def _render_text(data):
     out.append("")
     out.append("")
 
+    # Partial-audit banner. Mirrors the web result page's banner so the
+    # downloadable .txt is also clearly marked as incomplete when the
+    # audit hit its wall-clock deadline.
+    if data.results.get("_partial"):
+        reason = data.results.get("_partial_reason") or \
+            "Some checks did not complete."
+        out.append("  ⚠ PARTIAL AUDIT")
+        out.append(f"    {reason}")
+        out.append("")
+        out.append("")
+
     if redirected and data.audit_domain != data.original_domain:
         out.append(f"  Redirect: {data.original_domain} redirects to {data.audit_domain}.")
         out.append("  Email is audited for both domains; web / TLS reflects the destination.")
