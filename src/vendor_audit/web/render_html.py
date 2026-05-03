@@ -620,12 +620,16 @@ def _render_action_bar_html(data, domain):
         f'download>Download as .txt</a>'
     )
     # Re-audit re-runs against the same domain. Done as a real <form>
-    # POST (not a GET link) so it reuses the existing /audit POST
-    # endpoint, including its rate limit. Styled as a link via .as-link
-    # so it matches the surrounding action-bar items visually.
+    # GET to /audit/result with fresh=1 — bypasses the HTML cache so
+    # re-audit always runs a fresh audit. Going directly to /result
+    # also skips the loading-page flash, which would otherwise feel
+    # gratuitous on a button explicitly labeled "Re-audit".
+    # Styled as a link via .as-link so it matches the surrounding
+    # action-bar items visually.
     out.append(
-        f'    <form class="reaudit-form" method="get" action="/audit">'
+        f'    <form class="reaudit-form" method="get" action="/audit/result">'
         f'<input type="hidden" name="domain" value="{_h(domain)}">'
+        f'<input type="hidden" name="fresh" value="1">'
         f'<button type="submit" class="as-link">Re-audit this domain</button>'
         f'</form>'
     )
@@ -650,8 +654,9 @@ def _render_footer_html(data, domain):
         f'download>Download as .txt</a>'
     )
     out.append(
-        f'    <form class="reaudit-form" method="get" action="/audit">'
+        f'    <form class="reaudit-form" method="get" action="/audit/result">'
         f'<input type="hidden" name="domain" value="{_h(domain)}">'
+        f'<input type="hidden" name="fresh" value="1">'
         f'<button type="submit" class="as-link">Re-audit this domain</button>'
         f'</form>'
     )

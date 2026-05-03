@@ -62,9 +62,13 @@ log = logging.getLogger("vendor_audit.web")
 
 # ── Configuration (env vars, with sensible defaults for dev) ─────────────────
 
-# Number of process-pool workers. Audits are I/O bound; a small pool is fine
-# on a 2-vCPU VM. Override with VENDOR_AUDIT_WORKERS for tuning.
-WORKERS = int(os.environ.get("VENDOR_AUDIT_WORKERS", "3"))
+# Number of process-pool workers. Audits are I/O bound (network), so the
+# CPU per worker is low — concurrency is dominated by socket waits. 8
+# workers gives comfortable headroom for ~50-100 simultaneous visitors
+# while staying well within memory bounds (each worker is ~150MB resident,
+# so 8 workers = ~1.2GB). Override with VENDOR_AUDIT_WORKERS for tuning;
+# the right value depends on memory budget and expected peak concurrency.
+WORKERS = int(os.environ.get("VENDOR_AUDIT_WORKERS", "8"))
 
 # Wall-clock cap per audit at the web layer. The audit itself has its own
 # internal deadlines: check_redirect (6s hard), parallel-checks pool
@@ -105,6 +109,27 @@ TXT_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_TXT_CACHE_TTL_S", "300"))
 # ~25MB. The web service's MemoryMax is 512MB; this cap keeps the cache
 # well within bounds even under heavy distinct-domain traffic.
 TXT_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_TXT_CACHE_MAX", "500"))
+
+# ── HTML result-page cache ────────────────────────────────────────────────────
+#
+# Caches the rendered result-page HTML for each audited domain. The reason
+# is the viral-link case: a popular share of a single audit URL drives
+# many simultaneous requests, all of which would otherwise run identical
+# audits. With this cache, only the first hit pays the audit cost; the
+# next 60 seconds of hits return the cached HTML.
+#
+# 60 seconds matches the typical "viral burst" window — long enough to
+# absorb most clicks from a single share post, short enough that the
+# displayed audit timestamp doesn't feel stale.
+#
+# Re-audit form posts append ?fresh=1 to bypass the cache (and refresh
+# the cache entry with the new result), so a user explicitly asking for
+# a fresh audit always gets one.
+HTML_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_TTL_S", "60"))
+
+# Hard cap on the number of result-page cache entries. ~50KB each, so
+# 200 entries = ~10MB. Generous viral burst margin.
+HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "200"))
 
 
 # ── In-memory .txt cache ─────────────────────────────────────────────────────
@@ -151,6 +176,41 @@ def _txt_cache_set(key: str, value):
         oldest_key = min(_txt_cache, key=lambda k: _txt_cache[k][2])
         _txt_cache.pop(oldest_key, None)
     _txt_cache[key] = (text, headers, expires)
+
+
+# Result-page HTML cache. Same shape as the TXT cache (lazy expiry on
+# read, prune on write at capacity) but caches rendered HTML strings
+# instead of txt+headers pairs. Single-process; shared across all
+# requests since rendering happens in the FastAPI parent process, not
+# the worker pool.
+#
+# Entries: {domain: (html_string, expires_at_unix_seconds)}
+
+_html_cache: dict = {}
+
+
+def _html_cache_get(key: str):
+    """Return cached HTML if present and not expired, else None."""
+    entry = _html_cache.get(key)
+    if entry is None:
+        return None
+    html, expires = entry
+    if time.time() >= expires:
+        _html_cache.pop(key, None)
+        return None
+    return html
+
+
+def _html_cache_set(key: str, html: str):
+    """Store rendered HTML with HTML_CACHE_TTL_S TTL.
+
+    Same approximate-LRU eviction as the TXT cache.
+    """
+    expires = time.time() + HTML_CACHE_TTL_S
+    if len(_html_cache) >= HTML_CACHE_MAX_ENTRIES and key not in _html_cache:
+        oldest_key = min(_html_cache, key=lambda k: _html_cache[k][1])
+        _html_cache.pop(oldest_key, None)
+    _html_cache[key] = (html, expires)
 
 
 # security.txt content (RFC 9116). Configured via env so the operator can
@@ -533,20 +593,25 @@ async def audit_get(request: Request, domain: str = ""):
 
 @app.get("/audit/result", include_in_schema=False)
 @limiter.limit(LIMIT_AUDIT)
-async def audit_result(request: Request, domain: str = ""):
+async def audit_result(request: Request, domain: str = "", fresh: int = 0):
     """Actual audit-running endpoint. Renders the result page.
 
     Shape: same as the old /audit GET — validate, run audit, render.
     Reachable directly (e.g. bookmarked from the URL bar) and reached
     via meta refresh from /audit. Also where the form page submits
     its result requests via the GET form.
+
+    fresh=1 bypasses the result-page HTML cache (and refreshes the
+    cache entry with the new result). The re-audit form submits with
+    fresh=1 so a user explicitly asking for a fresh audit always gets
+    one, not a 60-second-old cache hit.
     """
     if not domain or not domain.strip():
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-    return await _run_audit_and_render(request, domain)
+    return await _run_audit_and_render(request, domain, fresh=bool(fresh))
 
 
-async def _run_audit_and_render(request: Request, domain: str):
+async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = False):
     """Shared audit→render flow used by both POST and GET /audit.
 
     Returns:
@@ -556,6 +621,10 @@ async def _run_audit_and_render(request: Request, domain: str):
 
     The validation step runs synchronously (DNS resolution included via
     the SSRF guard); the audit itself goes to the worker pool.
+
+    fresh=True bypasses the HTML cache check; the audit runs and the
+    new result is stored in the cache. fresh=False (default) returns a
+    cached result if one exists, otherwise runs the audit and caches.
     """
     try:
         validated = validate_domain_input(domain)
@@ -572,16 +641,31 @@ async def _run_audit_and_render(request: Request, domain: str):
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
+    # Cache check. Hits return instantly without burning a worker. Skipped
+    # when fresh=True (re-audit). The cache key is the validated domain so
+    # 'Example.com', ' example.com ', etc. all share a cache entry. Errors
+    # are not cached (the user should retry promptly, not wait 60s).
+    if not fresh:
+        cached_html = _html_cache_get(validated.domain)
+        if cached_html is not None:
+            log.info("audit cache hit: domain=%r ip=%s",
+                     validated.domain, _client_ip(request))
+            return HTMLResponse(content=cached_html)
+
     log.info(
-        "audit request: original=%r normalized=%r addresses=%s ip=%s",
+        "audit request: original=%r normalized=%r addresses=%s ip=%s%s",
         validated.original, validated.domain,
         ",".join(validated.addresses), _client_ip(request),
+        " fresh=1" if fresh else "",
     )
 
     envelope = await _run_audit_in_pool(request.app.state.pool, validated.domain)
 
     if envelope["ok"]:
         body = render_html.render_result(envelope)
+        # Store in cache regardless of fresh flag — fresh requests should
+        # update the cache so subsequent hits get the latest result.
+        _html_cache_set(validated.domain, body)
         return HTMLResponse(content=body)
     else:
         return templates.TemplateResponse(
