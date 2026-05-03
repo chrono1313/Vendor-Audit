@@ -182,6 +182,7 @@ def render_result(envelope: dict) -> str:
 
     parts.append(_render_header_html(data, domain, audit_domain,
                                      timestamp, duration_ms))
+    parts.append(_render_action_bar_html(data, domain))
     parts.append(_render_score_panel_html(data))
     parts.append(_render_executive_summary_html(data))
     parts.append(_render_detail_sections_html(data))
@@ -200,8 +201,10 @@ def _render_header_html(data, domain, audit_domain, timestamp, duration_ms):
     ts_human = _format_timestamp(timestamp)
 
     out = ['<header class="report-header">']
-    out.append(f'  <div class="logo">{_LOGO_SVG}</div>')
-    out.append('  <div class="brand">Vendor Audit</div>')
+    out.append('  <a class="brand-link" href="/" aria-label="Vendor Audit home">')
+    out.append(f'    <div class="logo">{_LOGO_SVG}</div>')
+    out.append('    <div class="brand">Vendor Audit</div>')
+    out.append('  </a>')
     out.append(f'  <h1 class="domain">{_h(domain)}</h1>')
     if redirected:
         out.append(
@@ -558,6 +561,29 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
 
 # ── Footer ───────────────────────────────────────────────────────────────────
 
+def _render_action_bar_html(data, domain):
+    """Render the same actions+info as the footer, but as a top-of-report
+    element. Lets a reader download the .txt or audit another domain
+    without scrolling all the way down past the detail sections.
+
+    Same DOM as the footer (so existing CSS reuses), but with a
+    .top-action-bar marker class for any positioning tweaks. The slowest-
+    checks panel is omitted up here — that's diagnostic info that belongs
+    after the report, not before it. The version line is also omitted up
+    top; one footer is enough for that.
+    """
+    out = ['<aside class="top-action-bar">']
+    out.append('  <div class="footer-actions">')
+    out.append(
+        f'    <a class="download-link" href="/audit/{_h(domain)}.txt" '
+        f'download>Download as .txt</a>'
+    )
+    out.append('    <a href="/">Audit another domain</a>')
+    out.append('  </div>')
+    out.append('</aside>')
+    return "\n".join(out)
+
+
 def _render_footer_html(data, domain):
     timings = data.results.get("_scan", {}).get("check_timings", {})
     slow = sorted(
@@ -628,6 +654,7 @@ _DOC_HEAD = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 :root {
   --bg: rgb(40, 40, 38);          /* warm dark — the requested page bg */
@@ -663,6 +690,15 @@ body {
   margin-bottom: 1.4rem;
   text-align: center;
 }
+.brand-link {
+  /* The logo + brand are wrapped in a link to "/" so users can return to
+     the form without using the back button. We undo the default link
+     coloring here so it doesn't paint the logo blue and the wordmark blue. */
+  display: inline-block;
+  color: inherit;
+  text-decoration: none;
+}
+.brand-link:hover .brand { color: var(--accent); }
 .logo {
   display: block;
   width: 48px;
@@ -913,6 +949,16 @@ body {
   font-size: 0.85rem;
   color: var(--muted);
 }
+/* Top action bar — same visual treatment as the footer's actions row,
+   inverted (border-bottom rather than border-top) so it reads as a divider
+   between the header and the score panel below it. */
+.top-action-bar {
+  margin-bottom: 1.4rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.top-action-bar .footer-actions { margin-bottom: 0; }
 .footer-actions { margin-bottom: 0.6rem; }
 .footer-actions a {
   margin-right: 1.2rem;

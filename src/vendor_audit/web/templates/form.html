@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vendor Audit — passive domain security audit</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
   :root {
     --bg: rgb(40, 40, 38);
@@ -24,11 +25,27 @@
     padding: 2rem 1rem;
     box-sizing: border-box;
   }
+  /* On phones, content is taller than the viewport — centering pushes the
+     logo lower than it should be, and the 2rem top padding wastes scarce
+     vertical real-estate. Top-align the content and tighten the padding so
+     the brand sits where the eye expects it. */
+  @media (max-width: 600px) {
+    body {
+      place-items: start center;
+      padding: 1rem 1rem 2rem;
+    }
+  }
   main {
     max-width: 560px;
     width: 100%;
     text-align: center;
   }
+  .brand-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+  }
+  .brand-link:hover h1 { color: var(--accent); }
   .logo {
     width: 48px;
     height: 48px;
@@ -84,7 +101,17 @@
     border-top: 1px solid var(--border);
     padding-top: 1.2rem;
   }
+  .what h2 {
+    /* These are introductory headings inside the explainer block —
+       smaller than the page H1, and slightly brighter than the muted
+       body text so they punctuate without dominating. */
+    font-size: 1rem;
+    color: var(--fg);
+    margin: 0 0 0.6rem;
+  }
+  .what h2:not(:first-child) { margin-top: 1.5rem; }
   .what p { margin: 0 0 0.8rem; }
+  .what strong { color: var(--fg); }
   .what code {
     font: 0.9em ui-monospace, monospace;
     background: rgba(255, 255, 255, 0.06);
@@ -102,6 +129,7 @@
 </head>
 <body>
 <main>
+<a class="brand-link" href="/" aria-label="Vendor Audit home">
 <div class="logo">
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="va-title va-desc">
   <title id="va-title">Vendor Audit</title>
@@ -117,7 +145,8 @@
 </svg>
 </div>
 <h1>Vendor Audit</h1>
-<p class="lede">A passive, evidence-based check of a domain's DNS, email, TLS, and HTTP posture.</p>
+</a>
+<p class="lede">A passive check of a domain's security and best-practice posture.</p>
 
 <form method="post" action="/audit">
   <input type="text" name="domain" placeholder="example.com"
@@ -133,16 +162,44 @@
 </form>
 
 <section class="what">
-  <p>Type a domain (or paste a URL — schemes and paths are stripped). The audit checks SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS configuration, HSTS, HTTP/2 and HTTP/3 support, security headers, cookie attributes, EOL libraries and operating systems, and more — about 60 scored checks against published RFCs, W3C specs, OWASP guidance, and CA/Browser Forum baselines.</p>
+  <h2>How this is meant to be used</h2>
 
-  <p>Every section cites the RFC, W3C spec, OWASP guidance, or CA/Browser Forum baseline it's measured against. The result is a score, a category breakdown, and a list of findings suitable for sharing with the audited domain's technical team.</p>
+  <p>Vendor Audit is a due-diligence tool. Run it on a vendor's domain before purchasing a product or service to get a quick, evidence-based read on how their configuration aligns with current best practices. A weak score isn't a deal-breaker on its own, but it's a useful conversation starter and a data point alongside everything else you're evaluating.</p>
 
-  <p>This service is passive: it reads what the domain voluntarily publishes (DNS, HTTPS GET, public APIs). It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; the same tool is available as a CLI for batch use, deep-mode checks, and SSL Labs integration.</p>
+  <p><strong>Please share the report with the vendor.</strong> Every section cites the RFC, W3C spec, OWASP guidance, or CA/Browser Forum baseline it's measured against — so the report reads as feedback, not as an accusation. Most vendors appreciate a heads-up they can act on; the report gives them one in a form they can take straight to the people who can address it. When more than one prospect shares these reports with the same vendor, they're more likely to prioritize the issues raised.</p>
+
+  <h2>What this checks</h2>
+
+  <p>The audit covers SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS configuration, HSTS, HTTP/2 and HTTP/3 support, security headers, cookie attributes, EOL libraries and operating systems, and more — about 60 scored checks against published standards.</p>
+
+  <p>This service is passive: it reads what the domain voluntarily publishes (DNS, HTTPS GET, public APIs). It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, deep-mode checks, SSL Labs integration, and bulk audits.</p>
 </section>
 
 <footer>
-  Vendor Audit v{{ version }}
+  Vendor Audit
 </footer>
 </main>
+<script>(function () {
+  var form = document.querySelector('form');
+  if (!form) return;
+  form.addEventListener('submit', function () {
+    var input = form.querySelector('input[name="domain"]');
+    var btn = form.querySelector('button[type="submit"]');
+    var what = document.querySelector('.what');
+    var domain = (input && input.value) ? input.value.trim() : '';
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Auditing\u2026';
+    }
+    if (input) {
+      input.disabled = true;
+    }
+    if (what) {
+      what.innerHTML = '<p style="color: var(--muted)">Auditing ' +
+        (domain ? '<strong>' + domain.replace(/[<>&"]/g, '') + '</strong>' : 'domain') +
+        '\u2026 this usually takes 1\u20133 seconds.</p>';
+    }
+  });
+})();</script>
 </body>
 </html>

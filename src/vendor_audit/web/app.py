@@ -46,7 +46,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -192,16 +192,33 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     user-provided domain names. We don't reflect them in any way that
     allows HTML injection (Jinja autoescapes), but a strict CSP is the
     right belt-and-suspenders.
+
+    The form page (/) gets a slightly relaxed script-src so its inline
+    submit-feedback script can run. The script is gated by SHA-256 hash,
+    not by 'unsafe-inline' — the hash binds the policy to exactly that
+    script body. Any other inline script (injected, modified, etc.) is
+    blocked. Every other page keeps script-src 'none'.
     """
+
+    # SHA-256 hash of the exact submit-feedback script in form.html.
+    # If you change the script, update this hash too — the simplest way
+    # is to delete it, redeploy, view-source the page, copy the hash from
+    # the browser's CSP-violation console message, paste it back.
+    _FORM_SCRIPT_HASH = "'sha256-2puNjZCZ93sRTYJSugKqLJV6elt87DT95pCF7X724N8='"
+
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
+
+        # Pick the script-src based on path. The form page is the only
+        # endpoint that needs inline JS; everything else gets 'none'.
+        if request.url.path == "/":
+            script_src = f"script-src {self._FORM_SCRIPT_HASH}"
+        else:
+            script_src = "script-src 'none'"
+
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            # script-src 'none' is explicit and stricter than the implicit
-            # 'self' fallback from default-src. Vendor Audit pages don't
-            # load *any* JavaScript — pure HTML and CSS. 'none' is the
-            # tightest setting CSP can express for scripts.
-            "script-src 'none'; "
+            f"{script_src}; "
             "style-src 'self' 'unsafe-inline'; "  # inline styles in templates
             "img-src 'self' data:; "
             "object-src 'none'; "
@@ -296,6 +313,23 @@ async def submit_audit(request: Request, domain: str = Form(...)):
             },
             status_code=_status_for_error_kind(envelope["error"]["kind"]),
         )
+
+
+@app.get("/audit", include_in_schema=False)
+@app.get("/audit/", include_in_schema=False)
+async def audit_get_redirect():
+    """Redirect bare GET requests to /audit (no domain) back to the form.
+
+    Without this, a user who navigates directly to /audit (e.g. typing it
+    in, opening a stale bookmark, removing the .txt extension from a
+    download URL) gets a 405 Method Not Allowed with a JSON body — the
+    POST-only audit endpoint refusing the GET. That's confusing for a
+    user who just wants to start an audit.
+
+    303 See Other is the right status here: the user GETted a thing that
+    is not a resource, so we send them to a thing that is.
+    """
+    return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/audit/{domain}.txt", response_class=PlainTextResponse)
@@ -399,6 +433,53 @@ async def security_txt_well_known():
 async def security_txt_root():
     """Compatibility alias for the RFC 9116 file."""
     return PlainTextResponse(content=_SECURITY_TXT_BODY)
+
+
+# ── favicon ──────────────────────────────────────────────────────────────────
+
+# Modern browsers all accept SVG favicons. Same SVG used elsewhere on the
+# site (form page header, result page header, error page header). Cached
+# aggressively because it never changes during a release.
+
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" '
+    'role="img" aria-label="Vendor Audit">'
+    # Default text color for tab strips in dark UAs is white-ish, in
+    # light UAs it's dark. Use a neutral mid-tone that reads on both —
+    # we pin to the brand accent so the icon matches the site.
+    '<circle cx="40" cy="40" r="28" fill="none" stroke="#5fa3ff" stroke-width="6"/>'
+    '<line x1="60" y1="60" x2="82" y2="82" stroke="#5fa3ff" stroke-width="10" stroke-linecap="round"/>'
+    '<circle cx="32" cy="38" r="5" fill="#5fa3ff"/>'
+    '<circle cx="46" cy="34" r="5" fill="#5fa3ff"/>'
+    '<circle cx="50" cy="48" r="5" fill="#5fa3ff"/>'
+    '</svg>'
+)
+
+
+@app.get("/favicon.ico")
+async def favicon_ico():
+    """Browsers request /favicon.ico by default. We serve the SVG version
+    with the right MIME type — modern browsers (Chrome 80+, Firefox 41+,
+    Safari 9+) all handle SVG favicons.
+
+    The icon is a simplified version of the page logo: thicker strokes
+    and larger nodes so it remains legible at 16x16 px in a tab strip.
+    """
+    return Response(
+        content=_FAVICON_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.get("/favicon.svg")
+async def favicon_svg():
+    """Modern <link rel="icon"> path; same body as /favicon.ico."""
+    return Response(
+        content=_FAVICON_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
