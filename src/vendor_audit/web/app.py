@@ -82,6 +82,83 @@ LIMIT_FORM  = os.environ.get("VENDOR_AUDIT_LIMIT_FORM",  "60/minute")
 # 127.0.0.1 with the real client IP in headers) and False in local dev.
 TRUST_PROXY_HEADERS = os.environ.get("VENDOR_AUDIT_TRUST_PROXY", "1") == "1"
 
+# Public URL of this service. Embedded in security.txt's Canonical: line
+# (RFC 9116) so vulnerability researchers can verify they're looking at
+# the canonical file. Self-hosters should set this to their own URL.
+SERVICE_URL = os.environ.get("VENDOR_AUDIT_SERVICE_URL", "https://vendoraudit.org")
+
+# How long a generated .txt report stays in the in-memory cache, in
+# seconds. Repeat downloads of the same domain within this window are
+# served from cache and don't trigger a fresh audit (or a rate-limit
+# rejection). 5 minutes is long enough to cover "user clicks Download,
+# decides they want it again" but short enough that cached reports
+# won't drift far from the current state of the audited domain.
+TXT_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_TXT_CACHE_TTL_S", "300"))
+
+# Hard cap on the number of cache entries. At 50KB per entry that's
+# ~25MB. The web service's MemoryMax is 512MB; this cap keeps the cache
+# well within bounds even under heavy distinct-domain traffic.
+TXT_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_TXT_CACHE_MAX", "500"))
+
+
+# ── In-memory .txt cache ─────────────────────────────────────────────────────
+#
+# Module-level dict, intentionally simple. FastAPI request handlers run
+# on a single asyncio loop thread, so dict access between awaits is
+# atomic. The race on concurrent first-cache-misses (two requests both
+# run the audit, last one wins on cache_set) is benign — the work is
+# idempotent and the wasted audit is bounded to one duplicate per
+# domain per TTL window in the worst case.
+#
+# Entries: {key: (text, headers, expires_at_unix_seconds)}
+# Eviction: lazy on read (expired entries are dropped when accessed),
+# plus an explicit prune on write when len(_txt_cache) hits the cap.
+
+_txt_cache: dict = {}
+
+
+def _txt_cache_get(key: str):
+    """Return (text, headers) tuple if cached and not expired, else None."""
+    entry = _txt_cache.get(key)
+    if entry is None:
+        return None
+    text, headers, expires = entry
+    if time.time() >= expires:
+        # Lazy eviction — drop and return miss
+        _txt_cache.pop(key, None)
+        return None
+    return (text, headers)
+
+
+def _txt_cache_set(key: str, value):
+    """Store value with TXT_CACHE_TTL_S TTL. Evicts the soonest-to-expire
+    entry when at capacity.
+
+    Approximate LRU: dropping the soonest-to-expire entry isn't true
+    LRU (which would require tracking access times) but it's close
+    enough — that entry was going to be gone shortly anyway, and the
+    approximation avoids the complexity of separate access tracking.
+    """
+    text, headers = value
+    expires = time.time() + TXT_CACHE_TTL_S
+    if len(_txt_cache) >= TXT_CACHE_MAX_ENTRIES and key not in _txt_cache:
+        oldest_key = min(_txt_cache, key=lambda k: _txt_cache[k][2])
+        _txt_cache.pop(oldest_key, None)
+    _txt_cache[key] = (text, headers, expires)
+
+
+def _txt_cache_hit_for_request(request: Request) -> bool:
+    """exempt_when callable: True iff the URL maps to a current cache entry.
+
+    Called by slowapi BEFORE the route handler. We re-derive the cache
+    key from the URL path-param the same way the handler does. If
+    there's a hit, slowapi skips the rate limit check entirely.
+    """
+    domain = request.path_params.get("domain", "") or ""
+    cache_key = domain.lower().strip()
+    return _txt_cache_get(cache_key) is not None
+
+
 # security.txt content (RFC 9116). Configured via env so the operator can
 # rotate the contact address or extend the expiry without a code deploy.
 # All values are strings; the endpoint assembles the file from them.
@@ -204,7 +281,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     # If you change the script, update this hash too — the simplest way
     # is to delete it, redeploy, view-source the page, copy the hash from
     # the browser's CSP-violation console message, paste it back.
-    _FORM_SCRIPT_HASH = "'sha256-TBMI05OdugQw+eAae4Xcvfb3PTQImVcTI3m2IoBxbqM='"
+    _FORM_SCRIPT_HASH = "'sha256-unjMUlcxd4xX8nbWJVa21693cUyrq7n/LJYke0D7wlA='"
 
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
@@ -333,15 +410,29 @@ async def audit_get_redirect():
 
 
 @app.get("/audit/{domain}.txt", response_class=PlainTextResponse)
-@limiter.limit(LIMIT_TXT)
+@limiter.limit(LIMIT_TXT, exempt_when=lambda request: _txt_cache_hit_for_request(request))
 async def download_txt(request: Request, domain: str):
-    """Plain-text report. Re-runs the audit on each request.
+    """Plain-text report. Re-runs the audit on each request unless a
+    cached copy exists.
 
-    The handoff calls this 'idempotent enough' — same input gives
-    substantially the same output, modulo whatever's actually changed in
-    DNS / TLS / HTTP for the audited domain in the meantime. Aggressive
-    rate limiting (LIMIT_TXT) keeps this from being a free re-run trigger.
+    Cache: keyed by the lowercased domain path-param; entries live for
+    TXT_CACHE_TTL_S (default 300s). On cache hit the rate limit is
+    bypassed (via exempt_when) — re-downloading a recent report should
+    be free. On cache miss the rate limit applies normally and a fresh
+    audit runs.
+
+    The cache survives only as long as the FastAPI process; restart
+    purges it. That's fine — cache is a cost optimization, not durable
+    storage.
     """
+    # Same key the exempt_when used. Cheap re-derivation rather than
+    # threading state.
+    cache_key = domain.lower().strip()
+    cached = _txt_cache_get(cache_key)
+    if cached is not None:
+        text, headers = cached
+        return PlainTextResponse(content=text, headers=headers)
+
     try:
         validated = validate_domain_input(domain)
     except ValidationError as exc:
@@ -374,6 +465,10 @@ async def download_txt(request: Request, domain: str):
             f'{envelope["timestamp"].replace(":", "-")}.txt"'
         ),
     }
+    # Cache the rendered text + headers for repeat downloads. Subsequent
+    # requests for the same URL within TXT_CACHE_TTL_S will hit and
+    # bypass the rate limit (via exempt_when).
+    _txt_cache_set(cache_key, (text, headers))
     return PlainTextResponse(content=text, headers=headers)
 
 
@@ -415,7 +510,7 @@ def _build_security_txt() -> str:
         f"Contact: {SECURITY_CONTACT}",
         f"Expires: {SECURITY_EXPIRES}",
         f"Preferred-Languages: {SECURITY_LANG}",
-        f"Canonical: https://vendoraudit.org/.well-known/security.txt",
+        f"Canonical: {SERVICE_URL}/.well-known/security.txt",
     ]
     return "\n".join(lines) + "\n"
 

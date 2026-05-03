@@ -182,10 +182,41 @@
 <script>(function () {
   var form = document.querySelector('form');
   if (!form) return;
+  var input = form.querySelector('input[name="domain"]');
+  var btn = form.querySelector('button[type="submit"]');
+  var what = document.querySelector('.what');
+
+  // Cache the original explainer HTML so we can restore it if the page
+  // returns from the browser's back-forward cache. Without this, hitting
+  // Back from the result page leaves the user looking at "Auditing..."
+  // forever — bfcache restored the post-submit DOM.
+  var originalWhatHTML = what ? what.innerHTML : null;
+  var originalBtnText = btn ? btn.textContent : 'Audit';
+
+  function resetFormState() {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalBtnText;
+    }
+    if (input) {
+      input.readOnly = false;
+    }
+    if (what && originalWhatHTML !== null) {
+      what.innerHTML = originalWhatHTML;
+    }
+  }
+
+  // pageshow with event.persisted === true means the page was restored
+  // from the bfcache (browser hit Back/Forward, or used "Reopen tab").
+  // At that moment our DOM still has the "Auditing..." state from the
+  // last submit, which is wrong — reset it.
+  window.addEventListener('pageshow', function (event) {
+    if (event.persisted) {
+      resetFormState();
+    }
+  });
+
   form.addEventListener('submit', function () {
-    var input = form.querySelector('input[name="domain"]');
-    var btn = form.querySelector('button[type="submit"]');
-    var what = document.querySelector('.what');
     var domain = (input && input.value) ? input.value.trim() : '';
     if (btn) {
       btn.disabled = true;
