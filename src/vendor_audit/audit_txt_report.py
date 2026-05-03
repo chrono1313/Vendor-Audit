@@ -83,6 +83,15 @@ _MARKERS = {
 }
 
 
+# Address-family subheading labels with RFC citations. Used in the
+# IP / ASN / RPKI section. The base RFC 6480 (RPKI) is on the parent
+# section heading; these add the per-protocol IP standards.
+_AF_LABEL_WITH_RFC = {
+    "IPv4": "IPv4 (RFC 791)",
+    "IPv6": "IPv6 (RFC 8200)",
+}
+
+
 # ── OS pretty names — mirror the terminal/HTML renderer ──────────────────────
 
 _OS_DISPLAY_NAMES = {
@@ -606,7 +615,7 @@ def _render_header(data):
     """Title block with heavy ═ rule."""
     try:
         ts_dt = datetime.fromisoformat(data.timestamp.replace("Z", "+00:00"))
-        ts_human = ts_dt.strftime("%B %d, %Y at %H:%M %Z").strip()
+        ts_human = ts_dt.strftime("%B %d, %Y at %H:%M:%S %Z").strip()
     except (ValueError, AttributeError):
         ts_human = data.timestamp
 
@@ -1240,7 +1249,7 @@ def _render_routing_section(data):
         asn_name = af.get("asn_name", "")
         rpki   = af.get("rpki_status")
 
-        sub = [_subheading(af_label), ""]
+        sub = [_subheading(_AF_LABEL_WITH_RFC.get(af_label, af_label)), ""]
 
         if not addr and af_err:
             sev = "warn" if (af_label == "IPv6" and "no AAAA" in (af_err or "")) else "info"
@@ -1960,7 +1969,7 @@ def _render_security_txt_section(data):
     if not sectxt:
         return ""
 
-    parts = ["", _heading("SECURITY CONTACT (RFC 9116 — security.txt)"), ""]
+    parts = ["", _heading("SECURITY CONTACT (RFC 9116)"), ""]
 
     if sectxt.get("error"):
         parts.append(_status("info",

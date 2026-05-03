@@ -267,19 +267,31 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     blocked. Every other page keeps script-src 'none'.
     """
 
-    # SHA-256 hash of the exact submit-feedback script in form.html.
+    # SHA-256 hash of the form-submit feedback script in form.html.
     # If you change the script, update this hash too — the simplest way
     # is to delete it, redeploy, view-source the page, copy the hash from
     # the browser's CSP-violation console message, paste it back.
     _FORM_SCRIPT_HASH = "'sha256-unjMUlcxd4xX8nbWJVa21693cUyrq7n/LJYke0D7wlA='"
 
+    # SHA-256 hash of the re-audit feedback script embedded in the result
+    # page (see render_html._REAUDIT_SCRIPT). Same update procedure: change
+    # the script body in render_html.py, the hash here must change too.
+    _RESULT_SCRIPT_HASH = "'sha256-PpRk/FesZ2G2fBSy3336UpySSnvqAbG+nNXkkyDdZg8='"
+
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
 
-        # Pick the script-src based on path. The form page is the only
-        # endpoint that needs inline JS; everything else gets 'none'.
-        if request.url.path == "/":
+        # Pick the script-src based on path. The form page (/) and the
+        # result page (POST /audit) are the only endpoints that ship
+        # inline JS; everything else gets 'none'.
+        path = request.url.path
+        if path == "/":
             script_src = f"script-src {self._FORM_SCRIPT_HASH}"
+        elif path == "/audit":
+            # POST /audit returns the result page. (GET /audit redirects
+            # to / — that response also gets this CSP, but it's a 303 with
+            # no body, so the script-src doesn't matter for it.)
+            script_src = f"script-src {self._RESULT_SCRIPT_HASH}"
         else:
             script_src = "script-src 'none'"
 
