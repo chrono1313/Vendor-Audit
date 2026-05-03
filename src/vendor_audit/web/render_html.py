@@ -121,6 +121,34 @@ _SEVERITY_CLASS = {
     "info": "sev-info",
 }
 
+# Inline-marker colorization. Some txt lines pack multiple marker symbols
+# inline — most notably the cookie-attributes line:
+#     ✓ Secure · ✗ HttpOnly · ✓ SameSite=Strict
+# The line as a whole gets a single severity (from the leading marker),
+# but the inline markers should each be colored according to their own
+# severity so the user can see at a glance which attribute failed.
+#
+# We match a marker only when it's followed by whitespace, so genuine
+# punctuation like "...spoof this domain!" (an SPF warning message)
+# doesn't accidentally get colored. The leading marker (already wrapped
+# in <span class="finding-marker">) is excluded from this replacement
+# because we run it on `message` only — message starts AFTER the leading
+# marker per _RE_FINDING_LINE's groups.
+_RE_INLINE_MARKER = re.compile(r"([✓✗!·])(?=\s)")
+
+def _colorize_inline_markers(html_message: str) -> str:
+    """Wrap each inline marker in a span with its severity class.
+
+    Input is the already-HTML-escaped message text. Output is the same
+    string with each ✓/✗/!/· (when followed by whitespace) wrapped in
+    <span class="m-{sev}">…</span>.
+    """
+    def repl(m):
+        sym = m.group(1)
+        sev = _MARKER_TO_SEVERITY.get(sym, "info")
+        return f'<span class="m-{sev}">{sym}</span>'
+    return _RE_INLINE_MARKER.sub(repl, html_message)
+
 # Section key → DOM id (for anchor links from executive summary). Mirrors
 # the txt-report section ordering.
 _SECTION_RENDERERS = [
@@ -544,7 +572,7 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
             out.append(
                 f'<li class="finding {cls}">'
                 f'<span class="finding-marker" aria-hidden="true">{_h(m.group("marker"))}</span>'
-                f'<span class="finding-text">{_h(message)}</span>'
+                f'<span class="finding-text">{_colorize_inline_markers(_h(message))}</span>'
                 f'{sub_html}'
                 f'</li>'
             )
@@ -904,6 +932,13 @@ body {
 .sev-warn .finding-marker { color: var(--warn); }
 .sev-fail .finding-marker { color: var(--fail); }
 .sev-info .finding-marker { color: var(--info); }
+/* Inline markers — used inside multi-attribute lines like cookie flags
+   ("✓ Secure · ✗ HttpOnly · ✓ SameSite=Strict") so each attribute's
+   marker takes its own color independent of the line's overall severity. */
+.m-pass { color: var(--pass); font-weight: 600; }
+.m-warn { color: var(--warn); font-weight: 600; }
+.m-fail { color: var(--fail); font-weight: 600; }
+.m-info { color: var(--muted); }
 .finding-cat {
   color: var(--muted);
   font-size: 0.82rem;
