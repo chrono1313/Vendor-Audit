@@ -66,14 +66,12 @@ log = logging.getLogger("vendor_audit.web")
 WORKERS = int(os.environ.get("VENDOR_AUDIT_WORKERS", "3"))
 
 # Wall-clock cap per audit at the web layer. The audit itself has its own
-# internal deadlines (run_audit caps the parallel-checks pool at ~15s and
-# the post-pool jobs at ~7s — see audit.AUDIT_WALL_DEADLINE_S). This is
-# the *outer* safety net: if those deadlines are bypassed somehow (a
-# stuck C-level call, a runaway Python loop), the web layer gives up and
-# returns an error page so the user isn't left waiting for Cloudflare's
-# tunnel timeout to fire. 25s leaves slack above the audit's ~22s worst
+# internal deadlines: check_redirect (6s hard), parallel-checks pool
+# (~15s — see audit.AUDIT_WALL_DEADLINE_S), post-pool jobs (~7s). Worst
+# case: 6 + 15 + 7 = 28s. This outer timeout is the safety net if those
+# deadlines are bypassed. 35s leaves slack above the audit's ~28s worst
 # case for synthesis (CSP analysis, etc.) and for rendering the result.
-AUDIT_TIMEOUT_S = int(os.environ.get("VENDOR_AUDIT_TIMEOUT_S", "25"))
+AUDIT_TIMEOUT_S = int(os.environ.get("VENDOR_AUDIT_TIMEOUT_S", "35"))
 
 # Per-IP rate limits. Tuned by handoff guidance ("~3 per 10s") but expressed
 # as slowapi-compatible strings. The /audit POST endpoint is the expensive

@@ -202,7 +202,44 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
         audit_checks._DEEP_BODY_SNIFF_BYTES if deep else audit_checks._BODY_SNIFF_BYTES
     )
     t = time.monotonic()
-    redirect = check_redirect(domain, body_cap=body_cap)
+    # Hard-timeout check_redirect so it can't eat the audit's whole
+    # budget on a blackholing host. check_redirect tries https:// then
+    # http:// — each can wait the full _http_timeout (5s default) on
+    # a host that drops packets, so the inner default upper bound is
+    # ~10s. We give it 6s here so a normal multi-hop redirect chain
+    # has time, but a hard blackhole gives up fast and the parallel
+    # pool gets to run.
+    REDIRECT_HARD_TIMEOUT_S = 6
+    try:
+        redirect = audit_checks._run_with_hard_timeout(
+            lambda: check_redirect(domain, body_cap=body_cap),
+            timeout=REDIRECT_HARD_TIMEOUT_S,
+        )
+    except TimeoutError:
+        # Synthesize a "no usable response" envelope so downstream code
+        # behaves the same as if the host returned no body. The audit
+        # continues against `domain` (no redirect resolution possible);
+        # checks that need a body will hit their own per-call timeouts.
+        log.warning(
+            "redirect-check hard timeout (%ds) for %s — proceeding without "
+            "redirect/body data",
+            REDIRECT_HARD_TIMEOUT_S, domain,
+        )
+        redirect = {
+            "redirected":             False,
+            "final":                  domain,
+            "first_hop_url":          None,
+            "first_hop_https":        None,
+            "first_hop_same_host":    None,
+            "elapsed_ms":             REDIRECT_HARD_TIMEOUT_S * 1000.0,
+            "body_truncated":         False,
+            "body_cap_used":          body_cap,
+            "body_looks_like_html":   False,
+            "error": (
+                f"redirect-check timed out after {REDIRECT_HARD_TIMEOUT_S}s "
+                "(host did not respond)"
+            ),
+        }
     check_timings["redirect"] = round(time.monotonic() - t, 3)
     audit_domain = redirect["final"] if redirect["redirected"] else domain
 
