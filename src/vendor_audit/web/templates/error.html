@@ -5,10 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vendor Audit — {{ title }}</title>
 <style>
+  :root {
+    --bg: rgb(40, 40, 38);
+    --fg: #ececea;
+    --muted: #999;
+    --accent: #5fa3ff;
+    --border: #4a4a47;
+    --fail: #f87171;
+    --fail-bg: #3a1a1a;
+  }
   body {
     font: 15px/1.5 system-ui, -apple-system, sans-serif;
-    color: #1a1a1a;
-    background: #fafaf9;
+    color: var(--fg);
+    background: var(--bg);
     margin: 0;
     min-height: 100vh;
     display: grid;
@@ -16,29 +25,51 @@
     padding: 2rem 1rem;
     box-sizing: border-box;
   }
-  main { max-width: 560px; width: 100%; }
+  main { max-width: 560px; width: 100%; text-align: center; }
+  .logo {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 0.6rem;
+    color: var(--fg);
+  }
+  .logo svg { display: block; width: 100%; height: 100%; }
   h1 { font-size: 1.4rem; margin: 0 0 0.4rem; }
   .message {
-    background: #fdecea;
-    border-left: 4px solid #c0392b;
+    background: var(--fail-bg);
+    border-left: 4px solid var(--fail);
     padding: 0.8rem 1rem;
     margin: 1rem 0;
     border-radius: 0 3px 3px 0;
+    text-align: left;  /* error message body reads better left-aligned */
   }
   .code {
-    color: #555;
+    color: var(--muted);
     font: 0.85em ui-monospace, monospace;
     margin-bottom: 1rem;
   }
-  a { color: #0366d6; }
+  a { color: var(--accent); }
   footer {
-    color: #555; font-size: 0.8rem;
+    color: var(--muted); font-size: 0.8rem;
     margin-top: 2rem;
   }
 </style>
 </head>
 <body>
 <main>
+<div class="logo">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="va-title va-desc">
+  <title id="va-title">Vendor Audit</title>
+  <desc id="va-desc">Magnifying glass framing a small node graph, representing domain posture inspection.</desc>
+  <circle cx="40" cy="40" r="28" fill="none" stroke="currentColor" stroke-width="3"/>
+  <line x1="60" y1="60" x2="82" y2="82" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
+  <line x1="32" y1="38" x2="46" y2="34" stroke="#5fa3ff" stroke-width="1"/>
+  <line x1="46" y1="34" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>
+  <line x1="32" y1="38" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>
+  <circle cx="32" cy="38" r="3" fill="#5fa3ff"/>
+  <circle cx="46" cy="34" r="3" fill="#5fa3ff"/>
+  <circle cx="50" cy="48" r="3" fill="#5fa3ff"/>
+</svg>
+</div>
 <h1>{{ title }}</h1>
 <div class="message">{{ message }}</div>
 <div class="code">code: {{ code }}</div>

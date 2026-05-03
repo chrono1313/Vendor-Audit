@@ -6,11 +6,12 @@
 <title>Vendor Audit — passive domain security audit</title>
 <style>
   :root {
-    --fg: #1a1a1a;
-    --muted: #555;
-    --bg: #fafaf9;
-    --accent: #0366d6;
-    --border: #d5d3cf;
+    --bg: rgb(40, 40, 38);
+    --fg: #ececea;
+    --muted: #999;
+    --accent: #5fa3ff;
+    --border: #4a4a47;
+    --panel: rgb(48, 48, 45);
   }
   body {
     font: 15px/1.5 system-ui, -apple-system, sans-serif;
@@ -26,7 +27,15 @@
   main {
     max-width: 560px;
     width: 100%;
+    text-align: center;
   }
+  .logo {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 0.6rem;
+    color: var(--fg);  /* drives currentColor in the SVG */
+  }
+  .logo svg { display: block; width: 100%; height: 100%; }
   h1 {
     font-size: 1.7rem;
     margin: 0 0 0.4rem;
@@ -36,6 +45,9 @@
     margin: 0 0 1.6rem;
     font-size: 1.05rem;
   }
+  /* Form and explainer copy below should read left-aligned, not centered.
+     Only the header (logo + h1 + lede) is centered. */
+  form, .what { text-align: left; }
   form {
     display: flex;
     gap: 0.5rem;
@@ -47,8 +59,10 @@
     padding: 0.6rem 0.8rem;
     border: 1px solid var(--border);
     border-radius: 4px;
-    background: white;
+    background: var(--panel);
+    color: var(--fg);
   }
+  input[type="text"]::placeholder { color: var(--muted); }
   input[type="text"]:focus {
     outline: 2px solid var(--accent);
     outline-offset: -1px;
@@ -73,7 +87,7 @@
   .what p { margin: 0 0 0.8rem; }
   .what code {
     font: 0.9em ui-monospace, monospace;
-    background: #ececea;
+    background: rgba(255, 255, 255, 0.06);
     padding: 1px 4px;
     border-radius: 3px;
   }
@@ -88,6 +102,20 @@
 </head>
 <body>
 <main>
+<div class="logo">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="va-title va-desc">
+  <title id="va-title">Vendor Audit</title>
+  <desc id="va-desc">Magnifying glass framing a small node graph, representing domain posture inspection.</desc>
+  <circle cx="40" cy="40" r="28" fill="none" stroke="currentColor" stroke-width="3"/>
+  <line x1="60" y1="60" x2="82" y2="82" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
+  <line x1="32" y1="38" x2="46" y2="34" stroke="#5fa3ff" stroke-width="1"/>
+  <line x1="46" y1="34" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>
+  <line x1="32" y1="38" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>
+  <circle cx="32" cy="38" r="3" fill="#5fa3ff"/>
+  <circle cx="46" cy="34" r="3" fill="#5fa3ff"/>
+  <circle cx="50" cy="48" r="3" fill="#5fa3ff"/>
+</svg>
+</div>
 <h1>Vendor Audit</h1>
 <p class="lede">A passive, evidence-based check of a domain's DNS, email, TLS, and HTTP posture.</p>
 

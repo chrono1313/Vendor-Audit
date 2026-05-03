@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="va-title va-desc">
+  <title id="va-title">Vendor Audit</title>
+  <desc id="va-desc">Magnifying glass framing a small node graph, representing domain posture inspection.</desc>
+  <circle cx="40" cy="40" r="28" fill="none" stroke="currentColor" stroke-width="3"/>
+  <line x1="60" y1="60" x2="82" y2="82" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
+  <line x1="32" y1="38" x2="46" y2="34" stroke="#2563eb" stroke-width="1"/>
+  <line x1="46" y1="34" x2="50" y2="48" stroke="#2563eb" stroke-width="1"/>
+  <line x1="32" y1="38" x2="50" y2="48" stroke="#2563eb" stroke-width="1"/>
+  <circle cx="32" cy="38" r="3" fill="#2563eb"/>
+  <circle cx="46" cy="34" r="3" fill="#2563eb"/>
+  <circle cx="50" cy="48" r="3" fill="#2563eb"/>
+</svg>

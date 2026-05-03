@@ -69,6 +69,36 @@ from ..audit_txt_report import (
 )
 
 
+# ── Brand ────────────────────────────────────────────────────────────────────
+# Inline SVG of the Vendor Audit logo: a magnifying glass framing a small
+# node graph. Inline (rather than referenced as an external file) because
+# (a) it's tiny — 12 lines — and (b) inline SVG inherits `currentColor` from
+# its CSS context, so the outline picks up the foreground text color
+# automatically, making it work on dark and light themes without modification.
+# The blue dots stay blue intentionally; that accent reads as "data inside".
+#
+# This same SVG is also embedded in form.html and error.html. If you change
+# it, change all three places. (Keeping a single canonical copy is a future
+# cleanup; for now duplication is cheaper than building an asset pipeline.)
+_LOGO_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" '
+    'role="img" aria-labelledby="va-title va-desc">'
+    '<title id="va-title">Vendor Audit</title>'
+    '<desc id="va-desc">Magnifying glass framing a small node graph, '
+    'representing domain posture inspection.</desc>'
+    '<circle cx="40" cy="40" r="28" fill="none" stroke="currentColor" stroke-width="3"/>'
+    '<line x1="60" y1="60" x2="82" y2="82" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>'
+    '<line x1="32" y1="38" x2="46" y2="34" stroke="#5fa3ff" stroke-width="1"/>'
+    '<line x1="46" y1="34" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>'
+    '<line x1="32" y1="38" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>'
+    '<circle cx="32" cy="38" r="3" fill="#5fa3ff"/>'
+    '<circle cx="46" cy="34" r="3" fill="#5fa3ff"/>'
+    '<circle cx="50" cy="48" r="3" fill="#5fa3ff"/>'
+    '</svg>'
+)
+
+
+
 # ── Constants ────────────────────────────────────────────────────────────────
 
 # Severity marker characters used by audit_txt_report._MARKERS. Mirrored
@@ -170,6 +200,7 @@ def _render_header_html(data, domain, audit_domain, timestamp, duration_ms):
     ts_human = _format_timestamp(timestamp)
 
     out = ['<header class="report-header">']
+    out.append(f'  <div class="logo">{_LOGO_SVG}</div>')
     out.append('  <div class="brand">Vendor Audit</div>')
     out.append(f'  <h1 class="domain">{_h(domain)}</h1>')
     if redirected:
@@ -599,20 +630,20 @@ _DOC_HEAD = """<!doctype html>
 <title>__TITLE__</title>
 <style>
 :root {
-  --fg: #1a1a1a;
-  --muted: #555;
-  --border: #d5d3cf;
-  --bg: #fafaf9;
-  --panel: #ffffff;
-  --accent: #0366d6;
-  --pass: #1a7f37;
-  --pass-bg: #ddf4e0;
-  --warn: #b45309;
-  --warn-bg: #fef0d2;
-  --fail: #c0392b;
-  --fail-bg: #fdecea;
-  --info: #555;
-  --info-bg: #eeece9;
+  --bg: rgb(40, 40, 38);          /* warm dark — the requested page bg */
+  --panel: rgb(48, 48, 45);       /* one step lighter than bg for cards */
+  --fg: #ececea;                  /* primary text, warm off-white */
+  --muted: #999;                  /* secondary text */
+  --border: #4a4a47;              /* subtle dividers — just lighter than bg */
+  --accent: #5fa3ff;              /* links, brighter than light-mode for contrast */
+  --pass: #4ade80;
+  --pass-bg: #1a3a22;
+  --warn: #fbbf24;
+  --warn-bg: #3a2e0e;
+  --fail: #f87171;
+  --fail-bg: #3a1a1a;
+  --info: #999;
+  --info-bg: #38383a;
 }
 * { box-sizing: border-box; }
 body {
@@ -628,7 +659,18 @@ body {
 }
 
 /* ── Header ───────────────────────────────────────────────────────────── */
-.report-header { margin-bottom: 1.4rem; }
+.report-header {
+  margin-bottom: 1.4rem;
+  text-align: center;
+}
+.logo {
+  display: block;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 0.5rem;
+  color: var(--fg);  /* drives the magnifying-glass outline via currentColor */
+}
+.logo svg { display: block; width: 100%; height: 100%; }
 .brand {
   font-size: 0.78rem;
   letter-spacing: 0.06em;
@@ -641,6 +683,12 @@ body {
   margin: 0 0 0.4rem;
   word-break: break-all;
 }
+.scan-meta {
+  /* Override the default left-aligned scan-meta to keep the centered look. */
+  display: flex;
+  justify-content: center;
+  gap: 1.2rem;
+}
 .redirect-notice {
   background: var(--warn-bg);
   color: var(--warn);
@@ -651,12 +699,13 @@ body {
   font-size: 0.92rem;
 }
 .redirect-notice strong { font-family: ui-monospace, monospace; }
+/* .scan-meta layout is centered (see header block above); these are the
+   color/typography rules. */
 .scan-meta {
   margin-top: 0.6rem;
   color: var(--muted);
   font-size: 0.85rem;
 }
-.scan-meta span { margin-right: 1.2rem; }
 .scan-meta .flag {
   font-family: ui-monospace, monospace;
   color: var(--warn);
@@ -696,7 +745,7 @@ body {
 .score-fraction .sep { padding: 0 0.1rem; }
 .score-bar {
   height: 10px;
-  background: #ececea;
+  background: #38383a;
   border-radius: 5px;
   overflow: hidden;
 }
@@ -737,7 +786,7 @@ body {
   user-select: none;
   background: var(--panel);
 }
-.findings-block summary:hover { background: #f5f4f2; }
+.findings-block summary:hover { background: #3a3a37; }
 .findings-block summary .count {
   color: var(--muted);
   font-weight: 400;
@@ -756,7 +805,7 @@ body {
   align-items: baseline;
   padding: 0.4rem 0.9rem;
   font-size: 0.92rem;
-  border-bottom: 1px solid #f0eeec;
+  border-bottom: 1px solid #3a3a37;
 }
 .findings-list .finding:last-child { border-bottom: none; }
 .finding-marker {
@@ -797,7 +846,7 @@ body {
   user-select: none;
   font-size: 0.95rem;
 }
-.detail-section > summary:hover { background: #f5f4f2; }
+.detail-section > summary:hover { background: #3a3a37; }
 .detail-section[open] > summary {
   border-bottom: 1px solid var(--border);
 }
@@ -841,7 +890,7 @@ body {
   margin-top: 0.2rem;
   margin-left: 0;
   padding: 0.4rem 0.6rem;
-  background: #f5f4f2;
+  background: #2c2c2a;
   border-radius: 3px;
   font: 0.85rem ui-monospace, monospace;
   word-break: break-all;
@@ -908,11 +957,27 @@ body {
 
 /* ── Print ───────────────────────────────────────────────────────────── */
 @media print {
-  body { background: white; }
+  /* Dark theme is for screens. Print reverts to a light scheme so vendors
+     can print and read the report on paper without burning toner. We
+     override the whole palette in scope here rather than redefine each
+     component. */
+  :root {
+    --bg: white;
+    --panel: white;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --border: #999;
+    --pass-bg: #ddf4e0;
+    --warn-bg: #fef0d2;
+    --fail-bg: #fdecea;
+    --info-bg: #eeece9;
+  }
+  body { background: white; color: #1a1a1a; }
   .report { max-width: none; padding: 0; }
-  .findings-block, .detail-section {
+  .findings-block, .detail-section, .score-panel {
     border: 1px solid #999;
     page-break-inside: avoid;
+    background: white;
   }
   details { open: open; }
   details > summary { list-style: none; cursor: default; }
