@@ -1058,7 +1058,12 @@
         "MTA-STS": "MTA-STS in testing mode (not enforced)",
         "DANE TLSA on MX": "DANE/TLSA on some but not all MX hosts",
         "STARTTLS-MX": "STARTTLS-MX: TLS 1.2 negotiated (TLS 1.3 not offered)",
-        "CSP script-src safety": "CSP script-src uses host allowlist (weaker than nonce/hash)",
+        "CSP script-src safety": {
+            "_comment": "Multi-tier outcome — different partial outcomes need different text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
+            "_default": "CSP script-src is partially restricted",
+            "nonce_or_hash": "CSP script-src uses nonce/hash (good; strict-dynamic would be stronger)",
+            "host_allowlist": "CSP script-src uses host allowlist (weaker than nonce/hash)"
+        },
         "Cross-Origin-Opener-Policy": "Cross-Origin-Opener-Policy set to same-origin-allow-popups (partial isolation)",
         "Mixed content (in-page)": "Passive mixed content present (images/media over HTTP)",
         "Server clock accuracy": "Server clock skew is small but noticeable",

@@ -468,14 +468,15 @@ class _ReportData:
                 display = score_label_display.get(label, label)
             elif sev == "warn":
                 display = (
-                    partial_label.get(label)
+                    self._resolve_partial_label(partial_label.get(label), label)
                     or f"{score_label_display.get(label, label)} — partial"
                 )
             elif sev == "fail":
                 base = score_label_display.get(label, label)
                 display = self._failure_phrasing(label, base)
             else:  # info / 0/0
-                display = self._info_phrasing(label, partial_label.get(label))
+                display = self._info_phrasing(
+                    label, self._resolve_partial_label(partial_label.get(label), label))
 
             rows.append({
                 "label":     label,
@@ -607,6 +608,34 @@ class _ReportData:
         if label in per_label:
             return per_label[label]
         return f"{label} — not evaluated"
+
+    def _resolve_partial_label(self, entry, label):
+        """Pick the right partial_label text for a check.
+
+        partial_label entries can be one of:
+          - str:  one partial state, use the string as-is
+          - dict: multiple partial outcomes (e.g. CSP script-src safety has
+                  both nonce_or_hash and host_allowlist as partial outcomes
+                  with different scores). Uses the per-check outcome from
+                  results to pick the right text. _default is the fallback.
+
+        Returns None if entry is None or doesn't resolve — caller should
+        provide a fallback.
+        """
+        if entry is None:
+            return None
+        if isinstance(entry, str):
+            return entry
+        if isinstance(entry, dict):
+            # CSP script-src safety: outcome stored at csp_analysis.script_src_outcome
+            if label == "CSP script-src safety":
+                csp_a = self.results.get("csp_analysis") or {}
+                outcome = csp_a.get("script_src_outcome")
+                if outcome and outcome in entry:
+                    return entry[outcome]
+            # Future multi-tier checks would add their lookups here.
+            return entry.get("_default")
+        return None
 
 
 # ── Top-level visual blocks ──────────────────────────────────────────────────

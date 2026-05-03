@@ -2082,7 +2082,22 @@ def render(original_domain, audit_domain, r, dns_server):
             worst = ssl_r.get("worst_grade", "?")
             desc = f"SSL Labs grade: {worst}  → https://www.ssllabs.com/ssltest/analyze.html?d={audit_domain}"
         else:
-            desc = _PARTIAL_LABEL.get(label, f"{_SCORE_LABEL_DISPLAY.get(label, label)} — partial")
+            entry = _PARTIAL_LABEL.get(label)
+            # Some checks (notably CSP script-src safety) have multiple
+            # partial outcomes that score differently and need different
+            # finding text. Those entries are dicts keyed by outcome; a
+            # plain string is the simple case.
+            if isinstance(entry, dict):
+                if label == "CSP script-src safety":
+                    csp_a = r.get("csp_analysis") or {}
+                    outcome = csp_a.get("script_src_outcome")
+                    desc = entry.get(outcome) or entry.get("_default")
+                else:
+                    desc = entry.get("_default")
+                if not desc:
+                    desc = f"{_SCORE_LABEL_DISPLAY.get(label, label)} — partial"
+            else:
+                desc = entry or f"{_SCORE_LABEL_DISPLAY.get(label, label)} — partial"
         partial_findings.append((label, desc, e, p))
 
     # ── Findings ──────────────────────────────────────────────────────────────
