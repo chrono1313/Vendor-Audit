@@ -1969,7 +1969,11 @@ def analyze_csp(csp_header, csp_report_only=False):
         "object_src_outcome":   "missing",
         "base_uri_outcome":     "missing",
         "frame_ancestors_outcome": "missing",
-        "enforcement_outcome":  "report_only" if csp_report_only else "enforced",
+        # Report-Only without an enforced CSP = no real protection.
+        # Report-Only alongside an enforced CSP = mature practice (running
+        # both for telemetry vs enforcement). Only the first case is a
+        # finding; the second classifies as enforced.
+        "enforcement_outcome":  "report_only" if (csp_report_only and not csp_header) else "enforced",
     }
     if not csp_header:
         return result
@@ -2136,7 +2140,17 @@ def analyze_csp(csp_header, csp_report_only=False):
         else:
             result["frame_ancestors_outcome"] = "set"
 
-    if csp_report_only:
+    # Report-Only is a problem only when it's the ONLY CSP. Sites running
+    # an enforced CSP alongside a Report-Only one are doing legitimate
+    # incremental tightening — the enforced policy provides real protection
+    # while the Report-Only one collects telemetry for the next iteration.
+    # Flagging that pattern as a fail penalises good practice.
+    #
+    # Cloudflare also occasionally injects a Report-Only CSP on its own
+    # interstitial pages (Always Online cached responses, JS challenges,
+    # error pages). When those overlay an otherwise-fine origin response,
+    # the operator hasn't done anything wrong and shouldn't see a finding.
+    if csp_report_only and not csp_header:
         result["findings"].append(("medium",
             "CSP is in Report-Only mode — violations are logged but not blocked"))
 
