@@ -620,7 +620,7 @@ def _render_action_bar_html(data, domain):
     # endpoint, including its rate limit. Styled as a link via .as-link
     # so it matches the surrounding action-bar items visually.
     out.append(
-        f'    <form class="reaudit-form" method="post" action="/audit">'
+        f'    <form class="reaudit-form" method="get" action="/audit">'
         f'<input type="hidden" name="domain" value="{_h(domain)}">'
         f'<button type="submit" class="as-link">Re-audit this domain</button>'
         f'</form>'
@@ -646,7 +646,7 @@ def _render_footer_html(data, domain):
         f'download>Download as .txt</a>'
     )
     out.append(
-        f'    <form class="reaudit-form" method="post" action="/audit">'
+        f'    <form class="reaudit-form" method="get" action="/audit">'
         f'<input type="hidden" name="domain" value="{_h(domain)}">'
         f'<button type="submit" class="as-link">Re-audit this domain</button>'
         f'</form>'

@@ -45,7 +45,7 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, Form, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -349,11 +349,41 @@ async def form_page(request: Request):
     )
 
 
-@app.post("/audit", response_class=HTMLResponse)
+@app.get("/audit", include_in_schema=False)
+@app.get("/audit/", include_in_schema=False)
 @limiter.limit(LIMIT_AUDIT)
-async def submit_audit(request: Request, domain: str = Form(...)):
-    """Validate input, run the audit, render the result page."""
-    # Validation must complete before any audit work starts.
+async def audit_get(request: Request, domain: str = ""):
+    """GET entry point — bookmarkable / shareable URL.
+
+    With no `?domain=` query param, redirects to the form page (303). With
+    `?domain=example.com`, runs the audit and renders the result HTML.
+    Same rate limit as POST /audit since it triggers the same work.
+
+    The intended use is sharing: a user runs an audit, copies their
+    browser URL, and pastes it into an email/Slack to a vendor. The
+    vendor clicks the link and sees a fresh audit (re-run server-side,
+    not cached HTML) — this is intentional. Posture changes over time;
+    a shared link should reflect current reality, not a snapshot.
+    """
+    # No domain → redirect to the form. Bare-GET behavior (e.g. typed-in
+    # /audit URL, stale bookmark from before this route accepted a query
+    # param) keeps working unchanged.
+    if not domain or not domain.strip():
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    return await _run_audit_and_render(request, domain)
+
+
+async def _run_audit_and_render(request: Request, domain: str):
+    """Shared audit→render flow used by both POST and GET /audit.
+
+    Returns:
+        - HTMLResponse on success (the result page)
+        - TemplateResponse(error.html, 400) on validation failure
+        - TemplateResponse(error.html, 5xx-ish) on audit failure
+
+    The validation step runs synchronously (DNS resolution included via
+    the SSRF guard); the audit itself goes to the worker pool.
+    """
     try:
         validated = validate_domain_input(domain)
     except ValidationError as exc:
@@ -392,23 +422,6 @@ async def submit_audit(request: Request, domain: str = Form(...)):
             },
             status_code=_status_for_error_kind(envelope["error"]["kind"]),
         )
-
-
-@app.get("/audit", include_in_schema=False)
-@app.get("/audit/", include_in_schema=False)
-async def audit_get_redirect():
-    """Redirect bare GET requests to /audit (no domain) back to the form.
-
-    Without this, a user who navigates directly to /audit (e.g. typing it
-    in, opening a stale bookmark, removing the .txt extension from a
-    download URL) gets a 405 Method Not Allowed with a JSON body — the
-    POST-only audit endpoint refusing the GET. That's confusing for a
-    user who just wants to start an audit.
-
-    303 See Other is the right status here: the user GETted a thing that
-    is not a resource, so we send them to a thing that is.
-    """
-    return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/audit/{domain}.txt", response_class=PlainTextResponse)
