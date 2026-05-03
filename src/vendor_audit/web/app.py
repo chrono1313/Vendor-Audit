@@ -48,9 +48,10 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .. import audit, audit_txt_report
@@ -255,7 +256,133 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# ── Exception handlers ───────────────────────────────────────────────────────
+
+# Replace FastAPI/Starlette's default JSON error responses with our HTML
+# error page. Reasons:
+#   1. Consistency: validation errors already render error.html; 404 / 405
+#      / 429 / 500 should match.
+#   2. Audience: most people landing on a 404 are users who mistyped a URL
+#      or followed a stale link, not API clients. JSON is hostile to them.
+#   3. Tone: a 500 in particular is exactly when a "what happened, what
+#      to do" message is most valuable. The default JSON shape is just
+#      anxiety-inducing.
+#
+# The HTTP status code is preserved (we still return 404, 429, 500) — only
+# the body shape changes from JSON to HTML.
+
+def _render_error_page(
+    request: Request,
+    *,
+    status_code: int,
+    title: str,
+    message: str,
+    code: str,
+) -> HTMLResponse:
+    """Render error.html with the given context.
+
+    Helper so the four handlers below stay short and consistent.
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="error.html",
+        context={
+            "title": title,
+            "message": message,
+            "code": code,
+            "version": audit.__version__,
+        },
+        status_code=status_code,
+    )
+
+
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Catch 404, 405, and other framework-raised HTTPException responses.
+
+    FastAPI itself raises StarletteHTTPException for unmatched routes (404)
+    and method-not-allowed (405); explicit HTTPException(...) raises in our
+    code path through here too.
+    """
+    if exc.status_code == 404:
+        return _render_error_page(
+            request,
+            status_code=404,
+            title="Page not found",
+            message=(
+                "That URL doesn't match any page on this site. The link may "
+                "be stale, or the address may have a typo. Head back to the "
+                "home page to start a new audit."
+            ),
+            code="not_found",
+        )
+    if exc.status_code == 405:
+        return _render_error_page(
+            request,
+            status_code=405,
+            title="That action isn't supported",
+            message=(
+                "This URL exists but doesn't accept the request method that "
+                "was used. Head back to the home page to start an audit."
+            ),
+            code="method_not_allowed",
+        )
+    # Catch-all for any other HTTPException we haven't tailored. Preserves
+    # the original status code and uses the exception's detail as the body.
+    return _render_error_page(
+        request,
+        status_code=exc.status_code,
+        title=f"Error {exc.status_code}",
+        message=str(exc.detail) if exc.detail else "An error occurred handling that request.",
+        code=f"http_{exc.status_code}",
+    )
+
+
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """Replace slowapi's default JSON 429 with our HTML error page.
+
+    The default response is a plain `{"error": "Rate limit exceeded: 3 per
+    10 second"}` — accurate but unhelpful to a user who just hit refresh
+    too fast. The HTML page tells them what to do.
+    """
+    return _render_error_page(
+        request,
+        status_code=429,
+        title="Too many requests",
+        message=(
+            "You've sent more requests than the rate limit allows. This is "
+            "to keep the service responsive for everyone. Wait a few "
+            "seconds and try again."
+        ),
+        code="rate_limited",
+    )
+
+
+async def _server_error_handler(request: Request, exc: Exception):
+    """Catch any unhandled exception and render a generic 500 page.
+
+    The exception is logged at error level so we can investigate; the
+    user just sees a friendly "something went wrong" message rather than
+    a stack trace or the default JSON.
+    """
+    log.exception("unhandled exception during request: path=%s", request.url.path)
+    return _render_error_page(
+        request,
+        status_code=500,
+        title="Something went wrong",
+        message=(
+            "An error occurred handling that request. The error has been "
+            "logged. Try again, or head back to the home page to start a "
+            "new audit."
+        ),
+        code="server_error",
+    )
+
+
+app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+app.add_exception_handler(Exception, _server_error_handler)
 
 
 # ── Security headers middleware ──────────────────────────────────────────────
