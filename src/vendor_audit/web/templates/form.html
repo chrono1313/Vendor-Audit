@@ -192,7 +192,10 @@
       btn.textContent = 'Auditing\u2026';
     }
     if (input) {
-      input.disabled = true;
+      // readOnly (not disabled) — disabled inputs are excluded from form
+      // submission, which would cause the server to receive no `domain`
+      // field and return a 422 validation error.
+      input.readOnly = true;
     }
     if (what) {
       what.innerHTML = '<p style="color: var(--muted)">Auditing ' +

@@ -204,7 +204,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     # If you change the script, update this hash too — the simplest way
     # is to delete it, redeploy, view-source the page, copy the hash from
     # the browser's CSP-violation console message, paste it back.
-    _FORM_SCRIPT_HASH = "'sha256-2puNjZCZ93sRTYJSugKqLJV6elt87DT95pCF7X724N8='"
+    _FORM_SCRIPT_HASH = "'sha256-TBMI05OdugQw+eAae4Xcvfb3PTQImVcTI3m2IoBxbqM='"
 
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
