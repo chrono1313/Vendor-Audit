@@ -117,16 +117,24 @@ _REAUDIT_SCRIPT = r'''(function () {
   if (!forms.length) return;
   forms.forEach(function (form) {
     form.addEventListener('submit', function () {
-      var report = document.querySelector('.report');
-      if (!report) return;
       var hidden = form.querySelector('input[name="domain"]');
       var domain = hidden && hidden.value ? hidden.value : 'this domain';
       var safe = domain.replace(/[<>&"]/g, '');
-      report.innerHTML =
-        '<div style="text-align: center; padding: 4rem 1rem; color: var(--muted); font-size: 1.1rem;">' +
-        'Re-auditing <strong style="color: var(--fg);">' + safe + '</strong>\u2026<br>' +
-        '<span style="font-size: 0.9rem;">this usually takes 1\u20133 seconds</span>' +
-        '</div>';
+      // Defer the DOM mutation so the browser has already started the
+      // navigation by the time we yank the form out via innerHTML.
+      // Without setTimeout, replacing .report (which contains the form)
+      // during the submit handler can cause the browser to abort the
+      // submission — the form element is no longer connected to the
+      // document by the time the navigation pipeline reads it.
+      setTimeout(function () {
+        var report = document.querySelector('.report');
+        if (!report) return;
+        report.innerHTML =
+          '<div style="text-align: center; padding: 4rem 1rem; color: var(--muted); font-size: 1.1rem;">' +
+          'Re-auditing <strong style="color: var(--fg);">' + safe + '</strong>\u2026<br>' +
+          '<span style="font-size: 0.9rem;">this usually takes 1\u20133 seconds</span>' +
+          '</div>';
+      }, 0);
     });
   });
 })();'''

@@ -276,7 +276,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     # SHA-256 hash of the re-audit feedback script embedded in the result
     # page (see render_html._REAUDIT_SCRIPT). Same update procedure: change
     # the script body in render_html.py, the hash here must change too.
-    _RESULT_SCRIPT_HASH = "'sha256-PpRk/FesZ2G2fBSy3336UpySSnvqAbG+nNXkkyDdZg8='"
+    _RESULT_SCRIPT_HASH = "'sha256-wP/dSxI/ORNfGZWSY3GUUR885LT75QSJOillR7Oath0='"
 
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
