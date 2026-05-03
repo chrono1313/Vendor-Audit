@@ -912,9 +912,9 @@ def render(original_domain, audit_domain, r, dns_server):
     else:
         print(ok("Strict-Transport-Security header present"))
 
-        # ── max-age strength (Mozilla Observatory: 6 months minimum) ─────────
+        # ── max-age strength (OWASP/Qualys: 180-day minimum) ──────────────────
         ma = hsts.get("max_age")
-        min_age = RUBRIC["thresholds"].get("hsts_max_age_min_seconds", 15768000)
+        min_age = RUBRIC["thresholds"].get("hsts_max_age_min_seconds", 15552000)
         if ma is None:
             print(warn("max-age missing — header has no expiry directive",
                        "HSTS — max-age missing", "HSTS max-age strength"))
@@ -924,7 +924,7 @@ def render(original_domain, audit_domain, r, dns_server):
         else:
             days = ma // 86400
             min_days = min_age // 86400
-            print(warn(f"max-age: {ma} ({days} days) — below the {min_days}-day minimum recommended by Mozilla",
+            print(warn(f"max-age: {ma} ({days} days) — below the {min_days}-day minimum (OWASP/Qualys)",
                        f"HSTS — max-age too short ({days} days)", "HSTS max-age strength"))
 
         if hsts.get("includes_subdomains"):

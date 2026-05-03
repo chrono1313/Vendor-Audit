@@ -3906,7 +3906,7 @@ def score_results(results):
     # ── HSTS max-age strength ─────────────────────────────────────────────────
     if not hsts.get("error") and hsts.get("present"):
         ma = hsts.get("max_age")
-        min_age = _THRESH.get("hsts_max_age_min_seconds", 15768000)
+        min_age = _THRESH.get("hsts_max_age_min_seconds", 15552000)
         if ma is None:
             _p("HSTS max-age strength", "missing")
         elif ma >= min_age:

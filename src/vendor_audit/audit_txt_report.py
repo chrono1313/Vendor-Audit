@@ -564,7 +564,7 @@ class _ReportData:
             "HSTS present":            "HTTP Strict Transport Security (HSTS) not set",
             "HSTS includeSubDomains":  "HSTS missing includeSubDomains directive",
             "HSTS preloaded":          "HSTS not on the preload list",
-            "HSTS max-age strength":   "HSTS max-age below 6 months",
+            "HSTS max-age strength":   "HSTS max-age below 180 days",
             "HTTP version":            "HTTP/3 not supported",
             "HTTP\u2192HTTPS redirect": "Plain HTTP does not redirect to HTTPS",
             "Server header":           "Server header discloses software / version",
@@ -1555,7 +1555,7 @@ def _render_hsts_section(data):
         parts.append(_status("pass", "Strict-Transport-Security header present"))
 
         ma = hsts.get("max_age")
-        min_age = 15768000  # 6 months — Mozilla Observatory minimum
+        min_age = 15552000  # 180 days — OWASP/Qualys minimum
         if ma is None:
             parts.append(_status("warn",
                 "max-age missing — header has no expiry directive"))
@@ -1567,7 +1567,7 @@ def _render_hsts_section(data):
             days = ma // 86400
             min_days = min_age // 86400
             parts.append(_status("warn",
-                f"max-age={int(ma):,} ({days} days) — below the {min_days}-day minimum recommended by Mozilla"))
+                f"max-age={int(ma):,} ({days} days) — below the {min_days}-day minimum (OWASP/Qualys)"))
 
         if hsts.get("includes_subdomains"):
             parts.append(_status("pass", "includeSubDomains set"))
