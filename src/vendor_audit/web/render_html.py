@@ -578,6 +578,16 @@ def _render_action_bar_html(data, domain):
         f'    <a class="download-link" href="/audit/{_h(domain)}.txt" '
         f'download>Download as .txt</a>'
     )
+    # Re-audit re-runs against the same domain. Done as a real <form>
+    # POST (not a GET link) so it reuses the existing /audit POST
+    # endpoint, including its rate limit. Styled as a link via .as-link
+    # so it matches the surrounding action-bar items visually.
+    out.append(
+        f'    <form class="reaudit-form" method="post" action="/audit">'
+        f'<input type="hidden" name="domain" value="{_h(domain)}">'
+        f'<button type="submit" class="as-link">Re-audit this domain</button>'
+        f'</form>'
+    )
     out.append('    <a href="/">Audit another domain</a>')
     out.append('  </div>')
     out.append('</aside>')
@@ -597,6 +607,12 @@ def _render_footer_html(data, domain):
     out.append(
         f'    <a class="download-link" href="/audit/{_h(domain)}.txt" '
         f'download>Download as .txt</a>'
+    )
+    out.append(
+        f'    <form class="reaudit-form" method="post" action="/audit">'
+        f'<input type="hidden" name="domain" value="{_h(domain)}">'
+        f'<button type="submit" class="as-link">Re-audit this domain</button>'
+        f'</form>'
     )
     out.append('    <a href="/">Audit another domain</a>')
     out.append('  </div>')
@@ -969,6 +985,24 @@ body {
 .download-link {
   font-weight: 600;
 }
+/* The re-audit form is inline so the button sits in line with the
+   surrounding link-style action items. The button itself is styled to
+   match the links so the row reads as three peers. */
+.reaudit-form {
+  display: inline;
+  margin: 0;
+}
+.reaudit-form .as-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 1.2rem 0 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+.reaudit-form .as-link:hover { text-decoration: underline; }
 .footer-info span { margin-right: 1.2rem; }
 .footer-info a { color: var(--muted); }
 .timings {

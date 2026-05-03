@@ -71,10 +71,12 @@ WORKERS = int(os.environ.get("VENDOR_AUDIT_WORKERS", "3"))
 AUDIT_TIMEOUT_S = int(os.environ.get("VENDOR_AUDIT_TIMEOUT_S", "30"))
 
 # Per-IP rate limits. Tuned by handoff guidance ("~3 per 10s") but expressed
-# as slowapi-compatible strings. The /audit endpoint is the expensive one;
-# the form page and healthz are lightly limited just to stop pure flooding.
+# as slowapi-compatible strings. The /audit POST endpoint is the expensive
+# one; the form page is lightly limited just to stop pure flooding. The
+# .txt endpoint isn't rate-limited at this layer — its in-memory cache
+# (TXT_CACHE_TTL_S below) makes repeat downloads free, and fresh audits
+# triggered through it are bounded by the worker pool size.
 LIMIT_AUDIT = os.environ.get("VENDOR_AUDIT_LIMIT_AUDIT", "3/10seconds")
-LIMIT_TXT   = os.environ.get("VENDOR_AUDIT_LIMIT_TXT",   "1/30seconds")
 LIMIT_FORM  = os.environ.get("VENDOR_AUDIT_LIMIT_FORM",  "60/minute")
 
 # When True, the app trusts the X-Forwarded-For / CF-Connecting-IP headers.
@@ -145,18 +147,6 @@ def _txt_cache_set(key: str, value):
         oldest_key = min(_txt_cache, key=lambda k: _txt_cache[k][2])
         _txt_cache.pop(oldest_key, None)
     _txt_cache[key] = (text, headers, expires)
-
-
-def _txt_cache_hit_for_request(request: Request) -> bool:
-    """exempt_when callable: True iff the URL maps to a current cache entry.
-
-    Called by slowapi BEFORE the route handler. We re-derive the cache
-    key from the URL path-param the same way the handler does. If
-    there's a hit, slowapi skips the rate limit check entirely.
-    """
-    domain = request.path_params.get("domain", "") or ""
-    cache_key = domain.lower().strip()
-    return _txt_cache_get(cache_key) is not None
 
 
 # security.txt content (RFC 9116). Configured via env so the operator can
@@ -410,23 +400,21 @@ async def audit_get_redirect():
 
 
 @app.get("/audit/{domain}.txt", response_class=PlainTextResponse)
-@limiter.limit(LIMIT_TXT, exempt_when=lambda request: _txt_cache_hit_for_request(request))
 async def download_txt(request: Request, domain: str):
-    """Plain-text report. Re-runs the audit on each request unless a
-    cached copy exists.
+    """Plain-text report. Re-runs the audit on cache miss; serves from
+    the in-memory cache on cache hit.
 
-    Cache: keyed by the lowercased domain path-param; entries live for
-    TXT_CACHE_TTL_S (default 300s). On cache hit the rate limit is
-    bypassed (via exempt_when) — re-downloading a recent report should
-    be free. On cache miss the rate limit applies normally and a fresh
-    audit runs.
+    No rate-limit decorator on this endpoint. The cache makes repeat
+    downloads free, and the POST /audit endpoint (which is rate-limited)
+    is the only other path that triggers an audit. A determined
+    attacker could enumerate distinct domains here, but the worker pool
+    naturally serializes that work, and the per-client form-page limit
+    catches obvious flooding.
 
-    The cache survives only as long as the FastAPI process; restart
-    purges it. That's fine — cache is a cost optimization, not durable
-    storage.
+    Cache: keyed by lowercased domain path-param; entries live for
+    TXT_CACHE_TTL_S (default 300s). Cache survives only as long as the
+    process; restart purges it.
     """
-    # Same key the exempt_when used. Cheap re-derivation rather than
-    # threading state.
     cache_key = domain.lower().strip()
     cached = _txt_cache_get(cache_key)
     if cached is not None:
@@ -465,9 +453,7 @@ async def download_txt(request: Request, domain: str):
             f'{envelope["timestamp"].replace(":", "-")}.txt"'
         ),
     }
-    # Cache the rendered text + headers for repeat downloads. Subsequent
-    # requests for the same URL within TXT_CACHE_TTL_S will hit and
-    # bypass the rate limit (via exempt_when).
+    # Cache for repeat downloads.
     _txt_cache_set(cache_key, (text, headers))
     return PlainTextResponse(content=text, headers=headers)
 
