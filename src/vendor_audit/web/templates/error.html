@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vendor Audit — {{ title }}</title>
+<style>
+  body {
+    font: 15px/1.5 system-ui, -apple-system, sans-serif;
+    color: #1a1a1a;
+    background: #fafaf9;
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 2rem 1rem;
+    box-sizing: border-box;
+  }
+  main { max-width: 560px; width: 100%; }
+  h1 { font-size: 1.4rem; margin: 0 0 0.4rem; }
+  .message {
+    background: #fdecea;
+    border-left: 4px solid #c0392b;
+    padding: 0.8rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 3px 3px 0;
+  }
+  .code {
+    color: #555;
+    font: 0.85em ui-monospace, monospace;
+    margin-bottom: 1rem;
+  }
+  a { color: #0366d6; }
+  footer {
+    color: #555; font-size: 0.8rem;
+    margin-top: 2rem;
+  }
+</style>
+</head>
+<body>
+<main>
+<h1>{{ title }}</h1>
+<div class="message">{{ message }}</div>
+<div class="code">code: {{ code }}</div>
+<p><a href="/">← Try a different domain</a></p>
+<footer>Vendor Audit v{{ version }}</footer>
+</main>
+</body>
+</html>

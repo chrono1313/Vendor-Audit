@@ -1,0 +1,286 @@
+[Unit]
+# Systemd service unit for the Vendor Audit web layer.
+#
+# This file is comprehensively annotated because the hardening directives
+# matter — if you remove or change one without understanding it, you may
+# silently weaken the sandbox or break the service. Each directive below
+# carries a short note explaining why it's set the way it is.
+#
+# Install:  /etc/systemd/system/vendor-audit.service
+# After editing, run:  systemctl daemon-reload && systemctl restart vendor-audit
+#
+# Verify hardening level:  systemd-analyze security vendor-audit
+# Target: SAFE (score ≤ 3.0). The unit below should reach roughly 1.5–2.0.
+
+Description=Vendor Audit web service
+Documentation=https://github.com/chrono1313/Vendor-Audit
+# Wait for the network to be available before starting; the service makes
+# outbound DNS and HTTPS calls during every audit. network-online.target
+# is the right dependency here, not just network.target — the latter only
+# means "the network stack is configured", not "the network is reachable".
+After=network-online.target
+Wants=network-online.target
+
+# Cap the restart attempts: if it fails 5 times in 60s, stop trying.
+# Otherwise a config error becomes an infinite restart loop.
+# (Note: these StartLimit* directives belong in [Unit], not [Service],
+# even though they govern restart behavior — systemd quirk.)
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+
+
+[Service]
+Type=exec
+# Run as a dedicated, unprivileged system user. The user is created by
+# the install script (see deploy/INSTALL.md). It has no shell, no home,
+# no purpose other than running this service. A compromise of the audit
+# process does not get an attacker access to anything else on the box.
+User=vendor-audit
+Group=vendor-audit
+
+# WorkingDirectory anchors relative paths and shows up in process listings.
+# /opt/vendor-audit is owned by root and read-only to the service user —
+# the install tree is immutable from the service's perspective.
+WorkingDirectory=/opt/vendor-audit
+
+# Runtime configuration lives in an environment file with mode 0640
+# (root:vendor-audit). Anything secret would go here; for now it's just
+# tunables (worker count, timeouts, rate limits). The file is created by
+# INSTALL.md; if it doesn't exist, the unit will fail to start with a
+# clear error rather than silently using defaults.
+EnvironmentFile=/etc/vendor-audit/web.env
+
+# The actual command. We use the venv's uvicorn directly rather than
+# invoking it via the system python — venv isolation, predictable PATH,
+# no chance of picking up a system-wide uvicorn that's a different version.
+#
+# --proxy-headers and --forwarded-allow-ips=127.0.0.1: the service sits
+# behind cloudflared, which connects from 127.0.0.1 with the real client
+# IP in the X-Forwarded-For / CF-Connecting-IP headers. Trusting these
+# headers ONLY when they come from 127.0.0.1 is correct: anything else
+# would let an attacker who can hit our port directly spoof their IP.
+ExecStart=/opt/vendor-audit/.venv/bin/uvicorn \
+    vendor_audit.web.app:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --proxy-headers \
+    --forwarded-allow-ips=127.0.0.1 \
+    --no-access-log
+
+# Reload nicely if you run `systemctl reload vendor-audit`. uvicorn doesn't
+# reload its app on SIGHUP (you need --reload for that, which is dev-only),
+# so reload is just a no-op signal here. Restart if you change config.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Auto-restart on failure, with a small backoff so a crash loop doesn't
+# saturate journald or wedge the system. on-failure (not always) means we
+# don't restart after a clean shutdown. The crash-loop cap (StartLimitBurst
+# / StartLimitIntervalSec) is up in [Unit] above.
+Restart=on-failure
+RestartSec=3s
+
+# Send all output to the journal. Combined with `Restart=on-failure`, this
+# means crash diagnostics are durable and inspectable via `journalctl -u
+# vendor-audit`. SyslogIdentifier sets the prefix in the journal.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vendor-audit
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hardening — filesystem
+# ─────────────────────────────────────────────────────────────────────────
+
+# Make / and /usr read-only. The service has zero need to write outside
+# its own private temp dir. ReadWritePaths is empty because the service
+# is stateless — no logs to disk (journald handles that), no cache, no DB.
+ProtectSystem=strict
+
+# Make /home, /root, /run/user inaccessible. The service user has no home
+# anyway, but defense in depth: if a future config bug runs the service
+# as a non-system user, this still keeps it out of /home.
+ProtectHome=yes
+
+# Give the service its own /tmp and /var/tmp namespaces. Anything Python
+# writes there during a request (httpx temp downloads, tempfile output)
+# is invisible to other processes and gets wiped on stop.
+PrivateTmp=yes
+
+# Mostly-hide /dev. The service gets /dev/null, /dev/zero, /dev/random,
+# /dev/urandom, /dev/tty, plus pseudo-terminals — nothing else. Crucially
+# this hides /dev/mem, /dev/kmem, raw block devices, etc.
+PrivateDevices=yes
+
+# Hide other processes' /proc entries and limit /proc to PID-only files
+# (no global /proc/cpuinfo etc. — but Python doesn't care about those).
+# Available since systemd 247; Ubuntu 26.04 has 259.
+ProtectProc=invisible
+ProcSubset=pid
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hardening — capabilities and privileges
+# ─────────────────────────────────────────────────────────────────────────
+
+# Drop ALL capabilities. We bind to port 8000 (unprivileged), don't read
+# protected files, don't manipulate system state. The empty bounding set
+# means: even if something inside our process tries to acquire a
+# capability, it can't. This is the strongest privilege restriction
+# systemd offers short of seccomp.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Block setuid/setgid binaries from gaining new privileges via execve.
+# Required by SystemCallFilter below anyway, but explicit is clearer.
+NoNewPrivileges=yes
+
+# Block creating SUID/SGID files.
+RestrictSUIDSGID=yes
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hardening — kernel
+# ─────────────────────────────────────────────────────────────────────────
+
+# Block writes to /proc/sys, /sys, /proc/sysrq-trigger, /proc/latency_stats.
+ProtectKernelTunables=yes
+
+# Block module loading via finit_module/init_module/delete_module.
+ProtectKernelModules=yes
+
+# Block reading kernel logs (dmesg, /dev/kmsg, /proc/kmsg).
+ProtectKernelLogs=yes
+
+# Block changes to the system clock. Service has no business doing this.
+ProtectClock=yes
+
+# Block changing the hostname or domainname.
+ProtectHostname=yes
+
+# Block writes to /sys/fs/cgroup. Service has no business doing this either.
+ProtectControlGroups=yes
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hardening — namespaces and execution
+# ─────────────────────────────────────────────────────────────────────────
+
+# Block mount, pivot_root, unshare, clone-with-new-namespace, etc. The
+# service is not a container runtime; it has no business creating
+# namespaces.
+RestrictNamespaces=yes
+
+# Block changing the process personality (e.g. from x86-64 to x86 emulation).
+# A common sandbox-escape technique is to pivot to a 32-bit personality
+# where different syscall numbers apply.
+LockPersonality=yes
+
+# Block setting realtime scheduling priorities.
+RestrictRealtime=yes
+
+# Restrict to native ABI only. Without this, a process can use 32-bit
+# syscalls on a 64-bit kernel, which bypasses many seccomp filters.
+SystemCallArchitectures=native
+
+# Clean up SysV IPC objects (semaphores, shared memory, message queues)
+# owned by the service user when the service stops.
+RemoveIPC=yes
+
+# Restrictive default file permissions for anything the service creates.
+# 0077 = owner has full access, group/other have nothing.
+UMask=0077
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hardening — network
+# ─────────────────────────────────────────────────────────────────────────
+
+# Restrict the address families the service can use. We need:
+#   AF_INET   — IPv4: DNS, HTTP/HTTPS, SMTP (--deep, but web doesn't use)
+#   AF_INET6  — IPv6: same protocols, v6 transport
+#   AF_UNIX   — for ProcessPoolExecutor's worker-IPC sockets (it uses
+#               AF_UNIX socketpair for parent↔worker communication)
+# Notably absent: AF_NETLINK (kernel config queries), AF_PACKET (raw
+# sockets — would let an attacker craft arbitrary packets), AF_BLUETOOTH,
+# AF_CAN, AF_VSOCK, etc. None of these are needed.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# IPAddressDeny / IPAddressAllow are deliberately NOT set here. They would
+# let us restrict outbound traffic by IP at the kernel level, which is
+# tempting for SSRF defense in depth — but the audit needs to reach
+# arbitrary public IPs (the entire point), and listing every public range
+# would be unwieldy. The web/validate.py SSRF guard rejects internal
+# targets at the application layer; the DMZ firewall is the second line
+# of defense.
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hardening — system call filter
+# ─────────────────────────────────────────────────────────────────────────
+
+# @system-service is the predefined seccomp filter for typical server
+# workloads. It permits common syscalls (read, write, network I/O,
+# fork-and-exec, file ops) and blocks the obviously-dangerous ones
+# (kexec_load, init_module, mount, ptrace, etc.).
+SystemCallFilter=@system-service
+
+# Then explicitly drop additional groups @system-service permits but we
+# don't need:
+#   @debug      ptrace, perf_event_open — debugging and profiling
+#   @mount      mount/umount/chroot
+#   @swap       swapon, swapoff
+#   @reboot     reboot, kexec_load
+#   @privileged anything requiring CAP_SYS_ADMIN (we already dropped caps,
+#               but seccomp is a faster gate)
+#   @resources  changing process resource limits beyond initial state
+SystemCallFilter=~@debug @mount @swap @reboot @privileged @resources
+
+# Return EPERM rather than SIGSYS-killing on a filtered syscall. Easier
+# to debug — Python sees the EPERM, raises an OSError with a clear errno,
+# vs. an opaque SIGSYS that hard-kills the whole worker.
+SystemCallErrorNumber=EPERM
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hardening — memory
+# ─────────────────────────────────────────────────────────────────────────
+
+# Block W+X memory mappings. This is the strongest defense against
+# memory-corruption exploits that spray executable shellcode. CPython
+# itself doesn't use W+X (it interprets bytecode, doesn't JIT). But:
+#
+#   - If you ever add a JIT-using dependency (PyPy, numba, etc.),
+#     this directive WILL break the service.
+#   - Some Python C extensions allocate W+X for trampolines — rare but
+#     possible.
+#   - Under Ubuntu 26.04, Apache2's default unit now has this enabled
+#     and it is known to break PHP's JIT (per release notes).
+#
+# If the service starts failing with "PermissionError" or "Cannot allocate
+# memory" or strange crashes after a dependency upgrade, REMOVE this line
+# first, restart, and see if it's the cause. Test with each new dependency.
+MemoryDenyWriteExecute=yes
+
+# ─────────────────────────────────────────────────────────────────────────
+# Resource limits (defense against runaway audits / memory leaks)
+# ─────────────────────────────────────────────────────────────────────────
+
+# 512 MiB memory cap. The audit is I/O bound and rarely uses much memory;
+# the post-pool body parser holds up to 5MB of HTML per worker, and we run
+# 3 workers by default. 512 MiB is generous headroom. If the service hits
+# this cap, something has gone wrong (probably a memory leak in a
+# dependency) and we want it killed-and-restarted rather than swapping
+# the host into oblivion.
+MemoryMax=512M
+
+# 50% of one CPU on average, allowing bursts. Audits are bursty (a single
+# request fans out into ~20 concurrent network calls); a CPUQuota of 50%
+# of a single core is plenty since the work is mostly I/O-blocked.
+CPUQuota=50%
+
+# File descriptor cap. uvicorn + 3 worker processes + concurrent HTTP
+# connections + DNS sockets — 4096 is comfortable. Default on Ubuntu is
+# usually 1024, which can be tight under burst load.
+LimitNOFILE=4096
+
+# Process cap. The pool spawns 3 workers; with internal threads and
+# uvicorn's main loop, well under 100. 256 is generous and bounds any
+# fork-bomb scenario.
+TasksMax=256
+
+
+[Install]
+WantedBy=multi-user.target

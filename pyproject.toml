@@ -46,12 +46,24 @@ dependencies = [
     "requests>=2.31",
     "httpx[http2]>=0.25",
     "tldextract>=5.0",
+    "idna>=3.7",
 ]
 
 [project.urls]
 Homepage = "https://github.com/chrono1313/Vendor-Audit"
 Repository = "https://github.com/chrono1313/Vendor-Audit"
 Issues = "https://github.com/chrono1313/Vendor-Audit/issues"
+
+[project.optional-dependencies]
+# Install with: pip install -e '.[web]'
+# Required only for the public web service. The CLI works without these.
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "slowapi>=0.1.9",
+]
 
 [project.scripts]
 vendor-audit = "vendor_audit:main"
@@ -67,4 +79,9 @@ vendor_audit = [
     "scoring_rubric.json",
     "library_eol.json",
     "os_eol.json",
+]
+# The web layer ships HTML templates that need to be installed alongside
+# the .py files (Jinja2 loads them by file path at runtime).
+"vendor_audit.web" = [
+    "templates/*.html",
 ]

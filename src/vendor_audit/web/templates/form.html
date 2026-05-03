@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vendor Audit — passive domain security audit</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --muted: #555;
+    --bg: #fafaf9;
+    --accent: #0366d6;
+    --border: #d5d3cf;
+  }
+  body {
+    font: 15px/1.5 system-ui, -apple-system, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 2rem 1rem;
+    box-sizing: border-box;
+  }
+  main {
+    max-width: 560px;
+    width: 100%;
+  }
+  h1 {
+    font-size: 1.7rem;
+    margin: 0 0 0.4rem;
+  }
+  .lede {
+    color: var(--muted);
+    margin: 0 0 1.6rem;
+    font-size: 1.05rem;
+  }
+  form {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.6rem;
+  }
+  input[type="text"] {
+    flex: 1;
+    font: inherit;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: white;
+  }
+  input[type="text"]:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+    border-color: var(--accent);
+  }
+  button {
+    font: inherit;
+    padding: 0.6rem 1.2rem;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  .what {
+    color: var(--muted);
+    font-size: 0.92rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.2rem;
+  }
+  .what p { margin: 0 0 0.8rem; }
+  .what code {
+    font: 0.9em ui-monospace, monospace;
+    background: #ececea;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin-top: 2.4rem;
+  }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+<h1>Vendor Audit</h1>
+<p class="lede">A passive, evidence-based check of a domain's DNS, email, TLS, and HTTP posture.</p>
+
+<form method="post" action="/audit">
+  <input type="text" name="domain" placeholder="example.com"
+         autofocus required autocomplete="off"
+         spellcheck="false" autocapitalize="off">
+  <button type="submit">Audit</button>
+</form>
+
+<section class="what">
+  <p>Type a domain (or paste a URL — schemes and paths are stripped). The audit checks SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS configuration, HSTS, HTTP/2 and HTTP/3 support, security headers, cookie attributes, EOL libraries and operating systems, and more — about 60 scored checks against published RFCs, W3C specs, OWASP guidance, and CA/Browser Forum baselines.</p>
+
+  <p>Every finding cites the standard it's measured against. The result is a score, a category breakdown, and a list of findings suitable for sharing with the audited domain's technical team.</p>
+
+  <p>This service is passive: it reads what the domain voluntarily publishes (DNS, HTTPS GET, public APIs). It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; the same tool is available as a CLI for batch use, deep-mode checks, and SSL Labs integration.</p>
+</section>
+
+<footer>
+  Vendor Audit v{{ version }}
+</footer>
+</main>
+</body>
+</html>
