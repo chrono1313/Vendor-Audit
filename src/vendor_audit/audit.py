@@ -49,15 +49,16 @@ import idna
 
 # Wall-clock budget for a single audit. If the parallel-checks pool hasn't
 # completed by this many seconds, we collect what we have, mark the rest as
-# deadline-skipped, and return a partial-results envelope. Without this
-# bound, an unreachable host (one that drops packets rather than refusing
-# them — e.g. localhost.com pointing at 74.125.224.72) ties up a worker
-# until every individual check's timeout fires sequentially, which can
-# total well over a minute. The web layer's per-request timeout is 30s,
-# so we set this to 25s — leaves headroom for post-pool synthesis (CSP
-# analysis, cert variant, exec summary) and for the web layer to render
-# the result page.
-AUDIT_WALL_DEADLINE_S = 25
+# deadline-skipped, and return a partial-results envelope.
+#
+# Healthy audits finish in 1-3 seconds, but several checks chain serial
+# HTTP fetches under their own _http_timeout (security.txt has two
+# attempts: /.well-known/security.txt then /security.txt; redirect target
+# audits do those again on the destination). Each blackholed fetch waits
+# its full _http_timeout before failing. 15s is a generous ceiling that
+# accommodates these chains for slow-but-legitimate hosts while still
+# killing a hard blackhole comfortably under Cloudflare's tunnel timeout.
+AUDIT_WALL_DEADLINE_S = 15
 
 from . import audit_checks
 from .audit_checks import (
@@ -428,12 +429,12 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
 
             with ThreadPoolExecutor(max_workers=len(post_pool_jobs)) as pp_ex:
                 pp_futs = {pp_ex.submit(_timed_call, fn): key for key, fn in post_pool_jobs}
-                # Post-pool deadline: shorter than the main pool's because
-                # these are fewer, mostly faster jobs. Same blackhole-host
-                # protection — without this, mta_sts_policy on an
-                # unreachable domain could hang for the full _http_timeout
-                # plus retries.
-                pp_deadline = max(10, AUDIT_WALL_DEADLINE_S // 2)
+                # Post-pool deadline: half the main pool's budget, with
+                # a 3-second floor since these jobs are individually fast
+                # and we don't need much. Without this, mta_sts_policy on
+                # an unreachable domain could hang for the full
+                # _http_timeout plus retries.
+                pp_deadline = max(3, AUDIT_WALL_DEADLINE_S // 2)
                 try:
                     for fut in as_completed(pp_futs, timeout=pp_deadline):
                         key = pp_futs[fut]

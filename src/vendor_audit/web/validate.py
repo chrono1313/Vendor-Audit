@@ -133,7 +133,7 @@ class ValidatedDomain:
     addresses: tuple[str, ...]  # IPs the domain resolved to, for logging
 
 
-def validate_domain_input(raw: str) -> ValidatedDomain:
+def validate_domain_input(raw: str, *, dns_check: bool = True) -> ValidatedDomain:
     """Validate user input and return a ValidatedDomain on success.
 
     Raises ValidationError with one of these codes:
@@ -148,6 +148,14 @@ def validate_domain_input(raw: str) -> ValidatedDomain:
 
     On success returns a ValidatedDomain. The web layer then passes
     .domain to safe_run_audit().
+
+    With dns_check=False, layers 1-3 (shape, normalization, IP-rejection)
+    run normally but layer 4 (DNS resolution + SSRF guard) is skipped.
+    The returned ValidatedDomain has an empty addresses tuple. This mode
+    is for callers that need fast pre-flight validation without the
+    network round-trip — typically as a feasibility check before showing
+    a "loading" UI; the full validation runs again on the path that
+    actually does the audit.
     """
     # Layer 1: shape — cheap, no I/O.
     if raw is None:
@@ -218,6 +226,18 @@ def validate_domain_input(raw: str) -> ValidatedDomain:
     # the authoritative nameserver could in theory return different answers
     # to the two resolvers (DNS rebinding). That's a known gap — see module
     # docstring. The DMZ firewall is the second line of defense.
+    if not dns_check:
+        # Caller asked to skip DNS — return shape-only result. addresses
+        # is empty tuple to make this fact obvious to consumers (passing
+        # such a ValidatedDomain into safe_run_audit would normally not
+        # happen because the next call to validate_domain_input on the
+        # same input would re-check DNS).
+        return ValidatedDomain(
+            domain=normalized,
+            original=raw,
+            addresses=tuple(),
+        )
+
     addresses = _resolve_all(normalized)
     if not addresses:
         raise ValidationError(

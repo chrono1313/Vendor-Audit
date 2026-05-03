@@ -66,14 +66,14 @@ log = logging.getLogger("vendor_audit.web")
 WORKERS = int(os.environ.get("VENDOR_AUDIT_WORKERS", "3"))
 
 # Wall-clock cap per audit at the web layer. The audit itself has its own
-# internal deadlines (run_audit caps the parallel-checks pool at ~25s and
-# the post-pool jobs at another ~12s — see audit.AUDIT_WALL_DEADLINE_S).
-# This timeout is the *outer* safety net: if even those deadlines are
-# bypassed somehow (a stuck C-level call, a runaway Python loop), the
-# web layer gives up after this many seconds and returns an error page,
-# leaving the worker process to be reaped or recycled by the pool logic.
-# 45s leaves slack above the audit's ~37s worst case.
-AUDIT_TIMEOUT_S = int(os.environ.get("VENDOR_AUDIT_TIMEOUT_S", "45"))
+# internal deadlines (run_audit caps the parallel-checks pool at ~15s and
+# the post-pool jobs at ~7s — see audit.AUDIT_WALL_DEADLINE_S). This is
+# the *outer* safety net: if those deadlines are bypassed somehow (a
+# stuck C-level call, a runaway Python loop), the web layer gives up and
+# returns an error page so the user isn't left waiting for Cloudflare's
+# tunnel timeout to fire. 25s leaves slack above the audit's ~22s worst
+# case for synthesis (CSP analysis, etc.) and for rendering the result.
+AUDIT_TIMEOUT_S = int(os.environ.get("VENDOR_AUDIT_TIMEOUT_S", "25"))
 
 # Per-IP rate limits. Tuned by handoff guidance ("~3 per 10s") but expressed
 # as slowapi-compatible strings. The /audit POST endpoint is the expensive
@@ -265,44 +265,17 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     allows HTML injection (Jinja autoescapes), but a strict CSP is the
     right belt-and-suspenders.
 
-    The form page (/) gets a slightly relaxed script-src so its inline
-    submit-feedback script can run. The script is gated by SHA-256 hash,
-    not by 'unsafe-inline' — the hash binds the policy to exactly that
-    script body. Any other inline script (injected, modified, etc.) is
-    blocked. Every other page keeps script-src 'none'.
+    All our pages are JS-free — the loading page uses meta refresh for
+    progressive feedback, not JS — so script-src is uniformly 'none'.
+    The strongest possible setting.
     """
-
-    # SHA-256 hash of the form-submit feedback script in form.html.
-    # If you change the script, update this hash too — the simplest way
-    # is to delete it, redeploy, view-source the page, copy the hash from
-    # the browser's CSP-violation console message, paste it back.
-    _FORM_SCRIPT_HASH = "'sha256-unjMUlcxd4xX8nbWJVa21693cUyrq7n/LJYke0D7wlA='"
-
-    # SHA-256 hash of the re-audit feedback script embedded in the result
-    # page (see render_html._REAUDIT_SCRIPT). Same update procedure: change
-    # the script body in render_html.py, the hash here must change too.
-    _RESULT_SCRIPT_HASH = "'sha256-wP/dSxI/ORNfGZWSY3GUUR885LT75QSJOillR7Oath0='"
 
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
 
-        # Pick the script-src based on path. The form page (/) and the
-        # result page (POST /audit) are the only endpoints that ship
-        # inline JS; everything else gets 'none'.
-        path = request.url.path
-        if path == "/":
-            script_src = f"script-src {self._FORM_SCRIPT_HASH}"
-        elif path == "/audit":
-            # POST /audit returns the result page. (GET /audit redirects
-            # to / — that response also gets this CSP, but it's a 303 with
-            # no body, so the script-src doesn't matter for it.)
-            script_src = f"script-src {self._RESULT_SCRIPT_HASH}"
-        else:
-            script_src = "script-src 'none'"
-
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            f"{script_src}; "
+            "script-src 'none'; "
             "style-src 'self' 'unsafe-inline'; "  # inline styles in templates
             "img-src 'self' data:; "
             "object-src 'none'; "
@@ -356,23 +329,84 @@ async def form_page(request: Request):
 
 @app.get("/audit", include_in_schema=False)
 @app.get("/audit/", include_in_schema=False)
-@limiter.limit(LIMIT_AUDIT)
+@limiter.limit(LIMIT_FORM)
 async def audit_get(request: Request, domain: str = ""):
     """GET entry point — bookmarkable / shareable URL.
 
-    With no `?domain=` query param, redirects to the form page (303). With
-    `?domain=example.com`, runs the audit and renders the result HTML.
-    Same rate limit as POST /audit since it triggers the same work.
+    With no `?domain=` query param, redirects to the form page (303).
+    With a domain, returns a small "Auditing example.com..." loading
+    page that meta-refreshes to /audit/result?domain=foo where the
+    audit actually runs. The two-step gives the user immediate visual
+    feedback during slow audits (blackholed hosts in particular)
+    instead of staring at a blank page until the audit's deadline
+    fires.
 
-    The intended use is sharing: a user runs an audit, copies their
-    browser URL, and pastes it into an email/Slack to a vendor. The
-    vendor clicks the link and sees a fresh audit (re-run server-side,
-    not cached HTML) — this is intentional. Posture changes over time;
-    a shared link should reflect current reality, not a snapshot.
+    The shareable URL is /audit?domain=foo — recipients always see the
+    loading page first, then the result. The result URL itself is also
+    bookmarkable for power users who want to skip the brief loading
+    flash.
+
+    Rate-limited under LIMIT_FORM (60/min) since this endpoint does no
+    audit work — the actual audit happens at /audit/result, where
+    LIMIT_AUDIT (3/10s) applies. If we used LIMIT_AUDIT here too, every
+    form submission would burn TWO tokens (loading + result), cutting
+    user capacity in half.
+
+    We do basic shape validation here (cheap, no network) so obviously-
+    bad input goes straight to the error page without the loading
+    detour. The /audit/result endpoint re-validates with the full
+    SSRF-guard pipeline before doing any audit work.
     """
-    # No domain → redirect to the form. Bare-GET behavior (e.g. typed-in
-    # /audit URL, stale bookmark from before this route accepted a query
-    # param) keeps working unchanged.
+    if not domain or not domain.strip():
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+    # Cheap pre-flight: catch obviously bad input here so the user
+    # doesn't see a loading page that resolves to an error. The full
+    # SSRF/DNS validation runs in /audit/result; if THAT fails (e.g.
+    # private IP), the user lands on the error page after the loading
+    # flash. Slightly worse UX than catching everything here, but
+    # keeping this endpoint network-free preserves the "instant
+    # response" property we want.
+    try:
+        validate_domain_input(domain, dns_check=False)
+    except ValidationError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            context={
+                "title": "That input couldn't be audited",
+                "message": str(exc),
+                "code": exc.code,
+                "version": audit.__version__,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Pass the domain straight through. We URL-encode it to be safe
+    # against any character that might survive shape validation but
+    # confuse the URL parser (none should, but defensive).
+    from urllib.parse import quote
+    result_url = f"/audit/result?domain={quote(domain.strip())}"
+    return templates.TemplateResponse(
+        request=request,
+        name="loading.html",
+        context={
+            "display_domain": domain.strip(),
+            "result_url": result_url,
+        },
+    )
+
+
+@app.get("/audit/result", include_in_schema=False)
+@limiter.limit(LIMIT_AUDIT)
+async def audit_result(request: Request, domain: str = ""):
+    """Actual audit-running endpoint. Renders the result page.
+
+    Shape: same as the old /audit GET — validate, run audit, render.
+    Reachable directly (e.g. bookmarked from the URL bar) and reached
+    via meta refresh from /audit. Also where the form page submits
+    its result requests via the GET form.
+    """
     if not domain or not domain.strip():
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
     return await _run_audit_and_render(request, domain)

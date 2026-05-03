@@ -101,47 +101,6 @@ _LOGO_SVG = (
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-# Inline JavaScript for the result page: when a re-audit form is
-# submitted, replace the report content with a "Re-auditing..." message
-# so the user sees clearly that work is in progress. The audit completes
-# in 1–2 seconds and the result page replaces this; without the loading
-# state the page would visually appear unchanged for the duration.
-#
-# Gated by CSP via SHA-256 hash. If you change one byte of this string,
-# update RESULT_SCRIPT_HASH in web/app.py — easiest way: ship the change,
-# load the page, copy the hash from the browser's CSP-violation console
-# message, paste back. The script is deliberately self-contained (no
-# dependencies, no external resources) so the hash is stable.
-_REAUDIT_SCRIPT = r'''(function () {
-  var forms = document.querySelectorAll('.reaudit-form');
-  if (!forms.length) return;
-  forms.forEach(function (form) {
-    form.addEventListener('submit', function () {
-      var hidden = form.querySelector('input[name="domain"]');
-      var domain = hidden && hidden.value ? hidden.value : 'this domain';
-      var safe = domain.replace(/[<>&"]/g, '');
-      // Defer the DOM mutation so the browser has already started the
-      // navigation by the time we yank the form out via innerHTML.
-      // Without setTimeout, replacing .report (which contains the form)
-      // during the submit handler can cause the browser to abort the
-      // submission — the form element is no longer connected to the
-      // document by the time the navigation pipeline reads it.
-      setTimeout(function () {
-        var report = document.querySelector('.report');
-        if (!report) return;
-        report.innerHTML =
-          '<div style="text-align: center; padding: 4rem 1rem; color: var(--muted); font-size: 1.1rem;">' +
-          'Re-auditing <strong style="color: var(--fg);">' + safe + '</strong>\u2026<br>' +
-          '<span style="font-size: 0.9rem;">this usually takes 1\u20133 seconds</span>' +
-          '</div>';
-      }, 0);
-    });
-  });
-})();'''
-
-
-# ── Constants ────────────────────────────────────────────────────────────────
-
 # Severity marker characters used by audit_txt_report._MARKERS. Mirrored
 # here so we don't import a private constant. If the txt report ever
 # changes these symbols, the parser below stops finding matches and HTML
@@ -241,10 +200,6 @@ def render_result(envelope: dict) -> str:
     parts.append(_render_footer_html(data, domain))
 
     parts.append('</main>')
-    # Inline script: handles re-audit form submission with a "Re-auditing..."
-    # placeholder so the user sees that work is in progress. CSP-gated by
-    # SHA-256 hash of _REAUDIT_SCRIPT (see web/app.py).
-    parts.append(f'<script>{_REAUDIT_SCRIPT}</script>')
     parts.append('</body></html>')
     return "\n".join(parts)
 

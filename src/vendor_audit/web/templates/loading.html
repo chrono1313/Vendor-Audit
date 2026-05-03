@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vendor Audit — auditing {{ display_domain }}</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+
+{# Meta refresh fires immediately. The URL is server-built so it's already
+   safe (the domain came from validation, the destination URL is constant
+   shape). The browser navigates to /audit/result?domain=... after a
+   single paint, so the user sees this page for ~1 frame before the
+   actual audit-in-progress wait begins. The address bar updates to the
+   destination URL on navigation, so re-loading or sharing from there
+   skips this loading shell entirely. #}
+<meta http-equiv="refresh" content="0; url={{ result_url }}">
+
+<style>
+  :root {
+    --bg: rgb(40, 40, 38);
+    --panel: rgb(48, 48, 45);
+    --fg: #ececea;
+    --muted: #8e8e8a;
+    --accent: #5fa3ff;
+    --border: rgba(255, 255, 255, 0.08);
+  }
+  body {
+    font: 15px/1.5 system-ui, -apple-system, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 2rem 1rem;
+    box-sizing: border-box;
+  }
+  @media (max-width: 600px) {
+    body { place-items: start center; padding: 1rem 1rem 2rem; }
+  }
+  main { text-align: center; max-width: 480px; width: 100%; }
+  .logo {
+    width: 48px; height: 48px;
+    margin: 0 auto 0.6rem;
+    color: var(--fg);
+  }
+  .logo svg { display: block; width: 100%; height: 100%; }
+  .brand {
+    font: 600 1.2rem system-ui, sans-serif;
+    margin: 0 0 1.5rem;
+    color: var(--fg);
+  }
+  .status {
+    color: var(--muted);
+    font-size: 1.05rem;
+  }
+  .status strong { color: var(--fg); }
+
+  /* The pulsing dot is a CSS animation only — no JS needed. The CSP
+     for this page allows nothing but our own styles, so this is the
+     only feedback we can show. */
+  .pulse {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 0.5rem;
+    vertical-align: middle;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.85); }
+    50%      { opacity: 1.0; transform: scale(1.0);  }
+  }
+  .hint {
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin-top: 1.2rem;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<main>
+<a class="brand-link" href="/" aria-label="Vendor Audit home" style="color: inherit; text-decoration: none;">
+<div class="logo">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Vendor Audit logo">
+  <circle cx="40" cy="40" r="28" fill="none" stroke="currentColor" stroke-width="3"/>
+  <line x1="60" y1="60" x2="82" y2="82" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
+  <line x1="32" y1="38" x2="46" y2="34" stroke="#5fa3ff" stroke-width="1"/>
+  <line x1="46" y1="34" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>
+  <line x1="32" y1="38" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>
+  <circle cx="32" cy="38" r="3" fill="#5fa3ff"/>
+  <circle cx="46" cy="34" r="3" fill="#5fa3ff"/>
+  <circle cx="50" cy="48" r="3" fill="#5fa3ff"/>
+</svg>
+</div>
+<div class="brand">Vendor Audit</div>
+</a>
+<p class="status">
+  <span class="pulse" aria-hidden="true"></span>
+  Auditing <strong>{{ display_domain }}</strong>&hellip;
+</p>
+<p class="hint">Most audits complete in 1&ndash;3 seconds. Hosts that drop packets may take up to 15 seconds before partial results appear.</p>
+<noscript>
+<p class="hint" style="margin-top: 0.6rem;">
+  If this page does not redirect automatically, <a href="{{ result_url }}">click here to continue</a>.
+</p>
+</noscript>
+</main>
+</body>
+</html>
