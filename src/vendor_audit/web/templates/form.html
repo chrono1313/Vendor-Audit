@@ -125,6 +125,15 @@
     margin-top: 2.4rem;
   }
   footer a { color: var(--muted); }
+  .privacy {
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    margin-top: 2.4rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .privacy strong { color: var(--fg); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -174,6 +183,8 @@
 
   <p>This service is passive: it reads what the domain voluntarily publishes (DNS, HTTPS GET, public APIs). It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, deep-mode checks, SSL Labs integration, and bulk audits.</p>
 </section>
+
+<p class="privacy"><strong>Privacy.</strong> Visitor IP and submitted domain logged for 30 days for abuse prevention. Audit results are not retained. No cookies, no analytics, no trackers, no data sold or shared. Cloudflare privacy policy applies to traffic in transit.</p>
 
 <footer>
   Vendor Audit
