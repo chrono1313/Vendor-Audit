@@ -809,7 +809,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
     out = []
 
     # ── SPF ──────────────────────────────────────────────────────────────
-    out.append(_subheading(f"SPF — {domain_label}"))
+    out.append(_subheading(f"SPF — {domain_label} (RFC 7208)"))
     out.append("")
     if spf:
         s = spf.get("status", "missing")
@@ -881,7 +881,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
     out.append("")
 
     # ── DMARC ────────────────────────────────────────────────────────────
-    out.append(_subheading(f"DMARC — {domain_label}"))
+    out.append(_subheading(f"DMARC — {domain_label} (RFC 7489)"))
     out.append("")
     if dmarc:
         if dmarc.get("error"):
@@ -944,7 +944,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
     out.append("")
 
     # ── MX ───────────────────────────────────────────────────────────────
-    out.append(_subheading(f"MX records — {domain_label}"))
+    out.append(_subheading(f"MX records — {domain_label} (RFC 5321, 7505)"))
     out.append("")
     if mx:
         if mx.get("error"):
@@ -1063,7 +1063,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
         if items:
             out.append("")
             out.append("")
-            out.append(_subheading(f"Mail transport hardening — {domain_label}"))
+            out.append(_subheading(f"Mail transport hardening — {domain_label} (RFC 8461, 8460, 6376, 7672)"))
             out.append("")
             out.extend(items)
 
@@ -1123,7 +1123,7 @@ def _render_dns_section(data):
 
     # DNSSEC
     if dnssec:
-        parts.append(_subheading("DNSSEC"))
+        parts.append(_subheading("DNSSEC (RFC 4033)"))
         parts.append("")
         tld_d = dnssec.get("tld", {}) or {}
         dom_d = dnssec.get("domain", {}) or {}
@@ -1157,7 +1157,7 @@ def _render_dns_section(data):
 
     # Nameservers / SOA
     if ns_soa:
-        parts.append(_subheading("Nameservers"))
+        parts.append(_subheading("Nameservers (RFC 1034)"))
         parts.append("")
         if ns_soa.get("ns_error"):
             parts.append(_status("info",
@@ -1191,7 +1191,7 @@ def _render_dns_section(data):
 
     # CAA
     if caa:
-        parts.append(_subheading("Certification Authority Authorization (CAA)"))
+        parts.append(_subheading("Certification Authority Authorization (CAA) (RFC 8659)"))
         parts.append("")
         if caa.get("error"):
             parts.append(_status("info",
@@ -1229,7 +1229,7 @@ def _render_routing_section(data):
     if not ipr:
         return ""
 
-    parts = ["", _heading("IP / ASN / RPKI"), ""]
+    parts = ["", _heading("IP / ASN / RPKI (RFC 6480)"), ""]
 
     def _af_block(af_label, af):
         addr   = af.get("address")
@@ -1315,7 +1315,7 @@ def _render_tls_section(data):
     if not tls and not cert_var:
         return ""
 
-    parts = ["", _heading("TLS"), ""]
+    parts = ["", _heading("TLS (RFC 8446)"), ""]
 
     if tls.get("error"):
         parts.append(_status("fail",
@@ -1383,7 +1383,7 @@ def _render_tls_section(data):
         if kv_pairs:
             parts.append("")
             parts.append("")
-            parts.append(_subheading("Certificate"))
+            parts.append(_subheading("Certificate (CA/Browser Forum Baseline Requirements)"))
             parts.append("")
             parts.append(_kv(kv_pairs))
 
@@ -1409,7 +1409,7 @@ def _render_http_section(data):
     if not redirect and not http_redir and not hv:
         return ""
 
-    parts = ["", _heading("HTTP"), ""]
+    parts = ["", _heading("HTTP (RFC 9113, 9114)"), ""]
 
     elapsed = redirect.get("elapsed_ms")
     if elapsed is not None:
@@ -1505,7 +1505,7 @@ def _render_hsts_section(data):
     if not hsts:
         return ""
 
-    parts = ["", _heading("HSTS"), ""]
+    parts = ["", _heading("HSTS (RFC 6797)"), ""]
 
     if hsts.get("error"):
         parts.append(_status("info",
@@ -1563,7 +1563,7 @@ def _render_server_disclosure_section(data):
     if not srv and not os_eol:
         return ""
 
-    parts = ["", _heading("SERVER & TECHNOLOGY DISCLOSURE"), ""]
+    parts = ["", _heading("SERVER & TECHNOLOGY DISCLOSURE (OWASP information leakage)"), ""]
 
     if srv.get("error"):
         parts.append("    Site unreachable. Server and security headers cannot be evaluated.")
@@ -1689,7 +1689,7 @@ def _render_versioned_libraries_section(data):
     if not vlibs:
         return ""
 
-    parts = ["", _heading("VERSIONED LIBRARIES"), ""]
+    parts = ["", _heading("VERSIONED LIBRARIES (OWASP A06:2021 — vulnerable & outdated components)"), ""]
     parts.append(
         f"  {len(vlibs)} client-side librar"
         f"{'y' if len(vlibs)==1 else 'ies'} detected in static HTML."
@@ -1730,7 +1730,7 @@ def _render_browser_security_headers_section(data):
     if srv.get("error") or not srv:
         return ""
 
-    parts = ["", _heading("BROWSER SECURITY HEADERS"), ""]
+    parts = ["", _heading("BROWSER SECURITY HEADERS (W3C / OWASP secure-headers)"), ""]
 
     csp_q      = srv.get("csp_quality")
     csp_a      = r.get("csp_analysis", {}) or {}
@@ -1915,7 +1915,7 @@ def _render_browser_security_headers_section(data):
     cookies = srv.get("cookies") or []
     parts.append("")
     parts.append("")
-    parts.append(_subheading("Cookies (on homepage response)"))
+    parts.append(_subheading("Cookies (on homepage response) (RFC 6265)"))
     parts.append("")
     if not cookies:
         para = ("No Set-Cookie headers on this response (cookies set after "
@@ -1999,7 +1999,7 @@ def _render_ssl_labs_section(data):
     if ssl_result is None:
         return ""
 
-    parts = ["", _heading("SSL LABS (Qualys SSL Labs API · --ssl)"), ""]
+    parts = ["", _heading("SSL LABS (Qualys SSL Labs API · --ssl) (RFC 8446 + CA/Browser BR)"), ""]
 
     test_time_ms = ssl_result.get("test_time_ms")
     if test_time_ms:
@@ -2074,7 +2074,7 @@ def _render_page_analysis_section(data):
         return ""
 
     redirect = r.get("redirect", {}) or {}
-    parts = ["", _heading("PAGE ANALYSIS (--deep)"), ""]
+    parts = ["", _heading("PAGE ANALYSIS (--deep) (W3C SRI, W3C Mixed Content, WCAG 2.1)"), ""]
 
     cap_used = redirect.get("body_cap_used") or 262144
     cap_str  = (f"{cap_used // (1024 * 1024)}MB" if cap_used >= 1048576
@@ -2249,7 +2249,7 @@ def _render_starttls_section(data):
     if starttls is None or starttls.get("mx_count", 0) == 0:
         return ""
 
-    parts = ["", _heading("MX STARTTLS PROBE (--deep)"), ""]
+    parts = ["", _heading("MX STARTTLS PROBE (--deep) (RFC 3207)"), ""]
     para = ("Probing port 25 → EHLO → STARTTLS on each MX host. Many "
             "networks block port 25 egress; partial results are normal.")
     for ln in _wrap_at_words(para, WIDTH - 2):

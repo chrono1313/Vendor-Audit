@@ -51,7 +51,7 @@
   form {
     display: flex;
     gap: 0.5rem;
-    margin-bottom: 1.6rem;
+    margin-bottom: 3rem;
   }
   input[type="text"] {
     flex: 1;
@@ -121,15 +121,21 @@
 
 <form method="post" action="/audit">
   <input type="text" name="domain" placeholder="example.com"
-         autofocus required autocomplete="off"
-         spellcheck="false" autocapitalize="off">
+         autofocus required
+         autocomplete="off"
+         autocapitalize="off"
+         autocorrect="off"
+         spellcheck="false"
+         data-1p-ignore
+         data-lpignore="true"
+         data-form-type="other">
   <button type="submit">Audit</button>
 </form>
 
 <section class="what">
   <p>Type a domain (or paste a URL — schemes and paths are stripped). The audit checks SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS configuration, HSTS, HTTP/2 and HTTP/3 support, security headers, cookie attributes, EOL libraries and operating systems, and more — about 60 scored checks against published RFCs, W3C specs, OWASP guidance, and CA/Browser Forum baselines.</p>
 
-  <p>Every finding cites the standard it's measured against. The result is a score, a category breakdown, and a list of findings suitable for sharing with the audited domain's technical team.</p>
+  <p>Every section cites the RFC, W3C spec, OWASP guidance, or CA/Browser Forum baseline it's measured against. The result is a score, a category breakdown, and a list of findings suitable for sharing with the audited domain's technical team.</p>
 
   <p>This service is passive: it reads what the domain voluntarily publishes (DNS, HTTPS GET, public APIs). It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; the same tool is available as a CLI for batch use, deep-mode checks, and SSL Labs integration.</p>
 </section>

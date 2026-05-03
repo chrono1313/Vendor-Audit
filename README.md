@@ -13,6 +13,21 @@ A default-mode run audits 60+ scored data points in roughly a second.
 domains in under a minute is typical. `--ssl` is sequential and adds 1–2
 minutes per domain because SSL Labs runs the assessment server-side.
 
+## Web version
+
+A hosted version of Vendor Audit runs at
+[vendoraudit.org](https://vendoraudit.org). It's the same audit logic,
+no install required — type a domain, get a report, optionally download
+it as a `.txt` for sharing with the vendor. The web version is intentionally
+narrower than the CLI: no `--deep`, no `--ssl` (those need SSL Labs
+registration), and no bulk mode.
+
+If you want to self-host the web service, see
+[`deploy/INSTALL.md`](deploy/INSTALL.md). It's an optional, separate install
+path — the CLI you get from `pipx install` does not start a web server and
+never imports the web stack. Only `pip install -e '.[web]'` (with the
+explicit `[web]` extra) pulls in FastAPI, uvicorn, and the rest.
+
 ## Demo Video
 
 ```bash
@@ -36,12 +51,12 @@ evaluating.
 
 **Please share the report with the vendor.** The plain-text output
 (`--report`) is designed to be readable by their technical team, and
-every finding cites the standard it's measured against — so the report
-reads as feedback, not as an accusation. Most vendors appreciate a
-heads-up they can act on; the report gives them one in a form they can
-take straight to the people who can address it. When more than one
-prospect shares these reports with the same vendor, they're more likely
-to prioritize the issues raised.
+every section cites the RFC, W3C spec, OWASP guidance, or CA/Browser Forum
+baseline it's measured against — so the report reads as feedback, not as
+an accusation. Most vendors appreciate a heads-up they can act on; the
+report gives them one in a form they can take straight to the people who
+can address it. When more than one prospect shares these reports with the
+same vendor, they're more likely to prioritize the issues raised.
 
 ## Project scope
 
@@ -106,6 +121,12 @@ pipx install git+https://github.com/chrono1313/Vendor-Audit.git
 Pipx installs the tool into its own isolated virtualenv and puts a `vendor-audit` 
 command on your `PATH`, so dependenciesdon't collide with anything else on the 
 system. This is the smoothest path on modern Linux distros.
+
+This installs **the CLI only**. It does not install a web server, does not
+listen on any port, and does not start anything in the background. The
+`vendor-audit` command is the entire program. (The web service that powers
+[vendoraudit.org](https://vendoraudit.org) lives behind a separate, opt-in
+`[web]` install path — see [`deploy/INSTALL.md`](deploy/INSTALL.md).)
 
 ```bash
 # Install pipx itself if you don't already have it
