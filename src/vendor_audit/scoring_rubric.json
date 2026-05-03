@@ -763,6 +763,10 @@
                 "earned": 3,
                 "possible": 3
             },
+            "none": {
+                "earned": 3,
+                "possible": 3
+            },
             "nonce_or_hash": {
                 "earned": 2,
                 "possible": 3
@@ -1017,7 +1021,7 @@
         "DKIM (common selectors)": "DKIM key found at common selector(s)",
         "CAA records": "CAA records restrict certificate issuance",
         "Nameserver count": "Two or more authoritative nameservers (RFC 1034)",
-        "CSP script-src safety": "CSP script-src is strict (nonce/hash/strict-dynamic)",
+        "CSP script-src safety": "CSP script-src is strict (nonce/hash, strict-dynamic, or 'none')",
         "CSP object-src": "CSP object-src restricted",
         "CSP base-uri": "CSP base-uri restricted (prevents <base> hijack)",
         "CSP frame-ancestors": "CSP frame-ancestors restricted (clickjacking)",

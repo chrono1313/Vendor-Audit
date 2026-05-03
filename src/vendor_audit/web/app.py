@@ -43,7 +43,7 @@ import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
@@ -81,6 +81,24 @@ LIMIT_FORM  = os.environ.get("VENDOR_AUDIT_LIMIT_FORM",  "60/minute")
 # This must be True in production (cloudflared sends connections from
 # 127.0.0.1 with the real client IP in headers) and False in local dev.
 TRUST_PROXY_HEADERS = os.environ.get("VENDOR_AUDIT_TRUST_PROXY", "1") == "1"
+
+# security.txt content (RFC 9116). Configured via env so the operator can
+# rotate the contact address or extend the expiry without a code deploy.
+# All values are strings; the endpoint assembles the file from them.
+#
+# Expires must be ISO 8601 UTC (e.g. "2027-01-01T00:00:00Z"). Per RFC 9116
+# the value should not be more than a year out; Vendor Audit's own checker
+# warns at >12 months. Default is "1 year from server start" which is a
+# safe value but means restarting the service rolls Expires forward.
+SECURITY_CONTACT  = os.environ.get(
+    "VENDOR_AUDIT_SECURITY_CONTACT",
+    "https://github.com/chrono1313/Vendor-Audit/security/advisories/new",
+)
+_default_expires = (datetime.now(timezone.utc) + timedelta(days=365)).strftime(
+    "%Y-%m-%dT%H:%M:%SZ"
+)
+SECURITY_EXPIRES  = os.environ.get("VENDOR_AUDIT_SECURITY_EXPIRES", _default_expires)
+SECURITY_LANG     = os.environ.get("VENDOR_AUDIT_SECURITY_LANG", "en")
 
 
 # ── Client-IP resolution for rate limiting ───────────────────────────────────
@@ -179,6 +197,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response: Response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
+            # script-src 'none' is explicit and stricter than the implicit
+            # 'self' fallback from default-src. Vendor Audit pages don't
+            # load *any* JavaScript — pure HTML and CSS. 'none' is the
+            # tightest setting CSP can express for scripts.
+            "script-src 'none'; "
             "style-src 'self' 'unsafe-inline'; "  # inline styles in templates
             "img-src 'self' data:; "
             "object-src 'none'; "
@@ -194,6 +217,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # X-Frame-Options redundant with frame-ancestors but cheap insurance
         # for older browsers / proxies.
         response.headers["X-Frame-Options"] = "DENY"
+
+        # Cross-Origin isolation headers. We set the strictest values
+        # because the site has no cross-origin embedding needs:
+        #   COOP=same-origin: a top-level browsing context with this
+        #     header cannot share a browsing-context group with cross-
+        #     origin pages — defends against tab-nabbing and Spectre.
+        #   CORP=same-origin: any cross-origin loader (image, iframe,
+        #     script tag elsewhere) cannot embed our resources at all.
+        # Together these enable cross-origin isolation; we don't actually
+        # need that capability (no SharedArrayBuffer), but the headers
+        # are also good defense in depth on their own.
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+
         # HSTS is set by Cloudflare at the edge. We don't set it here because
         # it's the proxy that terminates TLS; setting it on the upstream
         # plain-HTTP response is meaningless.
@@ -329,6 +366,39 @@ async def robots():
     longer than they are.
     """
     return PlainTextResponse(content="User-agent: *\nDisallow: /\n")
+
+
+# ── security.txt (RFC 9116) ──────────────────────────────────────────────────
+
+# Per RFC 9116 the canonical location is /.well-known/security.txt. The
+# RFC also permits /security.txt at the root for backward compatibility;
+# we serve the same content from both paths so legacy crawlers find it.
+#
+# The body is assembled once at module load (it's static apart from
+# config) so the endpoint is a near-zero-cost lookup.
+def _build_security_txt() -> str:
+    lines = [
+        f"Contact: {SECURITY_CONTACT}",
+        f"Expires: {SECURITY_EXPIRES}",
+        f"Preferred-Languages: {SECURITY_LANG}",
+        f"Canonical: https://vendoraudit.org/.well-known/security.txt",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+_SECURITY_TXT_BODY = _build_security_txt()
+
+
+@app.get("/.well-known/security.txt", response_class=PlainTextResponse)
+async def security_txt_well_known():
+    """Vulnerability disclosure metadata, per RFC 9116."""
+    return PlainTextResponse(content=_SECURITY_TXT_BODY)
+
+
+@app.get("/security.txt", response_class=PlainTextResponse)
+async def security_txt_root():
+    """Compatibility alias for the RFC 9116 file."""
+    return PlainTextResponse(content=_SECURITY_TXT_BODY)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

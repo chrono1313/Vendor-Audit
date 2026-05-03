@@ -2062,12 +2062,18 @@ def analyze_csp(csp_header, csp_report_only=False):
                     f"CSP nonce too short (< {min_bytes} bytes after decode) — guessable"))
             result["script_src_outcome"] = "nonce_or_hash"
         elif host_only:
-            result["script_src_outcome"] = "host_allowlist"
-            # Mention IP-source weakness (rare but Google flags it)
-            for v in sd_low:
-                if v.startswith(("http://", "https://")) and re.match(r"https?://\d+\.\d+\.\d+\.\d+", v):
-                    result["findings"].append(("medium",
-                        f"CSP script-src uses an IP source ({v}) — IPs cannot serve TLS hostnames securely"))
+            # 'none' is strictly stronger than any allowlist — nothing can
+            # run, no nonce required, no inline allowed. Score it as the
+            # top tier alongside strict-dynamic + nonce policies.
+            if sd_low == ["'none'"]:
+                result["script_src_outcome"] = "none"
+            else:
+                result["script_src_outcome"] = "host_allowlist"
+                # Mention IP-source weakness (rare but Google flags it)
+                for v in sd_low:
+                    if v.startswith(("http://", "https://")) and re.match(r"https?://\d+\.\d+\.\d+\.\d+", v):
+                        result["findings"].append(("medium",
+                            f"CSP script-src uses an IP source ({v}) — IPs cannot serve TLS hostnames securely"))
         else:
             # Mixed/unknown — be conservative
             result["script_src_outcome"] = "host_allowlist"
