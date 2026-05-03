@@ -60,6 +60,22 @@ from .validate import ValidationError, validate_domain_input
 
 log = logging.getLogger("vendor_audit.web")
 
+# Configure our logger to actually emit. Uvicorn configures its own
+# loggers (the "INFO: ..." lines you see at startup) but doesn't set up
+# anything that captures application-level loggers like ours. Without
+# this block our log.info() / log.warning() calls would be silently
+# discarded — bad for operational visibility.
+#
+# stderr → captured by systemd → visible in `journalctl -u vendor-audit`.
+# We set propagate=False so that if a future operator calls
+# logging.basicConfig() elsewhere, we don't get duplicate lines.
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+
 # ── Configuration (env vars, with sensible defaults for dev) ─────────────────
 
 # Number of process-pool workers. Audits are I/O bound (network), so the

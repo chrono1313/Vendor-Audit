@@ -94,6 +94,18 @@ __version__ = "1.0"
 
 log = logging.getLogger(__name__)
 
+# Configure our logger to emit. See web/app.py for the full rationale —
+# in short: nothing else attaches a handler that captures our messages.
+# This applies in both the parent FastAPI process (where audit.py is
+# imported normally) and in each ProcessPoolExecutor worker (where the
+# module is re-imported in a fresh interpreter).
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+
 
 # ── Domain normalisation ─────────────────────────────────────────────────────
 
