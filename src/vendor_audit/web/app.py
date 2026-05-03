@@ -207,7 +207,16 @@ limiter = Limiter(key_func=_client_ip)
 async def lifespan(app: FastAPI):
     """Spin up the process pool on startup, shut it down on exit."""
     log.info("starting process pool with %d workers", WORKERS)
-    pool = ProcessPoolExecutor(max_workers=WORKERS)
+    # max_tasks_per_child recycles each worker process after this many
+    # audits, capping any per-process state buildup. The audit's
+    # deadline path can leak threads (sockets stuck on blackholing
+    # hosts that exit only after their TCP connect timeout fires);
+    # those threads are harmless but use memory until they wind down.
+    # Recycling at 50 tasks bounds the worst case to ~50 leaked threads
+    # per worker before a fresh process replaces it. Python 3.11+
+    # supports this kwarg; on older runtimes the worker just lives
+    # longer (still correct, just bigger memory ceiling).
+    pool = ProcessPoolExecutor(max_workers=WORKERS, max_tasks_per_child=50)
     app.state.pool = pool
     try:
         yield

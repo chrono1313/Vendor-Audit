@@ -280,7 +280,20 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
 
     pool_t0 = time.monotonic()
     partial_envelope_reason = None
-    with ThreadPoolExecutor(max_workers=len(all_checks)) as ex:
+    # Manual ExecutorPool management instead of `with ... as ex:` — the
+    # `with` block calls shutdown(wait=True) on exit, which would block
+    # us on stuck threads that the deadline was supposed to escape from.
+    # We need shutdown(wait=False, cancel_futures=True) on the timeout
+    # path so abandoned threads don't pin the worker past the audit
+    # deadline.
+    #
+    # Risk: abandoned threads keep running until their per-call timeouts
+    # fire (typically 5-20s after we leave). They use worker memory until
+    # they finish, but they don't block subsequent audits in this worker
+    # because the next audit creates its own pool. The worker process
+    # itself eventually recycles, capping the leak.
+    ex = ThreadPoolExecutor(max_workers=len(all_checks))
+    try:
         futures = {ex.submit(_timed, fn, target): key for key, fn, target in all_checks}
         try:
             for future in as_completed(futures, timeout=AUDIT_WALL_DEADLINE_S):
@@ -292,16 +305,9 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                 else:
                     results[key] = res
         except FutureTimeoutError:
-            # Wall-clock deadline tripped while still iterating. Mark
-            # unfinished checks as deadline-skipped and continue.
-            #
-            # Threads that haven't finished cannot be cancelled in Python
-            # (no kill API), but they will wind down on their own — every
-            # network call inside audit_checks has its own _http_timeout
-            # bound. We just stop *waiting* for them. The thread pool's
-            # context manager will block on .join() at exit; that's
-            # bounded by the per-check timeouts, so worst case adds a few
-            # seconds. Acceptable.
+            # Wall-clock deadline tripped. Mark unfinished checks as
+            # skipped and bail. Don't wait for threads — see explanation
+            # at the top of this block.
             unfinished = [(fut, key) for fut, key in futures.items() if not fut.done()]
             for fut, key in unfinished:
                 results[key] = {"error":
@@ -317,6 +323,10 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                 "audit deadline exceeded for %s: %d/%d checks unfinished",
                 domain, len(unfinished), len(all_checks),
             )
+    finally:
+        # wait=False: don't block on stuck threads.
+        # cancel_futures=True (3.9+): drop any not-yet-started work.
+        ex.shutdown(wait=False, cancel_futures=True)
     check_timings["_pool_wall"] = round(time.monotonic() - pool_t0, 3)
 
     # ── Post-server-header derived analyses (synchronous, near-instant) ──
@@ -427,7 +437,11 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                 except Exception as e:
                     return None, time.monotonic() - t0, e
 
-            with ThreadPoolExecutor(max_workers=len(post_pool_jobs)) as pp_ex:
+            # Manual pool management instead of `with` — same reason as
+            # the main pool above: don't block on stuck threads after
+            # the deadline trips.
+            pp_ex = ThreadPoolExecutor(max_workers=len(post_pool_jobs))
+            try:
                 pp_futs = {pp_ex.submit(_timed_call, fn): key for key, fn in post_pool_jobs}
                 # Post-pool deadline: half the main pool's budget, with
                 # a 3-second floor since these jobs are individually fast
@@ -470,6 +484,8 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                         "post-pool deadline exceeded for %s: %d/%d unfinished",
                         domain, len(unfinished_pp), len(post_pool_jobs),
                     )
+            finally:
+                pp_ex.shutdown(wait=False, cancel_futures=True)
 
     # ── OS EOL detection (default mode) ──────────────────────────────────
     # Pure CPU on data already collected (Server header + TLS result), so
