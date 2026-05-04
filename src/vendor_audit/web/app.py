@@ -78,13 +78,20 @@ if not log.handlers:
 
 # ── Configuration (env vars, with sensible defaults for dev) ─────────────────
 
-# Number of process-pool workers. Audits are I/O bound (network), so the
-# CPU per worker is low — concurrency is dominated by socket waits. 8
-# workers gives comfortable headroom for ~50-100 simultaneous visitors
-# while staying well within memory bounds (each worker is ~150MB resident,
-# so 8 workers = ~1.2GB). Override with VENDOR_AUDIT_WORKERS for tuning;
-# the right value depends on memory budget and expected peak concurrency.
-WORKERS = int(os.environ.get("VENDOR_AUDIT_WORKERS", "8"))
+# Number of process-pool workers. Audits are mixed CPU+I/O — network
+# waits dominate but TLS handshakes, regex evaluation, and JSON parsing
+# are real CPU work. Sized at roughly 1.5× core count for a typical
+# small VM (10 cores → 16 workers), giving margin for I/O-blocked
+# workers during sustained bursts. Going past ~2× core count adds
+# context-switch overhead without throughput because the GIL serializes
+# in-process Python work.
+#
+# Memory: each worker is ~80MB resident (Python + tldextract +
+# httpx + audit deps), so 16 workers = ~1.3GB. Adjust systemd's
+# MemoryMax accordingly.
+#
+# Override with VENDOR_AUDIT_WORKERS for tuning.
+WORKERS = int(os.environ.get("VENDOR_AUDIT_WORKERS", "16"))
 
 # Wall-clock cap per audit at the web layer. The audit itself has its own
 # internal deadlines: check_redirect (6s hard), parallel-checks pool
@@ -144,12 +151,16 @@ for _deprecated in ("VENDOR_AUDIT_TXT_CACHE_TTL_S", "VENDOR_AUDIT_TXT_CACHE_MAX"
 # cache for anyone explicitly asking for a fresh audit.
 HTML_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_TTL_S", "86400"))
 
-# Hard cap on the number of result-page cache entries. ~50KB each, so
-# 1000 entries = ~50MB max. Sized for sustained viral traffic across a
-# 24-hour TTL window — at 200 entries the cache would fill within a day
-# of distinct-domain traffic and start prematurely evicting popular
-# entries.
-HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "1000"))
+# Hard cap on the number of result-page cache entries. Each entry holds
+# both the HTML and the TXT rendering — ~80KB combined — so 5000 entries
+# = ~400MB max. Sized for sustained worldwide use beyond a single viral
+# link burst: technical users auditing their vendor lists collectively
+# touch thousands of distinct domains over a 24-hour window. At 1000 the
+# cache would fill within a few days of broad usage and start evicting
+# entries that are still being actively viewed (popular vendors get
+# repeat traffic for weeks). 5000 keeps a comfortable cushion against
+# memory while preserving cache hits across the full TTL.
+HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "5000"))
 
 
 # ── Unified result cache (HTML + TXT) ────────────────────────────────────────
