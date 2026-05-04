@@ -43,6 +43,7 @@ import re
 import ssl
 import json
 import time
+import uuid
 import base64
 import socket
 import smtplib
@@ -129,6 +130,47 @@ try:
         OS_EOL = json.load(_fh)
 except (OSError, json.JSONDecodeError):
     OS_EOL = {}
+
+# ── Error-page fingerprint loader ─────────────────────────────────────────────
+# error_page_fingerprints.json sits next to this module. Hand-curated set of
+# fingerprints for default error pages (404 / 500 / Werkzeug debugger / Django
+# DEBUG=True etc) that disclose server software, language, or framework.
+# Used by check_error_page() to detect operators who haven't customised or
+# stripped the default error layout. Same semantics as OS_EOL: optional file,
+# malformed → check still runs but with no fingerprints (nothing matches, the
+# check always reports custom_404). Fingerprints are deliberately tied to the
+# *layout* of default pages (specific tags, address blocks, error-report
+# titles) rather than just keyword matches, to keep false positives low — a
+# blog post that mentions "nginx" must not trip the nginx detector.
+#
+# The file ships with body_patterns and an optional version_pattern as raw
+# strings; we compile them once at import time into _ERROR_FINGERPRINTS so
+# every audit pays only the JSON load cost, not per-call regex compilation.
+
+_ERROR_PAGE_FP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "error_page_fingerprints.json")
+
+_ERROR_FINGERPRINTS: list = []
+try:
+    with open(_ERROR_PAGE_FP_PATH, encoding="utf-8") as _fh:
+        _epfp_raw = json.load(_fh)
+    for _fp in _epfp_raw.get("fingerprints", []):
+        try:
+            compiled_body = [re.compile(p, re.IGNORECASE | re.DOTALL)
+                             for p in _fp.get("body_patterns", [])]
+            compiled_ver = None
+            if _fp.get("version_pattern"):
+                compiled_ver = re.compile(_fp["version_pattern"], re.IGNORECASE | re.DOTALL)
+            _ERROR_FINGERPRINTS.append({
+                "name":          _fp["name"],
+                "body_patterns": compiled_body,
+                "version_pattern": compiled_ver,
+            })
+        except (re.error, KeyError):
+            # Skip individual malformed entries rather than disabling the
+            # whole check — same defensive posture as LIBRARY_EOL/OS_EOL.
+            continue
+except (OSError, json.JSONDecodeError):
+    _ERROR_FINGERPRINTS = []
 
 # ── Module configuration (set once from main(), read-only thereafter) ─────────
 
@@ -936,6 +978,133 @@ def check_dane(domain, mx_entries):
 
 # ── DKIM probing (common selectors only — partial check) ─────────────────────
 
+def _parse_dkim_record(rec):
+    """Parse a DKIM TXT record into key strength fields.
+
+    Returns dict:
+      algorithm:  'rsa' | 'ed25519' | 'unknown'
+      bits:       int (RSA modulus bit length) or None for ed25519/unknown
+      strength:   'good' | 'weak' | 'broken' | 'unparseable' | 'revoked'
+
+    DKIM record format (RFC 6376 §3.6.1) is tag=value; tags separated by
+    semicolons. Tags relevant here:
+      v=DKIM1     version (must be present; we already verified upstream)
+      k=rsa|ed25519   key type, default 'rsa' if absent
+      p=<base64>  public key data; empty string means revoked key
+      h=          permitted hash algorithms (informational, not scored)
+
+    For RSA we decode the SubjectPublicKeyInfo DER and walk to the modulus.
+    The structure is fixed (RFC 8017 §A.1.1): SPKI → AlgorithmIdentifier +
+    BIT STRING containing RSAPublicKey (SEQUENCE of two INTEGERs: modulus,
+    exponent). We only need the modulus length, so a small DER walk is
+    sufficient — no need for the cryptography library.
+
+    For Ed25519 the public key is always 32 bytes (256 bits), so 'bits' is
+    None and the algorithm itself implies the strength.
+    """
+    out = {"algorithm": "unknown", "bits": None, "strength": "unparseable"}
+
+    # Parse tag=value pairs. Whitespace and tag case-insensitivity per RFC.
+    tags = {}
+    for part in rec.split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        tags[k.strip().lower()] = v.strip()
+
+    k_tag = tags.get("k", "rsa").lower()
+    p_tag = tags.get("p", "")
+
+    if p_tag == "":
+        # Empty p= means key revoked per RFC 6376 §3.6.1 — operator has
+        # explicitly disabled this selector. Treat as not-a-finding for
+        # scoring purposes; surface the state in the result.
+        out["algorithm"] = k_tag if k_tag in ("rsa", "ed25519") else "unknown"
+        out["strength"]  = "revoked"
+        return out
+
+    if k_tag == "ed25519":
+        out["algorithm"] = "ed25519"
+        out["strength"]  = "good"
+        return out
+
+    if k_tag != "rsa":
+        # Unknown algorithm tag (RFC reserves 'k=' for future use). Don't
+        # guess. Report as unparseable so it scores as no-signal.
+        return out
+
+    out["algorithm"] = "rsa"
+
+    # Decode and walk the DER. Tolerate whitespace in the base64 (some
+    # operators wrap long records).
+    try:
+        der = base64.b64decode("".join(p_tag.split()), validate=False)
+    except Exception:
+        return out  # strength stays 'unparseable'
+
+    # Walk: SEQUENCE { SEQUENCE { algorithm OID, params }, BIT STRING { ... } }
+    # Inside the BIT STRING, after the unused-bits leading byte, there's
+    # another SEQUENCE { INTEGER modulus, INTEGER exponent }.
+    def _read_len(buf, i):
+        """Return (length, next_index). Handles short and long form."""
+        b = buf[i]
+        i += 1
+        if b < 0x80:
+            return b, i
+        n = b & 0x7f
+        if n == 0 or i + n > len(buf):
+            raise ValueError("bad DER length")
+        L = 0
+        for _ in range(n):
+            L = (L << 8) | buf[i]
+            i += 1
+        return L, i
+
+    try:
+        i = 0
+        if der[i] != 0x30:  # outer SEQUENCE
+            return out
+        i += 1
+        _, i = _read_len(der, i)
+        if der[i] != 0x30:  # AlgorithmIdentifier SEQUENCE
+            return out
+        i += 1
+        algo_len, i = _read_len(der, i)
+        i += algo_len  # skip past AlgorithmIdentifier
+        if der[i] != 0x03:  # BIT STRING
+            return out
+        i += 1
+        bs_len, i = _read_len(der, i)
+        # First byte of BIT STRING content is "unused bits" count; skip it.
+        i += 1
+        if der[i] != 0x30:  # inner SEQUENCE { modulus, exponent }
+            return out
+        i += 1
+        _, i = _read_len(der, i)
+        if der[i] != 0x02:  # INTEGER (modulus)
+            return out
+        i += 1
+        mod_len, i = _read_len(der, i)
+        # Strip leading 0x00 sign-padding byte if present (DER encodes
+        # positive integers with high bit set as N+1 bytes).
+        if mod_len > 0 and der[i] == 0x00:
+            mod_len -= 1
+        bits = mod_len * 8
+        out["bits"] = bits
+    except (IndexError, ValueError):
+        return out
+
+    # Strength buckets per RFC 8301 (which deprecated <1024) and current
+    # NIST SP 800-57 guidance (2048+ acceptable through 2030+).
+    if bits >= 2048:
+        out["strength"] = "good"
+    elif bits >= 1024:
+        out["strength"] = "weak"
+    else:
+        out["strength"] = "broken"
+    return out
+
+
 def check_dkim_common(domain):
     """Probe a small list of common DKIM selectors.
 
@@ -948,8 +1117,11 @@ def check_dkim_common(domain):
       checked:     list of selectors probed
       found:       list of selectors that returned a v=DKIM1 record
       records:     dict selector -> raw record string
+      keys:        dict selector -> parsed key info (algorithm, bits, strength)
+      worst_strength: 'good' | 'weak' | 'broken' | 'unparseable' | 'revoked'
+                      | None (if no keys found)
     """
-    found, recs = [], {}
+    found, recs, keys = [], {}, {}
 
     def _probe(selector):
         # 2s lifetime — DKIM common-selector probes are NXDOMAIN-likely for
@@ -970,11 +1142,27 @@ def check_dkim_common(domain):
             if rec:
                 found.append(selector)
                 recs[selector] = rec
+                keys[selector] = _parse_dkim_record(rec)
+
+    # Aggregate worst observed strength across found selectors. Severity
+    # ordering (worst → best): broken > weak > unparseable > revoked > good.
+    # Revoked ranks better than unparseable because revocation is a
+    # deliberate operator action; unparseable means we couldn't read the key.
+    severity = {"broken": 4, "weak": 3, "unparseable": 2, "revoked": 1, "good": 0}
+    worst = None
+    for k in keys.values():
+        s = k.get("strength")
+        if s is None:
+            continue
+        if worst is None or severity.get(s, -1) > severity.get(worst, -1):
+            worst = s
 
     return {
-        "checked":  list(DKIM_COMMON_SELECTORS),
-        "found":    found,
-        "records":  recs,
+        "checked":        list(DKIM_COMMON_SELECTORS),
+        "found":          found,
+        "records":        recs,
+        "keys":           keys,
+        "worst_strength": worst,
     }
 
 
@@ -1284,6 +1472,20 @@ def check_tls(domain, port=443):
     Uses CERT_REQUIRED with the system CA bundle so getpeercert() returns
     structured fields. check_hostname is disabled to tolerate www/apex
     mismatches; we report mismatches via cert_names_match instead.
+
+    Chain completeness (added 3.0.0):
+      A correctly-configured TLS server sends its leaf cert AND any needed
+      intermediates in the handshake. Servers that send leaf-only rely on
+      clients fetching intermediates via the AIA extension — fragile (some
+      clients don't AIA-fetch, captive portals break it, latency suffers).
+      We compare the SERVER-SENT chain (get_unverified_chain) against the
+      VERIFIED chain (get_verified_chain) that OpenSSL constructed using
+      its trust store. If verified > unverified, the server skipped
+      intermediates and AIA filled them in; that's the misconfiguration.
+
+      get_verified_chain / get_unverified_chain were added in CPython 3.13
+      (https://docs.python.org/3/library/ssl.html). On older Pythons we
+      report chain_status=unsupported (rubric scores 0/0).
     """
     result = {
         "version":            None,
@@ -1296,6 +1498,10 @@ def check_tls(domain, port=443):
         "cert_issuer":        None,
         "cert_names_match":   None,
         "cert_san_names":     [],
+        # Chain inspection (3.13+ only; 'unsupported' on older Pythons)
+        "chain_status":       None,    # 'complete' | 'incomplete' | 'unsupported' | None
+        "chain_sent_count":   None,    # certs the server actually sent
+        "chain_verified_count": None,  # certs OpenSSL needed to reach a trust anchor
     }
 
     try:
@@ -1342,6 +1548,43 @@ def check_tls(domain, port=443):
                     matched, names = _cert_matches_domain(domain, cert)
                     result["cert_names_match"] = matched
                     result["cert_san_names"]   = names
+
+                # ── Chain completeness inspection ────────────────────────
+                # get_verified_chain / get_unverified_chain were added in
+                # 3.13. Feature-detect at call site rather than at import —
+                # the project's runtime constraint is 3.10+ and the methods
+                # come from the SSLSocket instance, not the module.
+                if hasattr(ssock, "get_verified_chain") and hasattr(ssock, "get_unverified_chain"):
+                    try:
+                        sent     = ssock.get_unverified_chain() or []
+                        verified = ssock.get_verified_chain() or []
+                        result["chain_sent_count"]     = len(sent)
+                        result["chain_verified_count"] = len(verified)
+                        # Verified chain must be at least as long as the
+                        # one the server sent (verified can be longer when
+                        # OpenSSL fetched a missing intermediate via AIA,
+                        # or shorter when OpenSSL trusted an intermediate
+                        # earlier in the chain — both cases mean the server
+                        # didn't send what was needed for a clean handshake
+                        # without out-of-band fetching).
+                        #
+                        # The conservative test: server is incomplete if it
+                        # sent fewer certs than were needed to reach a
+                        # trust anchor. A correctly-configured server sends
+                        # leaf + every intermediate; verified == sent (or
+                        # sent contains an extra root, which some servers
+                        # do — rare but harmless).
+                        if len(sent) >= len(verified):
+                            result["chain_status"] = "complete"
+                        else:
+                            result["chain_status"] = "incomplete"
+                    except (AttributeError, ssl.SSLError):
+                        # Method exists but failed (e.g., handshake state).
+                        # Don't penalise; mark unsupported.
+                        result["chain_status"] = "unsupported"
+                else:
+                    # Python <3.13 — feature unavailable. Score 0/0.
+                    result["chain_status"] = "unsupported"
     except ssl.SSLCertVerificationError as e:
         # Port 443 is open, TLS negotiated, but cert failed CA verification
         # (self-signed, expired, or untrusted issuer). Tagged separately so
@@ -1701,6 +1944,210 @@ def check_security_txt(domain):
     return result
 
 
+# ── Default error page disclosure ─────────────────────────────────────────────
+# Probe a deliberately-nonexistent path to elicit a 404 response, then match
+# the body against fingerprints in error_page_fingerprints.json. Operators who
+# care about disclosure customise or strip the default Apache/nginx/IIS/Tomcat
+# error pages — sites that haven't are leaving the default page in place,
+# which often discloses the server software (and sometimes the version).
+#
+# Design notes:
+#  - Single GET to a UUID path. Eliciting a 404 is benign (no state mutation,
+#    no side effects). We don't probe paths likely to 500 — that verges on
+#    active scanning and many sites alarm on it.
+#  - allow_redirects=False so we observe the *origin* server's 404, not a
+#    generic CDN 404 from a redirect target.
+#  - Body cap kept small (16 KB). Default error pages are universally tiny;
+#    a 16 KB cap protects against a misconfigured server streaming a huge
+#    body and blowing the per-check latency budget.
+#  - If the path returns 200 (SPA shell that catches all routes), we report
+#    'spa_or_2xx' and the rubric leaves it 0/0 — we have no signal either way.
+#  - HTTPS only. Falling back to HTTP for this would mostly catch sites that
+#    don't even run HTTPS, which is already a much louder finding upstream.
+
+def check_error_page(domain):
+    """Probe for default error page disclosure.
+
+    Returns:
+      outcome:    'custom_404' | 'default_no_version' | 'default_with_version'
+                  | 'spa_or_2xx' | 'error'
+      detected:   product name (e.g. 'nginx') if outcome is default_*, else None
+      version:    version string if outcome is default_with_version, else None
+      status:     HTTP status code observed, or None
+      probe_url:  the URL fetched (for transparency in the report)
+      error:      error string if outcome == 'error', else None
+    """
+    # Fixed-but-distinctive prefix + UUID. The prefix is illustrative in logs
+    # ("vendor-audit-probe-…") so operators reading their access log can tell
+    # what hit them. UUID guarantees the path doesn't accidentally exist.
+    probe_path = f"/vendor-audit-probe-{uuid.uuid4().hex}"
+    probe_url  = f"https://{domain}{probe_path}"
+
+    result = {
+        "outcome":   "error",
+        "detected":  None,
+        "version":   None,
+        "status":    None,
+        "probe_url": probe_url,
+        "error":     None,
+    }
+
+    body = ""
+    status = None
+    try:
+        # _http_stream gives us a body cap without buffering the whole response.
+        # Same pattern check_redirect uses for its 200 OK content sniff.
+        with _http_stream(probe_url, follow_redirects=False) as resp:
+            status = resp.status_code
+            chunks = []
+            total = 0
+            CAP = 16 * 1024
+            for chunk in resp.iter_bytes(chunk_size=4096):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= CAP:
+                    break
+            body = b"".join(chunks).decode("utf-8", errors="replace")
+    except Exception as e:
+        result["error"] = str(e)
+        return result
+
+    result["status"] = status
+
+    # 2xx on a UUID path → SPA shell catching everything, or a wildcard route.
+    # No 404 to inspect, no signal. Rubric scores this as 0/0.
+    if status is not None and 200 <= status < 300:
+        result["outcome"] = "spa_or_2xx"
+        result["error"]   = None
+        return result
+
+    # 3xx redirected somewhere — we set follow_redirects=False, so this is rare,
+    # but if it happens we have no body to inspect. Treat as no-signal.
+    if status is not None and 300 <= status < 400:
+        result["outcome"] = "spa_or_2xx"
+        return result
+
+    # 4xx/5xx (or any other status with a body) — match against fingerprints.
+    for fp in _ERROR_FINGERPRINTS:
+        for pat in fp["body_patterns"]:
+            if pat.search(body):
+                result["detected"] = fp["name"]
+                ver_re = fp["version_pattern"]
+                if ver_re is not None:
+                    m = ver_re.search(body)
+                    if m:
+                        result["version"] = m.group("version")
+                if result["version"]:
+                    result["outcome"] = "default_with_version"
+                else:
+                    result["outcome"] = "default_no_version"
+                result["error"] = None
+                return result
+
+    # Body present, status non-2xx, no fingerprint matched → operator has a
+    # custom error page. Pass.
+    result["outcome"] = "custom_404"
+    result["error"]   = None
+    return result
+
+
+# ── CORS configuration ────────────────────────────────────────────────────────
+# Detect *broken* CORS configurations (the failure modes; absence of CORS is
+# the secure default and not a finding). Three failure modes:
+#
+#   1. ACAO=* combined with ACAC=true. Browsers actually refuse to honour this
+#      pairing at runtime (the spec disallows it), but the server emitting it
+#      reveals an operator who believes credentials flow cross-origin from any
+#      origin — which is a real misconfiguration regardless of browser refusal.
+#
+#   2. ACAO=null. Trusting the literal string 'null' is dangerous because
+#      sandboxed iframes and certain other contexts send Origin: null, so
+#      'allow null' effectively means 'allow attackers running in a sandbox.'
+#
+#   3. Reflective ACAO. The server echoes whatever Origin: value the client
+#      sent. Any origin is trusted. The most common form of this misconfig in
+#      the wild — typically caused by middleware that sets ACAO to req.origin
+#      without validation. Detected by sending a deliberately-attacker-shaped
+#      Origin and observing it come back.
+#
+# Latency budget: we make at most one extra request beyond what the server
+# already saw (the reflection probe). The first probe shares headers with the
+# normal page fetch, so we use _http_get rather than reusing cached_resp —
+# CORS headers are only emitted in response to an Origin request header, and
+# the audit's normal fetches don't send one.
+
+def check_cors(domain):
+    """Probe for broken CORS configurations.
+
+    Returns:
+      outcome:    'no_cors' | 'weak_wildcard_with_credentials'
+                  | 'weak_null_origin' | 'weak_reflective' | 'error'
+      details:    dict with raw header values observed for the report
+      error:      error string if outcome == 'error', else None
+    """
+    result = {"outcome": "no_cors", "details": {}, "error": None}
+
+    url = f"https://{domain}/"
+
+    # First probe: send a benign Origin to see what ACAO/ACAC the server sets.
+    # Many servers only emit CORS headers when Origin is present; not sending
+    # Origin would silently miss configurations that respond per-origin.
+    try:
+        resp1 = _http_get(url, headers={"Origin": f"https://{domain}"},
+                          follow_redirects=True)
+    except Exception as e:
+        result["outcome"] = "error"
+        result["error"] = str(e)
+        return result
+
+    acao1 = resp1.headers.get("Access-Control-Allow-Origin")
+    acac1 = resp1.headers.get("Access-Control-Allow-Credentials")
+    result["details"]["acao_same_origin_probe"] = acao1
+    result["details"]["acac_same_origin_probe"] = acac1
+
+    if acao1 is None:
+        # No CORS at all → secure default. Don't even bother with the
+        # reflection probe; nothing to find.
+        result["outcome"] = "no_cors"
+        return result
+
+    # Wildcard + credentials: the spec-forbidden pairing.
+    if acao1.strip() == "*" and acac1 and acac1.strip().lower() == "true":
+        result["outcome"] = "weak_wildcard_with_credentials"
+        return result
+
+    # ACAO=null: trusting sandboxed/null origin.
+    if acao1.strip().lower() == "null":
+        result["outcome"] = "weak_null_origin"
+        return result
+
+    # Second probe: reflection check. Send an Origin the server has no
+    # legitimate reason to trust. If it comes back in ACAO, the server is
+    # reflecting and trusts arbitrary origins.
+    attacker_origin = "https://vendor-audit-cors-probe.example"
+    try:
+        resp2 = _http_get(url, headers={"Origin": attacker_origin},
+                          follow_redirects=True)
+    except Exception:
+        # Reflection probe failed but we got a response on the first probe;
+        # report what we have. No outcome change — CORS isn't broken in the
+        # ways we can detect.
+        return result
+
+    acao2 = resp2.headers.get("Access-Control-Allow-Origin")
+    acac2 = resp2.headers.get("Access-Control-Allow-Credentials")
+    result["details"]["acao_attacker_probe"] = acao2
+    result["details"]["acac_attacker_probe"] = acac2
+
+    if acao2 and acao2.strip() == attacker_origin:
+        result["outcome"] = "weak_reflective"
+        return result
+
+    # ACAO is set but to a static legitimate value (probably the site's own
+    # origin or a partner). That's the correct way to use CORS — not a finding.
+    return result
+
+
 # ── Cookies ───────────────────────────────────────────────────────────────────
 
 def _parse_set_cookies(resp):
@@ -1893,6 +2340,20 @@ def check_server_header(domain, _cached_response=None):
             "expires":             h.get("Expires"),
             "content_length_hdr":  cl_hdr,
             "content_length_actual": cl_actual,
+            # ── Reporting endpoints (combined check) ────────────────────
+            # Three related headers, all opt-in operator telemetry. Any
+            # presence is a positive signal — operator collects violation
+            # reports. Absence is not a finding (most sites don't bother).
+            #   Report-To:           legacy, deprecated but still widely
+            #                        deployed (Chrome shipped both, kept
+            #                        Report-To for compatibility).
+            #   Reporting-Endpoints: modern replacement (W3C Reporting API
+            #                        Level 1).
+            #   NEL:                 Network Error Logging — uses one of
+            #                        the above as its delivery channel.
+            "report_to":            h.get("Report-To"),
+            "reporting_endpoints":  h.get("Reporting-Endpoints"),
+            "nel":                  h.get("NEL"),
         }
 
     _EMPTY = {
@@ -1905,6 +2366,7 @@ def check_server_header(domain, _cached_response=None):
         "coop": None, "coep": None, "corp": None, "origin_agent_cluster": None,
         "x_xss_protection": None, "date": None, "cache_control": None, "expires": None,
         "content_length_hdr": None, "content_length_actual": None,
+        "report_to": None, "reporting_endpoints": None, "nel": None,
     }
 
     if _cached_response is not None:
@@ -3644,6 +4106,13 @@ def score_results(results):
         if names_match is not None:
             _p("Certificate name match", "match" if names_match else "no_match")
 
+        # Chain completeness — only score when chain inspection actually ran.
+        # 'unsupported' (Python <3.13) and None drop out of the denominator
+        # so results stay stable across Python versions.
+        cs = tls.get("chain_status")
+        if cs in ("complete", "incomplete", "unsupported"):
+            _p("Cert chain completeness", cs)
+
         # ── HTTP version (only when TLS works) ────────────────────────────────
         # Single scoring entry covering all three tiers:
         #   http3 → 2/2 (modern, full credit)
@@ -3768,6 +4237,35 @@ def score_results(results):
                 _p("security.txt", "present_no_expiry")
         else:
             _p("security.txt", "missing")
+
+    # ── Default error page disclosure ─────────────────────────────────────────
+    # Outcomes 'spa_or_2xx' and 'error' score 0/0 (no signal) but are still
+    # passed through so the breakdown shows the check ran. The rubric handles
+    # the 0/0 mapping; we just need to not skip them silently.
+    epr = results.get("error_page", {})
+    epo = epr.get("outcome")
+    if epo in ("custom_404", "default_no_version", "default_with_version",
+               "spa_or_2xx", "error"):
+        _p("Default error page", epo)
+
+    # ── CORS configuration ────────────────────────────────────────────────────
+    # Only the 'weak_*' outcomes count as findings (0/1). 'no_cors' (the
+    # secure default) and 'error' both score 0/0 — pass-through to keep the
+    # breakdown row visible without affecting the score.
+    cors = results.get("cors", {})
+    co_outcome = cors.get("outcome")
+    if co_outcome in ("no_cors", "weak_wildcard_with_credentials",
+                      "weak_null_origin", "weak_reflective", "error"):
+        _p("CORS configuration", co_outcome)
+
+    # ── Reporting endpoints ───────────────────────────────────────────────────
+    # Combined check across Report-To / Reporting-Endpoints / NEL. Any one of
+    # the three present → operator collects violation reports → 1/1. Absence
+    # is 0/0 (not a finding — most sites don't bother). Only score when the
+    # server_header check itself succeeded; otherwise we have no data.
+    if not srv.get("error"):
+        any_reporting = any(srv.get(k) for k in ("report_to", "reporting_endpoints", "nel"))
+        _p("Reporting endpoints", "present" if any_reporting else "absent")
 
     # ── SSL Labs grade ────────────────────────────────────────────────────────
     ssl_result = results.get("ssl_labs")
@@ -3932,6 +4430,14 @@ def score_results(results):
         if dkim and dkim.get("checked"):
             _p("DKIM (common selectors)",
                "found" if dkim.get("found") else "not_found")
+            # Key strength is scored only when at least one selector was
+            # found — otherwise we have no key to evaluate. Maps the
+            # check's worst_strength directly to a rubric outcome key.
+            ws = dkim.get("worst_strength")
+            if ws in ("good", "weak", "broken", "unparseable", "revoked"):
+                _p("DKIM key strength", ws)
+            # ws is None → no found selectors; not scored (consistent with
+            # 'not_found' on the parent DKIM check).
 
     # ── Server clock accuracy ─────────────────────────────────────────────────
     clock = results.get("clock", {})

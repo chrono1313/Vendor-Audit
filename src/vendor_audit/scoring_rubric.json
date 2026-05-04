@@ -39,7 +39,8 @@
             "TLS-RPT",
             "DANE TLSA on MX",
             "STARTTLS-MX",
-            "DKIM (common selectors)"
+            "DKIM (common selectors)",
+            "DKIM key strength"
         ],
         "DNS": [
             "DNSSEC TLD signed",
@@ -61,6 +62,7 @@
             "Certificate lifetime",
             "Certificate name match",
             "Cert covers www variant",
+            "Cert chain completeness",
             "HSTS present",
             "HSTS includeSubDomains",
             "HSTS preloaded",
@@ -93,6 +95,9 @@
             "Cookie SameSite",
             "Cookie name prefixes",
             "security.txt",
+            "Default error page",
+            "CORS configuration",
+            "Reporting endpoints",
             "Server clock accuracy",
             "Subresource Integrity",
             "Mixed content (in-page)"
@@ -292,6 +297,33 @@
                 "possible": 0
             }
         },
+        "_comment_dkim_strength": "DKIM key strength scores the WORST observed key across all found selectors. Only scored when at least one selector was found (not_found drops out, same logic as DKIM common-selector probe). Ed25519 and RSA-2048+ score full credit; RSA-1024 (deprecated by RFC 8301) scores partial; RSA <1024 (broken) scores zero. 'unparseable' (we found a record but couldn't read the key) scores 0/0 — no signal either way. 'revoked' (operator explicitly disabled the selector via empty p=) scores 0/0 — deliberate operator action, not a finding.",
+        "DKIM key strength": {
+            "good": {
+                "earned": 1,
+                "possible": 1
+            },
+            "weak": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "broken": {
+                "earned": 0,
+                "possible": 1
+            },
+            "unparseable": {
+                "earned": 0,
+                "possible": 0
+            },
+            "revoked": {
+                "earned": 0,
+                "possible": 0
+            },
+            "not_found": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
         "_comment_routing": "Routing - IPv6 reachability + RPKI/IRR per address family.",
         "IPv6": {
             "present": {
@@ -470,6 +502,21 @@
                 "possible": 1
             },
             "no_redirect": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "_comment_chain_completeness": "Server-side chain completeness — server SHOULD send leaf + every needed intermediate so clients don't fall back to AIA fetching. Compares OpenSSL's verified chain length against what the server actually sent. 'unsupported' covers Python <3.13 (the API was added in 3.13); scored 0/0 to keep results stable across Python versions.",
+        "Cert chain completeness": {
+            "complete": {
+                "earned": 1,
+                "possible": 1
+            },
+            "incomplete": {
+                "earned": 0,
+                "possible": 1
+            },
+            "unsupported": {
                 "earned": 0,
                 "possible": 0
             }
@@ -757,6 +804,63 @@
                 "possible": 2
             }
         },
+        "_comment_error_page": "Default error-page disclosure — operators who care about disclosure customise/strip default 404 pages. Detection uses fingerprints in error_page_fingerprints.json (layout-specific patterns to keep FPs low). 'spa_or_2xx' (no 404 to inspect) and 'error' (probe failed) score 0/0 — no signal.",
+        "Default error page": {
+            "custom_404": {
+                "earned": 1,
+                "possible": 1
+            },
+            "default_no_version": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "default_with_version": {
+                "earned": 0,
+                "possible": 1
+            },
+            "spa_or_2xx": {
+                "earned": 0,
+                "possible": 0
+            },
+            "error": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "_comment_cors": "CORS configuration — only scored when broken. Absence of CORS is the SECURE DEFAULT (browsers refuse cross-origin reads without ACAO) and not a finding. Three failure modes are detected: ACAO=* combined with credentials=true (spec-forbidden pairing), ACAO=null (trusts sandboxed origins), and reflective ACAO (server echoes whatever Origin: the client sent — any origin trusted). 'no_cors' (passing default) scores 0/0; weak configurations score 0/1.",
+        "CORS configuration": {
+            "no_cors": {
+                "earned": 0,
+                "possible": 0
+            },
+            "weak_wildcard_with_credentials": {
+                "earned": 0,
+                "possible": 1
+            },
+            "weak_null_origin": {
+                "earned": 0,
+                "possible": 1
+            },
+            "weak_reflective": {
+                "earned": 0,
+                "possible": 1
+            },
+            "error": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "_comment_reporting_endpoints": "Reporting endpoints — combined check across Report-To (legacy), Reporting-Endpoints (modern), and NEL. Operator opt-in for collecting CSP/network/feature-policy violation reports. Presence of any of the three is a maturity signal (1/1). Absence is NOT a finding (most sites don't bother) — scored 0/0 so it doesn't dilute the denominator for sites that haven't opted in.",
+        "Reporting endpoints": {
+            "present": {
+                "earned": 1,
+                "possible": 1
+            },
+            "absent": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
         "_comment_csp_detail": "Detailed CSP analysis derived from Google CSP Evaluator.",
         "CSP script-src safety": {
             "strict": {
@@ -1019,6 +1123,11 @@
         "DANE TLSA on MX": "DANE/TLSA records on MX hosts",
         "STARTTLS-MX": "STARTTLS negotiated on MX hosts (TLS 1.3)",
         "DKIM (common selectors)": "DKIM key found at common selector(s)",
+        "DKIM key strength": "DKIM key strength acceptable (Ed25519 or RSA \u22652048)",
+        "Cert chain completeness": "Server sends complete certificate chain (no AIA fallback needed)",
+        "Default error page": "Default error page customised (no server disclosure)",
+        "CORS configuration": "CORS configuration is safe",
+        "Reporting endpoints": "Operator collects violation reports (Report-To / Reporting-Endpoints / NEL)",
         "CAA records": "CAA records restrict certificate issuance",
         "Nameserver count": "Two or more authoritative nameservers (RFC 1034)",
         "CSP script-src safety": "CSP script-src is strict (nonce/hash, strict-dynamic, or 'none')",
@@ -1072,7 +1181,9 @@
         "Mixed content (in-page)": "Passive mixed content present (images/media over HTTP)",
         "Server clock accuracy": "Server clock skew is small but noticeable",
         "Subresource Integrity": "Some external scripts have SRI but not all",
-        "CAA records": "CAA present but no iodef= reporting contact"
+        "CAA records": "CAA present but no iodef= reporting contact",
+        "DKIM key strength": "DKIM key uses RSA-1024 (deprecated by RFC 8301 \u2014 upgrade to RSA-2048+ or Ed25519)",
+        "Default error page": "Default error page detected (server software disclosed, no version)"
     },
     "_comment_scoring_policy_eol": "Per-library 0/1 scoring for detected EOL libraries, per-OS 0/3 scoring for detected EOL operating systems. Both implementations work the same way: score_results() in audit_checks.py iterates the relevant list (results['versioned_libs']['libraries'] for libs, results['os_eol']['os_findings'] for OSes) after all other checks and appends per-finding tuples with hardcoded weights (libraries are 0/1, OSes are 0/3). The rubric does NOT contain weight entries for these labels — they're appended directly. Category resolution falls through to 'Website' (the catch-all), which is the correct destination.",
     "_comment_starttls_mx_aggregation": "STARTTLS-MX is scored worst-CONFIRMED-of across MX hosts. Severity ordering of confirmed outcomes (worst → best): no_starttls > tls_legacy > tls_1_2 > tls_1_3. Unprobed hosts are dropped from the aggregation when ANY confirmed result exists — a network error on one host (port 25 blocked egress, timeout, refused connection) does not pull down the score for a domain where other MX hosts produced clean handshakes. Only when EVERY host was unprobed does the entire check evaluate to 'unprobed' (0/0). The 0/0 row still appears in the breakdown rather than being silently dropped, so the operator sees the check ran but produced no signal."

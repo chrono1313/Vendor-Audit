@@ -1117,10 +1117,40 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
         if dkim and dkim.get("checked"):
             found   = dkim.get("found", []) or []
             checked = dkim.get("checked", []) or []
+            keys    = dkim.get("keys", {}) or {}
             if found:
                 items.append(_status("pass",
                     f"DKIM key found at common selector(s): {', '.join(found)}",
                     note_lines=[f"Checked: {', '.join(checked)}"]))
+                # Key strength — independent rubric line
+                ws = dkim.get("worst_strength")
+                def _keydesc(sel, k):
+                    algo = k.get("algorithm", "?")
+                    bits = k.get("bits")
+                    if algo == "rsa" and bits:
+                        return f"{sel}: RSA-{bits}"
+                    if algo == "ed25519":
+                        return f"{sel}: Ed25519"
+                    if k.get("strength") == "revoked":
+                        return f"{sel}: revoked (p= empty)"
+                    return f"{sel}: {algo}/{k.get('strength','?')}"
+                desc = "; ".join(_keydesc(s, keys.get(s, {})) for s in found)
+                if ws == "good":
+                    items.append(_status("pass",
+                        f"DKIM key strength acceptable: {desc}"))
+                elif ws == "weak":
+                    items.append(_status("warn",
+                        f"DKIM key strength: {desc} — RSA-1024 deprecated by RFC 8301",
+                        note_lines=["Upgrade to RSA-2048+ or Ed25519."]))
+                elif ws == "broken":
+                    items.append(_status("fail",
+                        f"DKIM key strength: {desc} — RSA <1024 is broken"))
+                elif ws == "unparseable":
+                    items.append(_status("info",
+                        f"DKIM key strength: could not parse key ({desc})"))
+                elif ws == "revoked":
+                    items.append(_status("info",
+                        f"DKIM key strength: revoked ({desc}) — operator deliberately disabled"))
             else:
                 items.append(_status("warn",
                     f"No DKIM at common selectors ({', '.join(checked)})",
@@ -1439,6 +1469,24 @@ def _render_tls_section(data):
             missing = cert_var.get("missing", []) or []
             parts.append(_status("warn",
                 f"Certificate missing coverage for: {', '.join(missing)} — users typing the uncovered name see a TLS error before the redirect"))
+
+        # Chain completeness — only emit a row when chain inspection actually
+        # ran (Python 3.13+). On older Pythons (chain_status='unsupported')
+        # stay silent rather than adding a confusing "we couldn't check" line.
+        cs = tls.get("chain_status")
+        sent = tls.get("chain_sent_count")
+        ver_n = tls.get("chain_verified_count")
+        if cs == "complete":
+            parts.append(_status("pass",
+                f"Server sends complete certificate chain (sent {sent}, verified {ver_n})"))
+        elif cs == "incomplete":
+            parts.append(_status("warn",
+                f"Incomplete chain: server sent {sent} cert(s) but {ver_n} were needed",
+                note_lines=[
+                    "Clients fall back to AIA fetching (some clients don't",
+                    "AIA-fetch; captive portals break it; latency suffers).",
+                    "Server should send leaf + every needed intermediate.",
+                ]))
 
     if not tls.get("error"):
         kv_pairs = []
@@ -2061,6 +2109,105 @@ def _render_security_txt_section(data):
     return "\n".join(parts)
 
 
+# ── Detailed sections: Default error page / CORS / Reporting endpoints ──────
+
+def _render_error_page_section(data):
+    epr = data.results.get("error_page", {}) or {}
+    if not epr.get("outcome"):
+        return ""
+
+    parts = ["", _heading("DEFAULT ERROR PAGE"), ""]
+
+    epo      = epr.get("outcome")
+    detected = epr.get("detected")
+    version  = epr.get("version")
+    status   = epr.get("status")
+
+    if epo == "custom_404":
+        parts.append(_status("pass",
+            f"Custom error page (status {status}) — no default-server fingerprint matched"))
+    elif epo == "default_no_version":
+        parts.append(_status("warn",
+            f"Default {detected} error page detected (status {status}) — no version disclosed",
+            note_lines=[
+                "Operator has not customised the default 404. Strip or override",
+                "to avoid disclosing server software in error responses.",
+            ]))
+    elif epo == "default_with_version":
+        parts.append(_status("fail",
+            f"Default {detected}/{version} error page (status {status})",
+            note_lines=[
+                f"Default 404 reveals {detected} version {version}.",
+                "Strip the default error page or replace it with a custom template.",
+            ]))
+    elif epo == "spa_or_2xx":
+        parts.append(_status("info",
+            f"Probe path returned {status} (SPA shell or wildcard route) — no 404 to inspect"))
+    elif epo == "error":
+        parts.append(_status("info",
+            f"Could not probe error page: {epr.get('error', '?')}"))
+
+    return "\n".join(parts)
+
+
+def _render_cors_section(data):
+    cors = data.results.get("cors", {}) or {}
+    if not cors.get("outcome"):
+        return ""
+
+    parts = ["", _heading("CORS CONFIGURATION"), ""]
+
+    co_outcome = cors.get("outcome")
+    if co_outcome == "no_cors":
+        parts.append(_status("pass",
+            "No CORS headers — secure default (browsers refuse cross-origin reads)"))
+    elif co_outcome == "weak_wildcard_with_credentials":
+        parts.append(_status("fail",
+            "ACAO=* combined with Allow-Credentials=true — spec-forbidden pairing",
+            note_lines=[
+                "Browsers refuse this combination at runtime, but a server emitting",
+                "it indicates the operator believes credentials flow cross-origin",
+                "from any origin — a real misconfiguration.",
+            ]))
+    elif co_outcome == "weak_null_origin":
+        parts.append(_status("fail",
+            "ACAO=null — trusts sandboxed iframes and other null-origin contexts"))
+    elif co_outcome == "weak_reflective":
+        parts.append(_status("fail",
+            "Reflective ACAO — server echoes whatever Origin: the client sends",
+            note_lines=[
+                "Verified by sending Origin: https://vendor-audit-cors-probe.example",
+                "and observing the same value returned in Access-Control-Allow-Origin.",
+                "Any origin is effectively trusted; equivalent to ACAO=*.",
+            ]))
+    elif co_outcome == "error":
+        parts.append(_status("info",
+            f"Could not probe CORS: {cors.get('error', '?')}"))
+
+    return "\n".join(parts)
+
+
+def _render_reporting_endpoints_section(data):
+    srv = data.results.get("server_header", {}) or {}
+    if srv.get("error"):
+        return ""
+    rt  = srv.get("report_to")
+    re_ = srv.get("reporting_endpoints")
+    nel = srv.get("nel")
+    if not (rt or re_ or nel):
+        # Absent is not a finding — don't emit a section at all.
+        return ""
+
+    parts = ["", _heading("REPORTING ENDPOINTS (CSP / NEL TELEMETRY)"), ""]
+    if re_:
+        parts.append(_status("pass", "Reporting-Endpoints header set (W3C Reporting API)"))
+    if rt:
+        parts.append(_status("pass", "Report-To header set (legacy, still widely deployed)"))
+    if nel:
+        parts.append(_status("pass", "NEL header set (Network Error Logging)"))
+    return "\n".join(parts)
+
+
 # ── Detailed sections: SSL Labs ──────────────────────────────────────────────
 
 def _render_ssl_labs_section(data):
@@ -2457,6 +2604,9 @@ def _render_text(data):
         _render_versioned_libraries_section,
         _render_browser_security_headers_section,
         _render_security_txt_section,
+        _render_error_page_section,
+        _render_cors_section,
+        _render_reporting_endpoints_section,
         _render_ssl_labs_section,
         _render_page_analysis_section,
         _render_starttls_section,

@@ -1,0 +1,84 @@
+{
+    "_comment": "Fingerprints for default error pages (404 / 500) that disclose server software, language, or framework. Each entry has body_patterns (regexes; ANY match triggers detection) and an optional version_pattern (regex with named group 'version' that, if it matches, produces an 'origin_with_version' outcome instead of 'origin_no_version'). Triggering = a finding; matching version_pattern = stronger finding. Patterns are deliberately tied to the *layout* of default error pages (specific tags, address blocks, error-report titles) rather than just keyword matches, to keep false positives low.",
+    "_format_version": 1,
+    "fingerprints": [
+        {
+            "name": "Apache",
+            "_comment": "Apache default error pages always include an <address>Apache...</address> block (or 'Apache Server at' line in older versions). The title alone is too generic to fingerprint on — many frameworks use the same '404 Not Found' text.",
+            "body_patterns": [
+                "<address>\\s*Apache(?:\\s|/|\\s+Server)",
+                "<hr>\\s*<address>\\s*Apache",
+                "Apache/[0-9]+\\.[0-9]+\\.[0-9]+\\s+\\(",
+                "Apache Server at\\s"
+            ],
+            "version_pattern": "Apache/(?P<version>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)"
+        },
+        {
+            "name": "nginx",
+            "_comment": "nginx default error pages have a distinctive structure: <h1> inside <center>, then <hr><center>nginx</center>. We require the centered nginx attribution rather than just the title — the title alone is too generic (Flask's default 404, custom pages, and many frameworks start the same way).",
+            "body_patterns": [
+                "<center>\\s*nginx\\s*</center>",
+                "<center>\\s*nginx/[0-9]",
+                "<hr>\\s*<center>\\s*nginx"
+            ],
+            "version_pattern": "nginx/(?P<version>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)"
+        },
+        {
+            "name": "IIS",
+            "body_patterns": [
+                "<title>\\s*IIS\\s+Windows(?:\\s+Server)?\\s*</title>",
+                "<title>\\s*IIS[0-9]*\\s+Windows\\s*</title>",
+                "<h2>\\s*HTTP\\s+Error\\s+[0-9]+(?:\\.[0-9]+)?\\s+-",
+                "Microsoft-IIS/[0-9]"
+            ],
+            "version_pattern": "Microsoft-IIS/(?P<version>[0-9]+(?:\\.[0-9]+)?)"
+        },
+        {
+            "name": "Tomcat",
+            "body_patterns": [
+                "<title>\\s*Apache\\s+Tomcat(?:/[0-9.]+)?\\s+-\\s+Error\\s+report\\s*</title>",
+                "<h1>\\s*HTTP\\s+Status\\s+[0-9]+\\s",
+                "<hr\\s+class=\"line\"\\s*/?>\\s*<h3>\\s*Apache\\s+Tomcat"
+            ],
+            "version_pattern": "Apache\\s+Tomcat/(?P<version>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)"
+        },
+        {
+            "name": "Express",
+            "body_patterns": [
+                "^Cannot\\s+(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\\s+/",
+                "<pre>\\s*Cannot\\s+(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\\s+/"
+            ],
+            "version_pattern": null
+        },
+        {
+            "name": "PHP",
+            "_comment": "PHP error disclosures: Warning/Fatal/Notice/Parse/Deprecated with file paths. Specific to default display_errors=On configuration. We require both the level keyword AND a path-like fragment to keep FPs low — a plain 'Warning:' string in body text doesn't match.",
+            "body_patterns": [
+                "<b>\\s*(?:Warning|Fatal\\s+error|Notice|Parse\\s+error|Deprecated)\\s*</b>:.*?\\s+in\\s+<b>[^<]*\\.php</b>",
+                "(?:Warning|Fatal\\s+error|Notice|Parse\\s+error):\\s+.*?\\s+in\\s+/[^\\s]*\\.php\\s+on\\s+line\\s+[0-9]+"
+            ],
+            "version_pattern": null
+        },
+        {
+            "name": "Django",
+            "_comment": "Django DEBUG=True traceback page is a major disclosure. Distinct fingerprint: the orange/red header bar and traceback layout. We match the structural elements rather than colors.",
+            "body_patterns": [
+                "<title>\\s*[A-Z][A-Za-z]+\\s+at\\s+/[^<]*</title>\\s*<meta\\s+name=\"robots\"\\s+content=\"NONE,NOARCHIVE\"",
+                "<h2>\\s*Traceback\\s*<span\\s+class=\"commands\">",
+                "Django Version:\\s*</th>\\s*<td>",
+                "You're seeing this error because you have <code>DEBUG = True</code>"
+            ],
+            "version_pattern": "Django\\s+Version:\\s*</th>\\s*<td>(?P<version>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)"
+        },
+        {
+            "name": "Flask",
+            "_comment": "Flask's default 404 is minimal but distinct. Werkzeug debugger page (DEBUG=True) is a much worse disclosure.",
+            "body_patterns": [
+                "<title>\\s*404\\s+Not\\s+Found\\s*</title>\\s*<h1>\\s*Not\\s+Found\\s*</h1>\\s*<p>The requested URL was not found on the server\\.",
+                "<title>.*?//\\s*Werkzeug\\s+Debugger\\s*</title>",
+                "<div class=\"traceback\">\\s*<h3>\\s*Traceback\\s*<em>"
+            ],
+            "version_pattern": "Werkzeug/(?P<version>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)"
+        }
+    ]
+}

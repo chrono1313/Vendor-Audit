@@ -78,6 +78,7 @@ vendor_audit = [
     "scoring_rubric.json",
     "library_eol.json",
     "os_eol.json",
+    "error_page_fingerprints.json",
 ]
 # The web layer ships HTML templates that need to be installed alongside
 # the .py files (Jinja2 loads them by file path at runtime).

@@ -463,12 +463,44 @@ def _render_mail_transport(domain_label, results, warn, bad, err, ok, prefix="")
     if dkim and dkim.get("checked"):
         found = dkim.get("found", [])
         checked = dkim.get("checked", [])
+        keys = dkim.get("keys", {}) or {}
         # Always emit the partial-check caveat so users don't read absence as
         # proof. DKIM selectors are operator-chosen and arbitrary.
         if found:
             sels = ", ".join(found)
             print(ok(f"DKIM key found at common selector(s): {c(GREEN, sels)}  "
                      f"{c(GREY, '(checked: ' + ', '.join(checked) + ')')}"))
+
+            # ── DKIM key strength ──────────────────────────────────────
+            # Worst observed key strength across all found selectors. The
+            # rubric scores this independently of the parent DKIM check.
+            ws = dkim.get("worst_strength")
+            # Build a description of the key(s): "default: RSA-2048; selector1: Ed25519"
+            def _keydesc(sel, k):
+                algo = k.get("algorithm", "?")
+                bits = k.get("bits")
+                if algo == "rsa" and bits:
+                    return f"{sel}: RSA-{bits}"
+                if algo == "ed25519":
+                    return f"{sel}: Ed25519"
+                if k.get("strength") == "revoked":
+                    return f"{sel}: revoked (p= empty)"
+                return f"{sel}: {algo}/{k.get('strength','?')}"
+            desc = "; ".join(_keydesc(s, keys.get(s, {})) for s in found)
+            if ws == "good":
+                print(ok(f"DKIM key strength: {c(GREEN, desc)}"))
+            elif ws == "weak":
+                print(warn(
+                    f"DKIM key strength: {c(YELLOW, desc)} — RSA-1024 is deprecated by RFC 8301",
+                    f"DKIM key strength — RSA-1024 (deprecated)", "DKIM key strength"))
+            elif ws == "broken":
+                print(bad(
+                    f"DKIM key strength: {c(RED, desc)} — RSA <1024 is broken",
+                    f"DKIM key strength — RSA <1024 (broken)", "DKIM key strength"))
+            elif ws == "unparseable":
+                print(f"      {c(GREY, f'DKIM key strength: could not parse key ({desc})')}")
+            elif ws == "revoked":
+                print(f"      {c(GREY, f'DKIM key strength: revoked ({desc}) — operator deliberately disabled')}")
         else:
             # Headline first, then the partial-check explanation on its own
             # indented lines for readability. The summary scores this as 0/0
@@ -805,6 +837,25 @@ def render(original_domain, audit_domain, r, dns_server):
                 f"— users typing the uncovered name see a TLS error before the redirect",
                 f"TLS — cert missing variant ({', '.join(missing)})",
                 "Cert covers www variant",
+            ))
+
+        # ── Chain completeness ────────────────────────────────────────────
+        # Only render when chain inspection actually ran (Python 3.13+).
+        # On older Pythons (chain_status='unsupported') stay quiet — adding a
+        # confusing "we couldn't check" line for what's a stable site is worse
+        # than just omitting the row.
+        cs = tls.get("chain_status")
+        sent = tls.get("chain_sent_count")
+        ver_n = tls.get("chain_verified_count")
+        if cs == "complete":
+            print(ok(f"Server sends complete certificate chain  "
+                     f"{c(GREY, f'(sent {sent}, verified {ver_n})')}"))
+        elif cs == "incomplete":
+            print(warn(
+                f"Server sent {sent} cert(s) but chain needs {ver_n} — "
+                f"clients fall back to AIA fetching (fragile)",
+                f"TLS — incomplete chain (sent {sent}, needed {ver_n})",
+                "Cert chain completeness",
             ))
 
     # ── HTTP ─────────────────────────────────────────────────────────────────
@@ -1631,6 +1682,75 @@ def render(original_domain, audit_domain, r, dns_server):
     else:
         print(warn("security.txt not found", "security.txt (RFC 9116) — missing", "security.txt"))
 
+    # ── Default error page disclosure ─────────────────────────────────────────
+    epr = r.get("error_page", {})
+    epo = epr.get("outcome")
+    if epo:  # only render when the check ran (might be absent in old result dicts)
+        print(c(BOLD, "\nDefault Error Page") + c(GREY, "  (probes a UUID path to elicit 404)"))
+        detected = epr.get("detected")
+        version  = epr.get("version")
+        status   = epr.get("status")
+        if epo == "custom_404":
+            print(ok(f"Custom 404 page  {c(GREY, f'(status {status})')}"))
+        elif epo == "default_no_version":
+            print(warn(
+                f"Default {detected} error page (no version)  {c(GREY, f'(status {status})')}",
+                f"Default error page — {detected} (no version)",
+                "Default error page"))
+            print(f"      {c(GREY, 'Operator has not customised the default 404 — strip or override to avoid software disclosure.')}")
+        elif epo == "default_with_version":
+            print(bad(
+                f"Default {detected}/{version} error page  {c(GREY, f'(status {status})')}",
+                f"Default error page — {detected}/{version}",
+                "Default error page"))
+            print(f"      {c(GREY, f'Default 404 reveals {detected} version {version} — strip or override.')}")
+        elif epo == "spa_or_2xx":
+            print(f"  {c(GREY, '–')} Probe path returned {status} (SPA shell or wildcard route) — no 404 to inspect")
+        elif epo == "error":
+            print(f"  {c(GREY, '?')} Could not probe error page: {epr.get('error', '?')}")
+
+    # ── CORS configuration ────────────────────────────────────────────────────
+    cors = r.get("cors", {})
+    co_outcome = cors.get("outcome")
+    if co_outcome:  # only render when check ran
+        print(c(BOLD, "\nCORS Configuration"))
+        if co_outcome == "no_cors":
+            print(ok("No CORS headers — secure default (browsers refuse cross-origin reads)"))
+        elif co_outcome == "weak_wildcard_with_credentials":
+            print(bad(
+                "ACAO=* combined with Allow-Credentials=true — spec-forbidden pairing",
+                "CORS — wildcard ACAO with credentials",
+                "CORS configuration"))
+            print(f"      {c(GREY, 'Browsers refuse this combination at runtime, but the server emitting it indicates misconfiguration.')}")
+        elif co_outcome == "weak_null_origin":
+            print(bad(
+                "ACAO=null — trusts sandboxed iframes and other null-origin contexts",
+                "CORS — trusts null origin",
+                "CORS configuration"))
+        elif co_outcome == "weak_reflective":
+            print(bad(
+                "Reflective ACAO — server echoes whatever Origin: the client sends, trusting any origin",
+                "CORS — reflective Allow-Origin",
+                "CORS configuration"))
+            print(f"      {c(GREY, 'Verified by sending Origin: https://vendor-audit-cors-probe.example and observing the same value in ACAO.')}")
+        elif co_outcome == "error":
+            print(f"  {c(GREY, '?')} Could not probe CORS: {cors.get('error', '?')}")
+
+    # ── Reporting endpoints ───────────────────────────────────────────────────
+    srv = r.get("server_header", {})
+    if srv and not srv.get("error"):
+        rt  = srv.get("report_to")
+        re_ = srv.get("reporting_endpoints")
+        nel = srv.get("nel")
+        if rt or re_ or nel:
+            print(c(BOLD, "\nReporting Endpoints") + c(GREY, "  (CSP / NEL violation telemetry)"))
+            if re_:
+                print(ok(f"Reporting-Endpoints header set  {c(GREY, '(W3C Reporting API)')}"))
+            if rt:
+                print(ok(f"Report-To header set  {c(GREY, '(legacy, still widely deployed)')}"))
+            if nel:
+                print(ok(f"NEL header set  {c(GREY, '(Network Error Logging)')}"))
+
     # ── SSL Labs ──────────────────────────────────────────────────────────────
     ssl_result = r.get("ssl_labs")
     if ssl_result is not None:
@@ -2331,6 +2451,8 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
     cert_v  = results.get("cert_variant", {}) or {}
     page    = results.get("page_signals", {}) or {}
     starttls = results.get("starttls_mx", {}) or {}
+    error_page = results.get("error_page", {}) or {}
+    cors      = results.get("cors", {}) or {}
 
     # ── Email rollup statuses ─────────────────────────────────────────────────
     if mx.get("error"):
@@ -2519,6 +2641,7 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
         "email_dane_mx_with_tlsa":     _str_or_blank(len(dane.get("with_tlsa", []))) if dane else "",
         "email_dkim_selectors_checked":"; ".join(dkim.get("checked", [])),
         "email_dkim_selectors_found":  "; ".join(dkim.get("found", [])),
+        "email_dkim_worst_strength":   dkim.get("worst_strength") or "",
 
         # ── Email — Redirect target equivalents (only populated on redirect) ──
         "email_redirect_target_spf_status":   rt_spf.get("status") or "",
@@ -2582,6 +2705,9 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
         "tls_cert_name_match":         _yn(tls.get("cert_names_match")),
         "tls_cert_san_names":          "; ".join(tls.get("cert_san_names", [])),
         "tls_cert_covers_variant":     cert_v.get("outcome", ""),
+        "tls_chain_status":            tls.get("chain_status") or "",
+        "tls_chain_sent_count":        _str_or_blank(tls.get("chain_sent_count")),
+        "tls_chain_verified_count":    _str_or_blank(tls.get("chain_verified_count")),
         "tls_hsts_status":             hsts_status,
         "tls_hsts_max_age_seconds":    _str_or_blank(hsts.get("max_age")),
         "tls_hsts_includes_subdomains":_yn(hsts.get("includes_subdomains")),
@@ -2641,6 +2767,20 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
         "web_security_txt_policy":     sectxt.get("policy") or "",
         "web_security_txt_expires":    sectxt.get("expires") or "",
         "web_security_txt_expired":    _yn(sectxt.get("expired")),
+
+        # Default error page disclosure (3.0.0)
+        "web_error_page_outcome":      error_page.get("outcome") or "",
+        "web_error_page_detected":     error_page.get("detected") or "",
+        "web_error_page_version":      error_page.get("version") or "",
+        "web_error_page_status":       _str_or_blank(error_page.get("status")),
+
+        # CORS configuration (3.0.0)
+        "web_cors_outcome":            cors.get("outcome") or "",
+
+        # Reporting endpoints (3.0.0) — combined check across three headers
+        "web_report_to":               srv.get("report_to") or "",
+        "web_reporting_endpoints":     srv.get("reporting_endpoints") or "",
+        "web_nel":                     srv.get("nel") or "",
 
         "web_clock_skew_seconds":      _str_or_blank(clock.get("skew_seconds")),
         "web_clock_outcome":           clock.get("outcome", ""),
@@ -2761,6 +2901,7 @@ CSV_FIELDS = [
     "email_tls_rpt_present", "email_tls_rpt_rua",
     "email_dane_mx_total", "email_dane_mx_with_tlsa",
     "email_dkim_selectors_checked", "email_dkim_selectors_found",
+    "email_dkim_worst_strength",
     # Email — Redirect target equivalents
     "email_redirect_target_spf_status", "email_redirect_target_spf_record",
     "email_redirect_target_dmarc_policy", "email_redirect_target_dmarc_record",
@@ -2794,6 +2935,7 @@ CSV_FIELDS = [
     "tls_cert_issuer", "tls_cert_issued", "tls_cert_expires",
     "tls_cert_lifetime_days", "tls_cert_name_match",
     "tls_cert_san_names", "tls_cert_covers_variant",
+    "tls_chain_status", "tls_chain_sent_count", "tls_chain_verified_count",
     "tls_hsts_status", "tls_hsts_max_age_seconds",
     "tls_hsts_includes_subdomains", "tls_hsts_preload_directive", "tls_hsts_preloaded",
     "tls_ssl_labs_grade", "tls_ssl_labs_assessed_utc",
@@ -2822,6 +2964,10 @@ CSV_FIELDS = [
     "web_cookie_detail",
     "web_security_txt_present", "web_security_txt_contacts",
     "web_security_txt_policy", "web_security_txt_expires", "web_security_txt_expired",
+    "web_error_page_outcome", "web_error_page_detected",
+    "web_error_page_version", "web_error_page_status",
+    "web_cors_outcome",
+    "web_report_to", "web_reporting_endpoints", "web_nel",
     "web_clock_skew_seconds", "web_clock_outcome",
     "web_page_parsed",
     "web_page_third_party_origins", "web_page_third_party_count",
