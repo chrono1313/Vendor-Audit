@@ -686,6 +686,41 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
     new result is stored in the cache. fresh=False (default) returns a
     cached result if one exists, otherwise runs the audit and caches.
     """
+    # Two-stage validation: shape-only first (cheap, no I/O) so we can
+    # check the cache without a DNS round-trip. Full validation with the
+    # SSRF guard runs only on cache miss, before we actually run the
+    # audit. Without this split, every request — even cache hits — would
+    # block on DNS for 1-5s, defeating the cache's purpose.
+    try:
+        shape_only = validate_domain_input(domain, dns_check=False)
+    except ValidationError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            context={
+                "title": "That input couldn't be audited",
+                "message": str(exc),
+                "code": exc.code,
+                "version": audit.__version__,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Cache check. Hits return instantly without burning a worker, and
+    # without a DNS round-trip. Skipped when fresh=True (re-audit). The
+    # cache key is the normalized domain so 'Example.com',
+    # ' example.com ', etc. all share a cache entry. Errors are not
+    # cached (the user should retry promptly, not wait the full TTL).
+    if not fresh:
+        cached = _html_cache_get(shape_only.domain)
+        if cached is not None:
+            cached_html, cached_audit_ts = cached
+            log.info("audit cache hit: domain=%r ip=%s",
+                     shape_only.domain, _client_ip(request))
+            return HTMLResponse(content=_inject_age(cached_html, cached_audit_ts))
+
+    # Cache miss (or fresh=True): full validation with DNS / SSRF guard
+    # before running the audit. This is the slow path.
     try:
         validated = validate_domain_input(domain)
     except ValidationError as exc:
@@ -700,18 +735,6 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
             },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-
-    # Cache check. Hits return instantly without burning a worker. Skipped
-    # when fresh=True (re-audit). The cache key is the validated domain so
-    # 'Example.com', ' example.com ', etc. all share a cache entry. Errors
-    # are not cached (the user should retry promptly, not wait the full TTL).
-    if not fresh:
-        cached = _html_cache_get(validated.domain)
-        if cached is not None:
-            cached_html, cached_audit_ts = cached
-            log.info("audit cache hit: domain=%r ip=%s",
-                     validated.domain, _client_ip(request))
-            return HTMLResponse(content=_inject_age(cached_html, cached_audit_ts))
 
     log.info(
         "audit request: original=%r normalized=%r addresses=%s ip=%s%s",
