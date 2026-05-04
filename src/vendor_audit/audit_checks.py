@@ -838,7 +838,7 @@ def check_mta_sts_policy(domain):
     url = f"https://mta-sts.{domain}/.well-known/mta-sts.txt"
     try:
         resp = _http_get(url, verify=False, allow_redirects=True)
-        if not resp.ok:
+        if not resp.is_success:
             return {"fetched": False, "error": f"HTTP {resp.status_code}"}
         body = resp.text
         mode = max_age = None
@@ -1672,7 +1672,7 @@ def check_security_txt(domain):
         if err:
             last_err = err
             continue
-        if not resp.ok:
+        if not resp.is_success:
             continue
         parsed = _parse_body(resp.text)
         if parsed is None:
