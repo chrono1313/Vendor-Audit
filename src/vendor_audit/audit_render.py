@@ -2083,14 +2083,32 @@ def render(original_domain, audit_domain, r, dns_server):
             desc = f"SSL Labs grade: {worst}  → https://www.ssllabs.com/ssltest/analyze.html?d={audit_domain}"
         else:
             entry = _PARTIAL_LABEL.get(label)
-            # Some checks (notably CSP script-src safety) have multiple
-            # partial outcomes that score differently and need different
-            # finding text. Those entries are dicts keyed by outcome; a
-            # plain string is the simple case.
+            # Some checks (notably CSP script-src safety and HTTP version)
+            # have multiple partial outcomes that score differently and
+            # need different finding text. Those entries are dicts keyed
+            # by outcome; a plain string is the simple case.
             if isinstance(entry, dict):
                 if label == "CSP script-src safety":
                     csp_a = r.get("csp_analysis") or {}
                     outcome = csp_a.get("script_src_outcome")
+                    desc = entry.get(outcome) or entry.get("_default")
+                elif label == "HTTP version":
+                    # Mirror the scoring logic in audit_checks.score_results.
+                    # http3 advertised → http3 (not actually shown here since
+                    # http3 is a full pass, not a partial). HTTP/2 → http2.
+                    # HTTP/1.1 → http1.
+                    hv      = r.get("http_version") or {}
+                    srv_h   = r.get("server_header") or {}
+                    hv_ver  = hv.get("version")
+                    http3   = srv_h.get("http3_advertised")
+                    if http3:
+                        outcome = "http3"
+                    elif hv_ver == "HTTP/2":
+                        outcome = "http2"
+                    elif hv_ver:
+                        outcome = "http1"
+                    else:
+                        outcome = None
                     desc = entry.get(outcome) or entry.get("_default")
                 else:
                     desc = entry.get("_default")

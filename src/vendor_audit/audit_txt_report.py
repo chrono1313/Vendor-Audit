@@ -565,7 +565,11 @@ class _ReportData:
             "HSTS includeSubDomains":  "HSTS missing includeSubDomains directive",
             "HSTS preloaded":          "HSTS not on the preload list",
             "HSTS max-age strength":   "HSTS max-age below 180 days",
-            "HTTP version":            "HTTP/3 not supported",
+            "HTTP version":            {
+                "http1":     "HTTP/1.1 only \u2014 server does not support HTTP/2 or HTTP/3 (http1mustdie.com)",
+                "http2":     "HTTP/3 not supported (HTTP/2 only)",
+                "_default":  "HTTP/3 not supported"
+            },
             "HTTP\u2192HTTPS redirect": "Plain HTTP does not redirect to HTTPS",
             "Server header":           "Server header discloses software / version",
             "X-Powered-By absent":     "X-Powered-By header reveals technology",
@@ -592,7 +596,17 @@ class _ReportData:
             "SSL Labs grade":          "SSL Labs grade indicates serious TLS issues",
         }
         if label in per_label:
-            return per_label[label]
+            entry = per_label[label]
+            # Most entries are plain strings. A few (HTTP version) are
+            # dicts keyed by outcome — same shape as the rubric's
+            # partial_label entries — to differentiate fail-cases like
+            # "HTTP/1.1 only" from partial-cases like "HTTP/2 only".
+            if isinstance(entry, dict):
+                resolved = self._resolve_partial_label(entry, label)
+                if resolved:
+                    return resolved
+                return entry.get("_default") or f"{label} — failed"
+            return entry
         if base_display and base_display != label:
             return f"{base_display} — failed"
         return f"{label} — failed"
@@ -631,6 +645,23 @@ class _ReportData:
             if label == "CSP script-src safety":
                 csp_a = self.results.get("csp_analysis") or {}
                 outcome = csp_a.get("script_src_outcome")
+                if outcome and outcome in entry:
+                    return entry[outcome]
+            # HTTP version: outcome derived from http_version and server_header.
+            # Mirrors the scoring logic in audit_checks.score_results.
+            if label == "HTTP version":
+                hv      = self.results.get("http_version") or {}
+                srv_h   = self.results.get("server_header") or {}
+                hv_ver  = hv.get("version")
+                http3   = srv_h.get("http3_advertised")
+                if http3:
+                    outcome = "http3"
+                elif hv_ver == "HTTP/2":
+                    outcome = "http2"
+                elif hv_ver:
+                    outcome = "http1"
+                else:
+                    outcome = None
                 if outcome and outcome in entry:
                     return entry[outcome]
             # Future multi-tier checks would add their lookups here.

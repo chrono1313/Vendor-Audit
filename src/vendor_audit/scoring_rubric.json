@@ -1040,7 +1040,11 @@
     "partial_label": {
         "SSL Labs grade": "SSL Labs grade",
         "TLS 1.3": "TLS 1.2 only - TLS 1.3 not negotiated",
-        "HTTP version": "HTTP/2 only - HTTP/3 not supported",
+        "HTTP version": {
+            "http1":    "HTTP/1.1 only \u2014 server does not support HTTP/2 or HTTP/3 (http1mustdie.com)",
+            "http2":    "HTTP/2 only - HTTP/3 not supported",
+            "_default": "HTTP/2 only - HTTP/3 not supported"
+        },
         "IPv4 RPKI": "IPv4 RPKI not-found - no ROA published, prefix unprotected",
         "IPv6 RPKI": "IPv6 RPKI not-found - no ROA published, prefix unprotected",
         "HTTP\u2192HTTPS redirect": "Port 80 open but not redirecting to HTTPS",
