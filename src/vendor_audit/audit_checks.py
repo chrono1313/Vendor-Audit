@@ -1560,21 +1560,32 @@ def check_tls(domain, port=443):
                         verified = ssock.get_verified_chain() or []
                         result["chain_sent_count"]     = len(sent)
                         result["chain_verified_count"] = len(verified)
-                        # Verified chain must be at least as long as the
-                        # one the server sent (verified can be longer when
-                        # OpenSSL fetched a missing intermediate via AIA,
-                        # or shorter when OpenSSL trusted an intermediate
-                        # earlier in the chain — both cases mean the server
-                        # didn't send what was needed for a clean handshake
-                        # without out-of-band fetching).
+                        # Comparison logic:
                         #
-                        # The conservative test: server is incomplete if it
-                        # sent fewer certs than were needed to reach a
-                        # trust anchor. A correctly-configured server sends
-                        # leaf + every intermediate; verified == sent (or
-                        # sent contains an extra root, which some servers
-                        # do — rare but harmless).
-                        if len(sent) >= len(verified):
+                        # OpenSSL's verified chain INCLUDES the trust anchor
+                        # (root). A correctly-configured server does NOT send
+                        # the root — sending it is unnecessary and wasteful.
+                        # So the typical correct case is:
+                        #   sent     = [leaf, intermediate]              (2)
+                        #   verified = [leaf, intermediate, root]        (3)
+                        # Difference of 1 = server omitted the root only =
+                        # complete. Difference of ≥2 = server skipped at
+                        # least one intermediate and OpenSSL had to AIA-fetch
+                        # or pull from its trust store = incomplete.
+                        #
+                        # Edge cases:
+                        #   - Server sends the root too (rare, harmless):
+                        #     sent == verified, both include root → complete.
+                        #   - Server sends MORE than verified needed
+                        #     (cross-signed cert, OpenSSL trusts an
+                        #     intermediate directly): sent > verified →
+                        #     complete (slightly inefficient but not a
+                        #     finding).
+                        #   - Empty chains (shouldn't happen post-handshake):
+                        #     treat as unsupported rather than misclassify.
+                        if not sent or not verified:
+                            result["chain_status"] = "unsupported"
+                        elif len(verified) - len(sent) <= 1:
                             result["chain_status"] = "complete"
                         else:
                             result["chain_status"] = "incomplete"
