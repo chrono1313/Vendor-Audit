@@ -262,12 +262,14 @@ def _inject_age(html: str, audit_ts: float) -> str:
          The data was prepared by someone else's prior request. Show
          "From cache, N ago".
 
-    The two cases differ by cache-entry age. The redirect-after-fresh
-    round-trip takes ~50-200ms, so a sub-2-second-old entry is almost
-    certainly being served to the user who triggered the audit. An
-    older entry is a genuine cache hit by a different visitor.
+    The two cases differ by cache-entry age. Measured round-trip on
+    the production VM is ~2-3s under load (fresh audit completion +
+    303 + browser follow + handler dispatch on a busy worker pool),
+    so a sub-10-second-old entry is almost certainly being served to
+    the user who triggered the audit. An older entry is a genuine
+    cache hit by a different visitor.
 
-    Edge case: if user B opens a shared link 1.5 seconds after user
+    Edge case: if user B opens a shared link 8 seconds after user
     A's audit completes, user B sees "just now" instead of "From
     cache, just now." Benign — the data IS fresh, and "just now" is
     accurate even if the framing is slightly off.
@@ -277,9 +279,10 @@ def _inject_age(html: str, audit_ts: float) -> str:
     gets the substitution that matches their moment of viewing.
     """
     age = time.time() - audit_ts
-    # Sub-2-second threshold: the user is almost certainly viewing a
-    # result they just triggered (303-redirect round trip).
-    if age < 2:
+    # Sub-10-second threshold: the user is almost certainly viewing a
+    # result they just triggered (303-redirect round trip, which can
+    # run 2-3s on the production VM under load).
+    if age < 10:
         replacement = " · just now"
     else:
         replacement = f" · From cache, {_format_age(age)}"
