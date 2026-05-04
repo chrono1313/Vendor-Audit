@@ -771,6 +771,22 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
         # Store in cache regardless of fresh flag — fresh requests should
         # update the cache so subsequent hits get the latest result.
         _result_cache_set(validated.domain, body, txt, txt_headers, audit_ts)
+
+        # On a fresh audit, redirect to the canonical URL (without
+        # fresh=1). Otherwise the browser's address bar shows the
+        # ?fresh=1 query, and any reload or shared link forces another
+        # cache-bypassing audit. The redirect strips the flag so the
+        # next hit is a normal cache lookup. The follow-up request
+        # finds the entry we just populated and serves it instantly
+        # (~tens of ms), so the extra round-trip is negligible.
+        if fresh:
+            from urllib.parse import quote
+            canonical = f"/audit/result?domain={quote(validated.domain)}"
+            return RedirectResponse(
+                url=canonical,
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+
         return HTMLResponse(content=_inject_age(body, audit_ts))
     else:
         return templates.TemplateResponse(
