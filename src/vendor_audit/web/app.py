@@ -571,7 +571,7 @@ async def form_page(request: Request):
 @app.get("/audit", include_in_schema=False)
 @app.get("/audit/", include_in_schema=False)
 @limiter.limit(LIMIT_FORM)
-async def audit_get(request: Request, domain: str = ""):
+async def audit_get(request: Request, domain: str = "", fresh: int = 0):
     """GET entry point — bookmarkable / shareable URL.
 
     With no `?domain=` query param, redirects to the form page (303).
@@ -586,6 +586,12 @@ async def audit_get(request: Request, domain: str = ""):
     loading page first, then the result. The result URL itself is also
     bookmarkable for power users who want to skip the brief loading
     flash.
+
+    fresh=1 is forwarded through to /audit/result, so the re-audit
+    button (which submits here with fresh=1) shows the loading page
+    too — important now that re-audit always runs a fresh audit (the
+    cache is 24h, so re-audit is a real 3-5s operation, not the
+    sub-second cache hit it used to be when TTL was 60s).
 
     Rate-limited under LIMIT_FORM (60/min) since this endpoint does no
     audit work — the actual audit happens at /audit/result, where
@@ -623,11 +629,13 @@ async def audit_get(request: Request, domain: str = ""):
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Pass the domain straight through. We URL-encode it to be safe
-    # against any character that might survive shape validation but
-    # confuse the URL parser (none should, but defensive).
+    # Pass the domain (and the fresh flag if set) straight through. We
+    # URL-encode the domain to be safe against any character that might
+    # survive shape validation but confuse the URL parser.
     from urllib.parse import quote
     result_url = f"/audit/result?domain={quote(domain.strip())}"
+    if fresh:
+        result_url += "&fresh=1"
     return templates.TemplateResponse(
         request=request,
         name="loading.html",

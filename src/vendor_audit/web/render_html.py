@@ -629,14 +629,16 @@ def _render_action_bar_html(data, domain):
         f'download>Download as .txt</a>'
     )
     # Re-audit re-runs against the same domain. Done as a real <form>
-    # GET to /audit/result with fresh=1 — bypasses the HTML cache so
-    # re-audit always runs a fresh audit. Going directly to /result
-    # also skips the loading-page flash, which would otherwise feel
-    # gratuitous on a button explicitly labeled "Re-audit".
+    # GET to /audit (not /audit/result directly) so the user sees the
+    # loading page during the 3-5s re-audit. /audit forwards the fresh
+    # flag through to /audit/result, which bypasses the cache and runs
+    # a fresh audit. Without the loading page, a re-audit click on a
+    # cache-hit page leaves the user staring at the old page with no
+    # feedback that anything is happening.
     # Styled as a link via .as-link so it matches the surrounding
     # action-bar items visually.
     out.append(
-        f'    <form class="reaudit-form" method="get" action="/audit/result">'
+        f'    <form class="reaudit-form" method="get" action="/audit">'
         f'<input type="hidden" name="domain" value="{_h(domain)}">'
         f'<input type="hidden" name="fresh" value="1">'
         f'<button type="submit" class="as-link">Re-audit this domain</button>'
@@ -663,7 +665,7 @@ def _render_footer_html(data, domain):
         f'download>Download as .txt</a>'
     )
     out.append(
-        f'    <form class="reaudit-form" method="get" action="/audit/result">'
+        f'    <form class="reaudit-form" method="get" action="/audit">'
         f'<input type="hidden" name="domain" value="{_h(domain)}">'
         f'<input type="hidden" name="fresh" value="1">'
         f'<button type="submit" class="as-link">Re-audit this domain</button>'
