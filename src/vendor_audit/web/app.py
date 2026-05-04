@@ -132,20 +132,22 @@ TXT_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_TXT_CACHE_MAX", "500"))
 # is the viral-link case: a popular share of a single audit URL drives
 # many simultaneous requests, all of which would otherwise run identical
 # audits. With this cache, only the first hit pays the audit cost; the
-# next 60 seconds of hits return the cached HTML.
+# rest are served from cache for the duration of the TTL.
 #
-# 60 seconds matches the typical "viral burst" window — long enough to
-# absorb most clicks from a single share post, short enough that the
-# displayed audit timestamp doesn't feel stale.
-#
-# Re-audit form posts append ?fresh=1 to bypass the cache (and refresh
-# the cache entry with the new result), so a user explicitly asking for
-# a fresh audit always gets one.
-HTML_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_TTL_S", "60"))
+# 24 hours: most vendor security postures don't change daily; cache hits
+# across a full day of viral-link traffic save substantial worker-pool
+# work. The age of the cached result is displayed prominently to the
+# user ("Scanned N hours ago") so a stale view is honest rather than
+# deceptive — and the re-audit form posts with ?fresh=1 to bypass this
+# cache for anyone explicitly asking for a fresh audit.
+HTML_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_TTL_S", "86400"))
 
 # Hard cap on the number of result-page cache entries. ~50KB each, so
-# 200 entries = ~10MB. Generous viral burst margin.
-HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "200"))
+# 1000 entries = ~50MB max. Sized for sustained viral traffic across a
+# 24-hour TTL window — at 200 entries the cache would fill within a day
+# of distinct-domain traffic and start prematurely evicting popular
+# entries.
+HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "1000"))
 
 
 # ── In-memory .txt cache ─────────────────────────────────────────────────────
@@ -200,33 +202,75 @@ def _txt_cache_set(key: str, value):
 # requests since rendering happens in the FastAPI parent process, not
 # the worker pool.
 #
-# Entries: {domain: (html_string, expires_at_unix_seconds)}
+# Entries: {domain: (html_string, audit_timestamp_unix, expires_at_unix_seconds)}
+#
+# audit_timestamp_unix is when the audit's data was captured. It powers
+# the "Scanned N minutes ago" display, which is substituted into the
+# cached HTML at serve time so each visitor sees the correct age.
 
 _html_cache: dict = {}
 
 
 def _html_cache_get(key: str):
-    """Return cached HTML if present and not expired, else None."""
+    """Return (html, audit_timestamp_unix) tuple if cached and not expired,
+    else None."""
     entry = _html_cache.get(key)
     if entry is None:
         return None
-    html, expires = entry
+    html, audit_ts, expires = entry
     if time.time() >= expires:
         _html_cache.pop(key, None)
         return None
-    return html
+    return (html, audit_ts)
 
 
-def _html_cache_set(key: str, html: str):
+def _html_cache_set(key: str, html: str, audit_ts: float):
     """Store rendered HTML with HTML_CACHE_TTL_S TTL.
+
+    audit_ts is the unix timestamp of the audit (used by _inject_age at
+    serve time to compute "scanned N minutes ago").
 
     Same approximate-LRU eviction as the TXT cache.
     """
     expires = time.time() + HTML_CACHE_TTL_S
     if len(_html_cache) >= HTML_CACHE_MAX_ENTRIES and key not in _html_cache:
-        oldest_key = min(_html_cache, key=lambda k: _html_cache[k][1])
+        oldest_key = min(_html_cache, key=lambda k: _html_cache[k][2])
         _html_cache.pop(oldest_key, None)
-    _html_cache[key] = (html, expires)
+    _html_cache[key] = (html, audit_ts, expires)
+
+
+def _format_age(seconds: float) -> str:
+    """Format a duration as 'N minutes/hours/days ago' for display.
+
+    Thresholds:
+      < 1 min   → 'just now'
+      < 60 min  → 'N minute(s) ago'
+      < 24 hr   → 'N hour(s) ago'
+      ≥ 24 hr   → 'N day(s) ago'
+    """
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        n = int(seconds // 60)
+        return f"{n} minute{'s' if n != 1 else ''} ago"
+    if seconds < 86400:
+        n = int(seconds // 3600)
+        return f"{n} hour{'s' if n != 1 else ''} ago"
+    n = int(seconds // 86400)
+    return f"{n} day{'s' if n != 1 else ''} ago"
+
+
+def _inject_age(html: str, audit_ts: float) -> str:
+    """Replace the <!--AGO--> placeholder in rendered HTML with the
+    current "scanned N ... ago" string.
+
+    Called on every serve path (cache hit and cache miss) so each visitor
+    sees the age relative to *their* moment of viewing, not the audit
+    runner's. The placeholder pattern lets us cache HTML domain-keyed
+    (one entry per domain) rather than per-minute or per-visitor.
+    """
+    age = time.time() - audit_ts
+    return html.replace("<!--AGO-->", f" · {_format_age(age)}")
 
 
 # security.txt content (RFC 9116). Configured via env so the operator can
@@ -660,13 +704,14 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
     # Cache check. Hits return instantly without burning a worker. Skipped
     # when fresh=True (re-audit). The cache key is the validated domain so
     # 'Example.com', ' example.com ', etc. all share a cache entry. Errors
-    # are not cached (the user should retry promptly, not wait 60s).
+    # are not cached (the user should retry promptly, not wait the full TTL).
     if not fresh:
-        cached_html = _html_cache_get(validated.domain)
-        if cached_html is not None:
+        cached = _html_cache_get(validated.domain)
+        if cached is not None:
+            cached_html, cached_audit_ts = cached
             log.info("audit cache hit: domain=%r ip=%s",
                      validated.domain, _client_ip(request))
-            return HTMLResponse(content=cached_html)
+            return HTMLResponse(content=_inject_age(cached_html, cached_audit_ts))
 
     log.info(
         "audit request: original=%r normalized=%r addresses=%s ip=%s%s",
@@ -679,10 +724,19 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
 
     if envelope["ok"]:
         body = render_html.render_result(envelope)
+        # Convert audit timestamp (ISO 8601 UTC) to unix seconds for the
+        # cache and the age-injection helper. Falls back to "now" if the
+        # timestamp can't be parsed (defensive — would mean a worker bug).
+        try:
+            audit_ts = datetime.fromisoformat(
+                envelope["timestamp"].replace("Z", "+00:00")
+            ).timestamp()
+        except (ValueError, AttributeError):
+            audit_ts = time.time()
         # Store in cache regardless of fresh flag — fresh requests should
         # update the cache so subsequent hits get the latest result.
-        _html_cache_set(validated.domain, body)
-        return HTMLResponse(content=body)
+        _html_cache_set(validated.domain, body, audit_ts)
+        return HTMLResponse(content=_inject_age(body, audit_ts))
     else:
         return templates.TemplateResponse(
             request=request,

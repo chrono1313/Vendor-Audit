@@ -253,7 +253,16 @@ def _render_header_html(data, domain, audit_domain, timestamp, duration_ms):
             f'</p>'
         )
     out.append('  <div class="scan-meta">')
-    out.append(f'    <span class="scan-time">Scanned {_h(ts_human)}</span>')
+    # Scan-time is rendered with the absolute UTC timestamp followed by a
+    # placeholder (<!--AGO-->) that the web layer substitutes at serve
+    # time with " · N minutes/hours/days ago" relative to the current
+    # request. The placeholder design lets us cache HTML once per domain
+    # while still showing each visitor the correct age. See
+    # web/app.py:_inject_age().
+    out.append(
+        f'    <span class="scan-time">Scanned {_h(ts_human)}'
+        f'<span class="scan-age"><!--AGO--></span></span>'
+    )
     out.append(f'    <span class="scan-duration">{duration_ms} ms</span>')
     if deep:
         out.append('    <span class="flag">--deep</span>')
@@ -829,6 +838,14 @@ body {
 .scan-meta .flag {
   font-family: ui-monospace, monospace;
   color: var(--warn);
+}
+/* The "scanned N minutes/hours ago" text is supplementary metadata
+   alongside the absolute UTC timestamp. Slightly muted and italic so
+   it reads as a secondary label rather than competing with the
+   timestamp itself. */
+.scan-age {
+  font-style: italic;
+  opacity: 0.85;
 }
 
 /* ── Score panel ──────────────────────────────────────────────────────── */
