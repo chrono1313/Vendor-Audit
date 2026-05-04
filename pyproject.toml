@@ -43,7 +43,6 @@ classifiers = [
 # Versions mirror requirements.txt; see that file for rationale.
 dependencies = [
     "dnspython>=2.4",
-    "requests>=2.31",
     "httpx[http2]>=0.25",
     "tldextract>=5.0",
     "idna>=3.7",

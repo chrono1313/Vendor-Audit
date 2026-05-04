@@ -111,12 +111,6 @@ except ImportError:
     _MISSING.append("dnspython")
 
 try:
-    import requests  # noqa: F401
-    import urllib3   # noqa: F401
-except ImportError:
-    _MISSING.append("requests")
-
-try:
     import httpx  # noqa: F401
     try:
         import h2  # noqa: F401
@@ -408,12 +402,15 @@ def _ssllabs_call(path, email=None, params=None, method="GET", json_body=None, t
         headers = {"Content-Type": "application/json"}
         if email:
             headers["email"] = email
-        resp = requests.post(url, headers=headers, json=json_body or {}, timeout=timeout)
+        # httpx is API-compatible with requests for the simple-request
+        # case used here: status_code, json(), text, headers, and
+        # raise_for_status() all exist with the same shape.
+        resp = httpx.post(url, headers=headers, json=json_body or {}, timeout=timeout)
     else:
         headers = {}
         if email:
             headers["email"] = email
-        resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
+        resp = httpx.get(url, headers=headers, params=params or {}, timeout=timeout)
 
     if resp.status_code == 400:
         try:

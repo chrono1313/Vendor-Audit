@@ -60,11 +60,6 @@ import dns.rdatatype
 import dns.flags
 import dns.exception
 
-import requests
-import urllib3
-from urllib3.exceptions import InsecureRequestWarning
-urllib3.disable_warnings(InsecureRequestWarning)
-
 import httpx
 import tldextract as _tldextract
 
@@ -246,9 +241,9 @@ _INFRA_COOKIE_PREFIXES = (
     "fastly_",                                    # Fastly
 )
 
-# ── Thread-local resolver / session ───────────────────────────────────────────
-# Each worker thread gets its own resolver/session; this avoids contention on
-# dnspython's internal locks and lets requests reuse TCP/TLS connections within
+# ── Thread-local resolver / HTTP client ───────────────────────────────────────
+# Each worker thread gets its own resolver/client; this avoids contention on
+# dnspython's internal locks and lets httpx reuse TCP/TLS connections within
 # a thread (matters most for the multiple sequential RIPEstat calls).
 _tls = threading.local()
 
@@ -263,12 +258,39 @@ def _get_resolver():
     return _tls.resolver
 
 
-def _get_session():
-    """Return a requests.Session for the current thread, creating if needed."""
-    if not hasattr(_tls, "session"):
-        _tls.session = requests.Session()
-        _tls.session.headers.update({"User-Agent": f"vendor-audit/{__version__}"})
-    return _tls.session
+def _get_client():
+    """Return an httpx.Client for the current thread, creating if needed.
+
+    Configured for "HTTP/2 preferred, HTTP/1.1 fallback":
+      - http2=True  → advertise h2 in ALPN; speak HTTP/2 to any server
+                       that negotiates it
+      - http1=True  → fall back to HTTP/1.1 for legacy servers
+
+    This matches the audit's recommendation: we tell vendors to support
+    HTTP/2, and we ourselves prefer it, but we don't refuse to audit
+    servers that haven't migrated yet (otherwise the audit becomes
+    useless against the long tail of legacy infrastructure that most
+    needs the recommendations).
+
+    verify=False is set per-Client because most audit fetches go to the
+    audited domain itself, and we deliberately don't validate cert
+    trust at the client layer — we inspect the cert ourselves elsewhere
+    and report findings. This mirrors the previous requests behavior
+    (verify=False was passed per-call there too).
+
+    follow_redirects defaults to False to match httpx's default; callers
+    that want redirect-following pass follow_redirects=True per request.
+    """
+    if not hasattr(_tls, "client"):
+        _tls.client = httpx.Client(
+            http2=True,
+            http1=True,
+            verify=False,
+            follow_redirects=False,
+            headers={"User-Agent": f"vendor-audit/{__version__}"},
+            timeout=httpx.Timeout(_http_timeout),
+        )
+    return _tls.client
 
 
 # ── Hard-deadline watchdog ────────────────────────────────────────────────────
@@ -318,33 +340,44 @@ def _run_with_hard_timeout(fn, timeout, on_timeout=None):
 
 
 def _http_get(url, **kwargs):
-    """HTTP GET with a hard wall-clock deadline enforced by a watchdog thread."""
-    session = _get_session()
-    timeout = _http_timeout
+    """HTTP GET via the thread-local httpx client.
 
-    def _close_session_sockets():
-        for adapter in session.adapters.values():
-            pool_manager = getattr(adapter, "poolmanager", None)
-            if not pool_manager:
-                continue
-            for pool in pool_manager.pools.values():
-                try:
-                    pool.close()
-                except Exception:
-                    pass
+    httpx honors its own timeout reliably (via anyio's cancellation),
+    so unlike the previous requests-based implementation we don't need
+    a watchdog thread to enforce a hard wall-clock deadline. The
+    Client-level default timeout (httpx.Timeout(_http_timeout)) applies;
+    callers can override per-request via timeout=.
 
-    try:
-        return _run_with_hard_timeout(
-            lambda: session.get(url, **kwargs),
-            timeout=timeout,
-            on_timeout=_close_session_sockets,
-        )
-    except TimeoutError:
-        # Re-raise as requests.exceptions.Timeout so existing except clauses
-        # elsewhere in the script still catch it.
-        raise requests.exceptions.Timeout(
-            f"Hard timeout ({timeout}s) exceeded for {url}"
-        )
+    Compatibility shims:
+      - allow_redirects= → follow_redirects= (renamed in httpx)
+      - verify= silently dropped (httpx requires verify on the Client,
+        not per-request; we set it at Client construction)
+      - stream= silently dropped (use _http_stream() for streaming)
+    """
+    # Compatibility shim: translate the old requests kwarg names.
+    if "allow_redirects" in kwargs:
+        kwargs["follow_redirects"] = kwargs.pop("allow_redirects")
+    kwargs.pop("verify", None)
+    kwargs.pop("stream", None)
+    return _get_client().get(url, **kwargs)
+
+
+def _http_stream(url, **kwargs):
+    """Streaming GET via the thread-local httpx client.
+
+    Returns a context manager; use it with `with`. Inside the context,
+    `r.iter_bytes(chunk_size=...)` yields chunks. Headers, status, and
+    http_version are available immediately and remain valid after the
+    context exits.
+
+    Used by callers that need to enforce a body-size cap by reading
+    chunks and breaking out early (check_redirect, check_server_header,
+    check_mta_sts_policy).
+    """
+    if "allow_redirects" in kwargs:
+        kwargs["follow_redirects"] = kwargs.pop("allow_redirects")
+    kwargs.pop("verify", None)
+    return _get_client().stream("GET", url, **kwargs)
 
 
 # ── DNS helpers ───────────────────────────────────────────────────────────────
@@ -1329,7 +1362,7 @@ def check_hsts(domain, _cached_response=None):
     """Fetch HTTPS response and inspect Strict-Transport-Security header.
     Also checks HSTS preload status via the hstspreload.org API.
 
-    If _cached_response is supplied (a requests.Response from check_redirect)
+    If _cached_response is supplied (an httpx.Response from check_redirect)
     the HTTPS header fetch is skipped — STS is read from the cached response.
     """
     result = {"present": False, "max_age": None, "includes_subdomains": False,
@@ -1357,12 +1390,13 @@ def check_hsts(domain, _cached_response=None):
 
     def _fetch_header():
         try:
-            resp = _http_get(
-                f"https://{domain}", verify=False,
-                allow_redirects=True,
-                stream=True,
-            )
-            return _parse_hsts_header(resp)
+            # We only need response headers, not the body. Use stream so
+            # we don't download a huge homepage just to read HSTS.
+            with _http_stream(
+                f"https://{domain}",
+                follow_redirects=True,
+            ) as resp:
+                return _parse_hsts_header(resp)
         except Exception as e:
             return {"error": str(e)}
 
@@ -1406,7 +1440,7 @@ from urllib.parse import urlparse  # used by check_redirect / check_http_redirec
 def check_redirect(domain, body_cap=None):
     """Follow HTTP redirects; return final domain plus a cached response.
 
-    The cached requests.Response is returned under '_response' so callers can
+    The cached httpx.Response is returned under '_response' so callers can
     reuse the already-fetched page (header + body chunk) without a second
     round-trip. Caller must pop '_response' before serializing the result.
 
@@ -1440,31 +1474,34 @@ def check_redirect(domain, body_cap=None):
             t0 = time.monotonic()
             # Don't force Accept-Encoding: identity. Many commercial CDNs
             # (Akamai, AWS Cloudfront, Cloudflare's enterprise tier) ignore
-            # the identity request and serve gzip/br anyway. Reading via
-            # resp.raw.read() then returns *compressed* bytes that look like
-            # garbage to the HTML parser, producing nonsense findings (1
-            # <img>, 3 <script>, etc) when grep happens to match a substring
-            # inside the gzip stream. iter_content() with stream=True does
-            # the right thing: requests transparently decompresses and we
-            # only consume up to body_cap of decoded bytes, so we don't
-            # download a full 50MB page just to fill our sniff window.
-            resp = _http_get(
-                f"{scheme}://{domain}", verify=False,
-                allow_redirects=True,
-                stream=True,
-            )
-            chunks = []
-            total  = 0
-            for chunk in resp.iter_content(chunk_size=65536):
-                if not chunk:
-                    continue
-                chunks.append(chunk)
-                total += len(chunk)
-                if total >= body_cap:
-                    break
-            resp._body_chunk = b"".join(chunks)
-            resp._body_truncated = (total >= body_cap)
-            resp.close()
+            # the identity request and serve gzip/br anyway. Reading raw
+            # bytes then returns *compressed* bytes that look like garbage
+            # to the HTML parser, producing nonsense findings (1 <img>, 3
+            # <script>, etc.) when grep happens to match a substring inside
+            # the gzip stream. iter_bytes() does the right thing: httpx
+            # transparently decompresses and we only consume up to body_cap
+            # of decoded bytes, so we don't download a full 50MB page just
+            # to fill our sniff window.
+            with _http_stream(
+                f"{scheme}://{domain}",
+                follow_redirects=True,
+            ) as resp:
+                chunks = []
+                total  = 0
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= body_cap:
+                        break
+                # Stash custom attributes for downstream consumers
+                # (check_hsts, check_server_header) that inspect the
+                # cached response. headers/status/url/history all remain
+                # valid after the stream context exits; only the body
+                # stream itself is closed.
+                resp._body_chunk = b"".join(chunks)
+                resp._body_truncated = (total >= body_cap)
             elapsed_ms = (time.monotonic() - t0) * 1000.0
 
             # Sanity-check: does the body look like HTML? A JSON API, PDF,
@@ -1493,7 +1530,7 @@ def check_redirect(domain, body_cap=None):
             history             = list(resp.history)
             if history:
                 first_resp           = history[0]
-                first_hop_url        = first_resp.headers.get("Location") or first_resp.url
+                first_hop_url        = first_resp.headers.get("Location") or str(first_resp.url)
                 try:
                     first_parsed = urlparse(first_hop_url)
                     first_hop_https     = first_parsed.scheme.lower() == "https"
@@ -1502,7 +1539,7 @@ def check_redirect(domain, body_cap=None):
                 except Exception:
                     pass
 
-            final = urlparse(resp.url).netloc.lower().rstrip(".")
+            final = urlparse(str(resp.url)).netloc.lower().rstrip(".")
             final = final.split(":")[0]
             if final.startswith("www."):
                 final = final[4:]
@@ -1520,7 +1557,7 @@ def check_redirect(domain, body_cap=None):
                 "body_looks_like_html":   body_looks_like_html,
                 "_response":              resp,
             }
-        except requests.exceptions.Timeout:
+        except httpx.TimeoutException:
             if scheme == "https":
                 return {"redirected": False, "original": domain, "final": domain,
                         "error": "unreachable", "_https_timed_out": True}
@@ -1533,8 +1570,9 @@ def check_redirect(domain, body_cap=None):
 def check_http_redirect(domain):
     """Check whether http:// ultimately lands on an HTTP or HTTPS page.
 
-    Uses stream=True so the body isn't downloaded just to read the final URL —
-    on slow servers with large default landing pages this saves significant time.
+    Uses _http_stream so the body isn't downloaded just to read the
+    final URL — on slow servers with large default landing pages this
+    saves significant time.
     """
     result = {
         "status":      None,
@@ -1544,14 +1582,14 @@ def check_http_redirect(domain):
     }
 
     try:
-        resp = _http_get(
+        # Use streaming to avoid downloading the body — we only need
+        # status and final URL. The `with` ensures the connection is
+        # closed even though we never iterate the body.
+        with _http_stream(
             f"http://{domain}",
-            verify=False,
-            allow_redirects=True,
-            stream=True,
-        )
-        try:
-            final_url = resp.url
+            follow_redirects=True,
+        ) as resp:
+            final_url = str(resp.url)
             result["final_url"]   = final_url
             result["status_code"] = resp.status_code
 
@@ -1567,10 +1605,8 @@ def check_http_redirect(domain):
             else:
                 result["status"] = "http_available"
                 result["detail"] = f"Page is accessible over plain HTTP (final: {final_url})"
-        finally:
-            resp.close()
 
-    except requests.exceptions.ConnectionError:
+    except (httpx.ConnectError, httpx.NetworkError):
         result["status"] = "unreachable"
         result["detail"] = "HTTP port 80 not reachable"
     except Exception as e:
@@ -1668,18 +1704,21 @@ def check_security_txt(domain):
 # ── Cookies ───────────────────────────────────────────────────────────────────
 
 def _parse_set_cookies(resp):
-    """Extract every Set-Cookie header from a requests.Response.
+    """Extract every Set-Cookie header from an httpx.Response.
 
-    Uses raw.headers.getlist() to preserve individual headers — requests'
-    public .headers flattens multi-value headers with ", " which is ambiguous
-    for Set-Cookie because the Expires attribute contains a comma.
+    Uses headers.get_list("Set-Cookie") to preserve individual headers.
+    The naive resp.headers.get("Set-Cookie") flattens multi-value headers
+    with ", " which is ambiguous for Set-Cookie because the Expires
+    attribute contains a comma.
     """
     cookies = []
     raw_headers = []
     try:
-        raw = getattr(resp, "raw", None)
-        if raw is not None and hasattr(raw.headers, "getlist"):
-            raw_headers = raw.headers.getlist("Set-Cookie")
+        # httpx: headers.get_list returns a list of separate values for
+        # repeated headers. Falls back to a comma-joined single string
+        # via plain .get if get_list isn't available (defensive).
+        if hasattr(resp.headers, "get_list"):
+            raw_headers = resp.headers.get_list("Set-Cookie")
         if not raw_headers:
             joined = resp.headers.get("Set-Cookie", "")
             if joined:
@@ -1877,30 +1916,28 @@ def check_server_header(domain, _cached_response=None):
     last_err = None
     for scheme in ("https", "http"):
         try:
-            # Same iter_content() pattern as check_redirect: don't force
+            # Same streaming pattern as check_redirect: don't force
             # Accept-Encoding: identity (CDNs ignore it), and read decoded
-            # bytes via iter_content() so we get usable HTML even when the
+            # bytes via iter_bytes() so we get usable HTML even when the
             # server insists on gzip. Cap at _BODY_SNIFF_BYTES; this fetch
             # is only for tech fingerprinting, so 256KB is plenty.
-            resp = _http_get(
-                f"{scheme}://{domain}", verify=False,
-                allow_redirects=True,
-                stream=True,
-            )
-            chunks = []
-            total  = 0
-            for chunk in resp.iter_content(chunk_size=65536):
-                if not chunk:
-                    continue
-                chunks.append(chunk)
-                total += len(chunk)
-                if total >= _BODY_SNIFF_BYTES:
-                    break
-            resp._body_chunk = b"".join(chunks)
-            resp.close()
+            with _http_stream(
+                f"{scheme}://{domain}",
+                follow_redirects=True,
+            ) as resp:
+                chunks = []
+                total  = 0
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= _BODY_SNIFF_BYTES:
+                        break
+                resp._body_chunk = b"".join(chunks)
             return _parse_response(resp)
-        except requests.exceptions.Timeout:
-            last_err = Exception(f"Hard timeout ({_http_timeout}s) exceeded for {scheme}://{domain}")
+        except httpx.TimeoutException:
+            last_err = Exception(f"Timeout exceeded for {scheme}://{domain}")
             if scheme == "https":
                 break
             continue
