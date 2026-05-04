@@ -98,7 +98,7 @@ AUDIT_TIMEOUT_S = int(os.environ.get("VENDOR_AUDIT_TIMEOUT_S", "35"))
 # as slowapi-compatible strings. The /audit POST endpoint is the expensive
 # one; the form page is lightly limited just to stop pure flooding. The
 # .txt endpoint isn't rate-limited at this layer — its in-memory cache
-# (TXT_CACHE_TTL_S below) makes repeat downloads free, and fresh audits
+# (the unified result cache) makes repeat downloads free, and fresh audits
 # triggered through it are bounded by the worker pool size.
 LIMIT_AUDIT = os.environ.get("VENDOR_AUDIT_LIMIT_AUDIT", "3/10seconds")
 LIMIT_FORM  = os.environ.get("VENDOR_AUDIT_LIMIT_FORM",  "60/minute")
@@ -113,18 +113,20 @@ TRUST_PROXY_HEADERS = os.environ.get("VENDOR_AUDIT_TRUST_PROXY", "1") == "1"
 # the canonical file. Self-hosters should set this to their own URL.
 SERVICE_URL = os.environ.get("VENDOR_AUDIT_SERVICE_URL", "https://vendoraudit.org")
 
-# How long a generated .txt report stays in the in-memory cache, in
-# seconds. Repeat downloads of the same domain within this window are
-# served from cache and don't trigger a fresh audit (or a rate-limit
-# rejection). 5 minutes is long enough to cover "user clicks Download,
-# decides they want it again" but short enough that cached reports
-# won't drift far from the current state of the audited domain.
-TXT_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_TXT_CACHE_TTL_S", "300"))
-
-# Hard cap on the number of cache entries. At 50KB per entry that's
-# ~25MB. The web service's MemoryMax is 512MB; this cap keeps the cache
-# well within bounds even under heavy distinct-domain traffic.
-TXT_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_TXT_CACHE_MAX", "500"))
+# Deprecated env vars (TXT cache merged into the unified result cache).
+# Warn at startup if an operator still has these set so they discover
+# the deprecation without it silently being a no-op.
+for _deprecated in ("VENDOR_AUDIT_TXT_CACHE_TTL_S", "VENDOR_AUDIT_TXT_CACHE_MAX"):
+    if os.environ.get(_deprecated) is not None:
+        # Use plain logging since our logger isn't configured yet at
+        # module import time. Goes to stderr; systemd captures it.
+        import sys
+        print(
+            f"[vendor-audit] warning: {_deprecated} is deprecated and ignored. "
+            f"The TXT cache is now merged with the HTML cache; configure via "
+            f"VENDOR_AUDIT_HTML_CACHE_TTL_S / VENDOR_AUDIT_HTML_CACHE_MAX.",
+            file=sys.stderr,
+        )
 
 # ── HTML result-page cache ────────────────────────────────────────────────────
 #
@@ -150,7 +152,7 @@ HTML_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_TTL_S", "86400"))
 HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "1000"))
 
 
-# ── In-memory .txt cache ─────────────────────────────────────────────────────
+# ── Unified result cache (HTML + TXT) ────────────────────────────────────────
 #
 # Module-level dict, intentionally simple. FastAPI request handlers run
 # on a single asyncio loop thread, so dict access between awaits is
@@ -159,84 +161,58 @@ HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "1000
 # idempotent and the wasted audit is bounded to one duplicate per
 # domain per TTL window in the worst case.
 #
-# Entries: {key: (text, headers, expires_at_unix_seconds)}
+# Both rendering forms (HTML and TXT) are stored together so a download
+# triggered from a cached HTML view returns the txt that corresponds
+# *exactly* to that HTML — same audit run, same timestamp, same
+# findings. Without this unification the two caches drift independently
+# and a cached 12-hour-old HTML view would show a fresh audit's txt
+# (which contradicts what the user is reading on screen).
+#
+# Entries: {domain: (html, txt, txt_headers, audit_ts, expires)}
+#   html         — rendered result-page HTML with <!--AGO--> placeholder
+#   txt          — rendered .txt report (final, no placeholder)
+#   txt_headers  — Content-Disposition etc. for the txt response
+#   audit_ts     — unix timestamp of the audit; powers "ago" display
+#   expires      — unix timestamp; eviction trigger
+#
 # Eviction: lazy on read (expired entries are dropped when accessed),
-# plus an explicit prune on write when len(_txt_cache) hits the cap.
+# plus an explicit prune on write when len(_result_cache) hits the cap.
 
-_txt_cache: dict = {}
+_result_cache: dict = {}
 
 
-def _txt_cache_get(key: str):
-    """Return (text, headers) tuple if cached and not expired, else None."""
-    entry = _txt_cache.get(key)
+def _result_cache_get(key: str):
+    """Return (html, txt, txt_headers, audit_ts) tuple if cached and not
+    expired, else None.
+
+    All four fields are returned together so the caller picks what it
+    needs. The HTML serve path uses html+audit_ts; the .txt download
+    path uses txt+txt_headers.
+    """
+    entry = _result_cache.get(key)
     if entry is None:
         return None
-    text, headers, expires = entry
+    html, txt, txt_headers, audit_ts, expires = entry
     if time.time() >= expires:
         # Lazy eviction — drop and return miss
-        _txt_cache.pop(key, None)
+        _result_cache.pop(key, None)
         return None
-    return (text, headers)
+    return (html, txt, txt_headers, audit_ts)
 
 
-def _txt_cache_set(key: str, value):
-    """Store value with TXT_CACHE_TTL_S TTL. Evicts the soonest-to-expire
-    entry when at capacity.
+def _result_cache_set(key: str, html: str, txt: str, txt_headers: dict, audit_ts: float):
+    """Store the rendered HTML+TXT pair with HTML_CACHE_TTL_S TTL.
 
     Approximate LRU: dropping the soonest-to-expire entry isn't true
     LRU (which would require tracking access times) but it's close
     enough — that entry was going to be gone shortly anyway, and the
     approximation avoids the complexity of separate access tracking.
     """
-    text, headers = value
-    expires = time.time() + TXT_CACHE_TTL_S
-    if len(_txt_cache) >= TXT_CACHE_MAX_ENTRIES and key not in _txt_cache:
-        oldest_key = min(_txt_cache, key=lambda k: _txt_cache[k][2])
-        _txt_cache.pop(oldest_key, None)
-    _txt_cache[key] = (text, headers, expires)
-
-
-# Result-page HTML cache. Same shape as the TXT cache (lazy expiry on
-# read, prune on write at capacity) but caches rendered HTML strings
-# instead of txt+headers pairs. Single-process; shared across all
-# requests since rendering happens in the FastAPI parent process, not
-# the worker pool.
-#
-# Entries: {domain: (html_string, audit_timestamp_unix, expires_at_unix_seconds)}
-#
-# audit_timestamp_unix is when the audit's data was captured. It powers
-# the "Scanned N minutes ago" display, which is substituted into the
-# cached HTML at serve time so each visitor sees the correct age.
-
-_html_cache: dict = {}
-
-
-def _html_cache_get(key: str):
-    """Return (html, audit_timestamp_unix) tuple if cached and not expired,
-    else None."""
-    entry = _html_cache.get(key)
-    if entry is None:
-        return None
-    html, audit_ts, expires = entry
-    if time.time() >= expires:
-        _html_cache.pop(key, None)
-        return None
-    return (html, audit_ts)
-
-
-def _html_cache_set(key: str, html: str, audit_ts: float):
-    """Store rendered HTML with HTML_CACHE_TTL_S TTL.
-
-    audit_ts is the unix timestamp of the audit (used by _inject_age at
-    serve time to compute "scanned N minutes ago").
-
-    Same approximate-LRU eviction as the TXT cache.
-    """
     expires = time.time() + HTML_CACHE_TTL_S
-    if len(_html_cache) >= HTML_CACHE_MAX_ENTRIES and key not in _html_cache:
-        oldest_key = min(_html_cache, key=lambda k: _html_cache[k][2])
-        _html_cache.pop(oldest_key, None)
-    _html_cache[key] = (html, audit_ts, expires)
+    if len(_result_cache) >= HTML_CACHE_MAX_ENTRIES and key not in _result_cache:
+        oldest_key = min(_result_cache, key=lambda k: _result_cache[k][4])
+        _result_cache.pop(oldest_key, None)
+    _result_cache[key] = (html, txt, txt_headers, audit_ts, expires)
 
 
 def _format_age(seconds: float) -> str:
@@ -712,9 +688,9 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
     # ' example.com ', etc. all share a cache entry. Errors are not
     # cached (the user should retry promptly, not wait the full TTL).
     if not fresh:
-        cached = _html_cache_get(shape_only.domain)
+        cached = _result_cache_get(shape_only.domain)
         if cached is not None:
-            cached_html, cached_audit_ts = cached
+            cached_html, _, _, cached_audit_ts = cached
             log.info("audit cache hit: domain=%r ip=%s",
                      shape_only.domain, _client_ip(request))
             return HTMLResponse(content=_inject_age(cached_html, cached_audit_ts))
@@ -756,9 +732,26 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
             ).timestamp()
         except (ValueError, AttributeError):
             audit_ts = time.time()
+        # Render the .txt eagerly and cache it alongside the HTML, so a
+        # download triggered later from this cached page returns the txt
+        # corresponding to *exactly* this audit run. ~tens of ms of extra
+        # work per audit, in exchange for consistency between the on-
+        # screen view and the downloadable artifact.
+        txt = _render_txt_to_string(
+            original_domain=validated.original,
+            audit_domain=envelope["audit_domain"],
+            results=envelope["results"],
+            timestamp=envelope["timestamp"],
+        )
+        txt_headers = {
+            "Content-Disposition": (
+                f'attachment; filename="{validated.domain}_'
+                f'{envelope["timestamp"].replace(":", "-")}.txt"'
+            ),
+        }
         # Store in cache regardless of fresh flag — fresh requests should
         # update the cache so subsequent hits get the latest result.
-        _html_cache_set(validated.domain, body, audit_ts)
+        _result_cache_set(validated.domain, body, txt, txt_headers, audit_ts)
         return HTMLResponse(content=_inject_age(body, audit_ts))
     else:
         return templates.TemplateResponse(
@@ -776,26 +769,41 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
 
 @app.get("/audit/{domain}.txt", response_class=PlainTextResponse)
 async def download_txt(request: Request, domain: str):
-    """Plain-text report. Re-runs the audit on cache miss; serves from
-    the in-memory cache on cache hit.
+    """Plain-text report. Serves from the unified result cache on hit;
+    runs the audit on miss (and populates both HTML and txt entries
+    so a subsequent HTML view of the same domain returns the page that
+    matches this txt).
 
     No rate-limit decorator on this endpoint. The cache makes repeat
-    downloads free, and the POST /audit endpoint (which is rate-limited)
-    is the only other path that triggers an audit. A determined
-    attacker could enumerate distinct domains here, but the worker pool
-    naturally serializes that work, and the per-client form-page limit
-    catches obvious flooding.
+    downloads free, and the audit endpoint (which is rate-limited) is
+    the only other path that triggers an audit. A determined attacker
+    could enumerate distinct domains here, but the worker pool naturally
+    serializes that work, and the per-client form-page limit catches
+    obvious flooding.
 
-    Cache: keyed by lowercased domain path-param; entries live for
-    TXT_CACHE_TTL_S (default 300s). Cache survives only as long as the
-    process; restart purges it.
+    Cache: shared with the HTML serve path. Same TTL, same key.
+    Cache survives only as long as the process; restart purges it.
     """
-    cache_key = domain.lower().strip()
-    cached = _txt_cache_get(cache_key)
-    if cached is not None:
-        text, headers = cached
-        return PlainTextResponse(content=text, headers=headers)
+    # Two-stage validation: shape-only first (cheap, no I/O) so a cache
+    # hit doesn't pay the DNS round-trip. Same pattern as the HTML
+    # serve path. The cache key is the normalized domain produced by
+    # validation; this matches what the HTML handler uses, so a cache
+    # entry seeded by either handler is visible to the other.
+    try:
+        shape_only = validate_domain_input(domain, dns_check=False)
+    except ValidationError as exc:
+        return PlainTextResponse(
+            content=f"# Vendor Audit\n\nInput rejected: {exc}\n",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
 
+    cached = _result_cache_get(shape_only.domain)
+    if cached is not None:
+        _, txt, txt_headers, _ = cached
+        return PlainTextResponse(content=txt, headers=txt_headers)
+
+    # Cache miss: full validation with DNS / SSRF guard before running
+    # the audit.
     try:
         validated = validate_domain_input(domain)
     except ValidationError as exc:
@@ -814,23 +822,32 @@ async def download_txt(request: Request, domain: str):
             status_code=_status_for_error_kind(envelope["error"]["kind"]),
         )
 
-    # Use the existing CLI-quality txt renderer. It writes to a path; we
-    # capture into an in-memory buffer to return as the response body.
-    text = _render_txt_to_string(
+    # Render BOTH forms and cache them together. We always render the
+    # HTML too — even on a .txt-first request — so a subsequent visit
+    # to the result page returns the matching cached page rather than
+    # re-running the audit. The eager double-render is bounded (~tens
+    # of ms) and pays off across any later view of the same domain.
+    body = render_html.render_result(envelope)
+    txt = _render_txt_to_string(
         original_domain=validated.original,
         audit_domain=envelope["audit_domain"],
         results=envelope["results"],
         timestamp=envelope["timestamp"],
     )
-    headers = {
+    txt_headers = {
         "Content-Disposition": (
             f'attachment; filename="{validated.domain}_'
             f'{envelope["timestamp"].replace(":", "-")}.txt"'
         ),
     }
-    # Cache for repeat downloads.
-    _txt_cache_set(cache_key, (text, headers))
-    return PlainTextResponse(content=text, headers=headers)
+    try:
+        audit_ts = datetime.fromisoformat(
+            envelope["timestamp"].replace("Z", "+00:00")
+        ).timestamp()
+    except (ValueError, AttributeError):
+        audit_ts = time.time()
+    _result_cache_set(validated.domain, body, txt, txt_headers, audit_ts)
+    return PlainTextResponse(content=txt, headers=txt_headers)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
