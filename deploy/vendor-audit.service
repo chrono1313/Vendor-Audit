@@ -43,16 +43,12 @@ Group=vendor-audit
 # the install tree is immutable from the service's perspective.
 WorkingDirectory=/opt/vendor-audit
 
-# Runtime configuration. The primary file is committed to the repo at
-# deploy/web.env and symlinked into /etc/vendor-audit/web.env (see
-# INSTALL.md), so a `git pull` updates the live config directly.
-#
-# The .local file is optional and is for operator-specific overrides
-# that genuinely shouldn't go in git (e.g. a unique SECURITY_CONTACT for
-# your fork). The leading `-` makes it optional; missing is fine, and
-# systemd applies it AFTER the primary file so values in .local win.
+# Runtime configuration lives in an environment file with mode 0640
+# (root:vendor-audit). Anything secret would go here; for now it's just
+# tunables (worker count, timeouts, rate limits). The file is created by
+# INSTALL.md; if it doesn't exist, the unit will fail to start with a
+# clear error rather than silently using defaults.
 EnvironmentFile=/etc/vendor-audit/web.env
-EnvironmentFile=-/etc/vendor-audit/web.env.local
 
 # The actual command. We use the venv's uvicorn directly rather than
 # invoking it via the system python — venv isolation, predictable PATH,
