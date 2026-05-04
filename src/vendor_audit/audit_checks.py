@@ -1038,7 +1038,7 @@ def check_ip_routing(domain):
         last_exc = None
         for _ in range(RETRIES):
             try:
-                resp = _get_session().get(url, params=params, timeout=timeout)
+                resp = _get_client().get(url, params=params, timeout=timeout)
                 resp.raise_for_status()
                 return resp
             except Exception as e:
