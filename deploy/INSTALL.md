@@ -106,15 +106,26 @@ sudo /opt/vendor-audit/.venv/bin/python -c \
 
 ## 5. Install the configuration
 
+The runtime config file `web.env` is committed to the repo at
+`deploy/web.env`. Symlink it into `/etc/vendor-audit/` so systemd can
+read it; this means a `git pull` updates the live config directly with
+no copy step.
+
 ```bash
 sudo install -d -m 0755 /etc/vendor-audit
-sudo install -m 0640 -o root -g vendor-audit \
-    /opt/vendor-audit/deploy/web.env.example /etc/vendor-audit/web.env
+sudo ln -s /opt/vendor-audit/deploy/web.env /etc/vendor-audit/web.env
 ```
 
-Edit `/etc/vendor-audit/web.env` if you want to override defaults (worker
-count, rate limits). The defaults are fine for the VM described in the
-handoff.
+Edit `/opt/vendor-audit/deploy/web.env` directly if you want to override
+defaults (worker count, rate limits, cache sizes). Commit changes to git
+so future `git pull`s preserve them. The defaults are fine for a typical
+small VM (4-16GB RAM, 4+ cores).
+
+If you have any host-specific values that genuinely shouldn't go in git
+(e.g. a unique SECURITY_CONTACT for your fork), drop them into a file
+called `/etc/vendor-audit/web.env.local` — systemd reads this *after*
+the symlinked file, so values there win. The unit's EnvironmentFile=
+declaration includes both paths.
 
 ## 6. Install the systemd unit
 
