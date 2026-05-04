@@ -884,20 +884,13 @@ def render(original_domain, audit_domain, r, dns_server):
         print(c(GREY, f"           or: iwr http://{audit_domain}"))
     elif hr_status == "http_error":
         sc = http_redir.get("status_code", "")
-        hsts_preloaded = r.get("hsts", {}).get("preloaded")
-        preload_note = (
-            c(GREY, "  (browser behaviour may differ — domain is HSTS preloaded)")
-            if hsts_preloaded else
-            c(GREY, "  (browser behaviour may differ)")
-        )
-        print(warn(
-            f"HTTP port 80 open but no HTTPS redirect (got {sc}){hr_detail}",
-            "HTTP — port 80 open, no redirect",
-            "HTTP→HTTPS redirect",
-        ))
-        print(preload_note)
+        # Port 80 returned a 4xx/5xx without redirecting. The site isn't
+        # serving plaintext content over HTTP — that's the security
+        # outcome we care about, regardless of whether it's achieved by
+        # redirect (https_only) or by refusal (this case). Score as a
+        # full pass.
+        print(ok(f"HTTP port 80 refuses plaintext (status {sc}){hr_detail}"))
         print(c(GREY, f"  verify with: curl -v http://{audit_domain}"))
-        print(c(GREY, f"           or: iwr http://{audit_domain}"))
     elif hr_status == "unreachable":
         print(f"  {c(GREY, '–')} HTTP port 80 not reachable{hr_detail}")
 

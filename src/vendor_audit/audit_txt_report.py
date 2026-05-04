@@ -1553,12 +1553,11 @@ def _render_http_section(data):
     elif hr_status == "http_error":
         sc = http_redir.get("status_code", "")
         verify = f"Verify with: curl -v http://{data.audit_domain}"
-        hsts_preloaded = (r.get("hsts", {}) or {}).get("preloaded")
-        preload_note = ("Browser behaviour may differ — domain is HSTS preloaded"
-                        if hsts_preloaded else "Browser behaviour may differ")
-        parts.append(_status("warn",
-            f"HTTP port 80 open but no HTTPS redirect (got {sc} from http://{data.audit_domain})",
-            note_lines=[verify, preload_note]))
+        # Port 80 returned 4xx/5xx without redirecting. Treated as a pass
+        # because the security outcome (no plaintext content) is achieved.
+        parts.append(_status("pass",
+            f"HTTP port 80 refuses plaintext (status {sc} from http://{data.audit_domain})",
+            note_lines=[verify]))
     elif hr_status == "unreachable":
         notes = [hr_detail] if hr_detail else None
         parts.append(_status("info",

@@ -590,7 +590,7 @@
                 "possible": 2
             },
             "http_error": {
-                "earned": 1,
+                "earned": 2,
                 "possible": 2
             },
             "http_available": {
@@ -1001,7 +1001,7 @@
         "Certificate lifetime": "Certificate auto-renewed (short-lived)",
         "Certificate name match": "Certificate name matches domain",
         "HTTP version": "HTTP/3 supported",
-        "HTTP\u2192HTTPS redirect": "HTTP redirects to HTTPS",
+        "HTTP\u2192HTTPS redirect": "Plaintext HTTP not serving content",
         "HSTS present": "HSTS header present",
         "HSTS includeSubDomains": "HSTS covers subdomains",
         "HSTS preloaded": "Domain on HSTS preload list",
