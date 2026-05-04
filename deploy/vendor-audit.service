@@ -258,28 +258,31 @@ MemoryDenyWriteExecute=yes
 # Resource limits (defense against runaway audits / memory leaks)
 # ─────────────────────────────────────────────────────────────────────────
 
-# 512 MiB memory cap. The audit is I/O bound and rarely uses much memory;
-# the post-pool body parser holds up to 5MB of HTML per worker, and we run
-# 3 workers by default. 512 MiB is generous headroom. If the service hits
-# this cap, something has gone wrong (probably a memory leak in a
-# dependency) and we want it killed-and-restarted rather than swapping
-# the host into oblivion.
-MemoryMax=512M
+# Memory cap. Sized for 16 workers (~80MB resident each, ~1.3GB total)
+# plus the FastAPI parent, the unified result cache (up to ~400MB at
+# 5000 entries), and headroom for transients. 4 GiB is comfortable on
+# any host with ≥4GB RAM and forces a kill-and-restart if the service
+# leaks, rather than letting it swap the host into oblivion.
+MemoryMax=4G
 
-# 50% of one CPU on average, allowing bursts. Audits are bursty (a single
-# request fans out into ~20 concurrent network calls); a CPUQuota of 50%
-# of a single core is plenty since the work is mostly I/O-blocked.
-CPUQuota=50%
+# CPU quota. 800% means up to 8 full cores; the audit workload is mixed
+# CPU+I/O (TLS handshakes and JSON parsing are real CPU work). On a
+# 10-core host this leaves 2 cores free for the OS and other services.
+# Smaller hosts should reduce this — quota in excess of physical cores
+# is harmless but misleading. Remove the line entirely if you want
+# unrestricted CPU usage.
+CPUQuota=800%
 
-# File descriptor cap. uvicorn + 3 worker processes + concurrent HTTP
-# connections + DNS sockets — 4096 is comfortable. Default on Ubuntu is
-# usually 1024, which can be tight under burst load.
-LimitNOFILE=4096
+# File descriptor cap. 16 workers × ~50 sockets per audit (peak) plus
+# the FastAPI parent, DNS resolvers, and connection-pool slack. 65535
+# is what most outbound-heavy services use and well within Ubuntu's
+# fs.nr_open default. Default on Ubuntu is 1024, which would starve
+# even one worker under burst load.
+LimitNOFILE=65535
 
-# Process cap. The pool spawns 3 workers; with internal threads and
-# uvicorn's main loop, well under 100. 256 is generous and bounds any
-# fork-bomb scenario.
-TasksMax=256
+# Process cap. 16 workers × ~5 internal threads + uvicorn = ~100; 1024
+# is generous headroom and bounds any fork-bomb scenario.
+TasksMax=1024
 
 
 [Install]
