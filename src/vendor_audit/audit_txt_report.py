@@ -594,6 +594,19 @@ class _ReportData:
             "Cert covers www variant": "TLS certificate doesn't cover www / apex variant",
             "Server clock accuracy":   "Server clock is significantly skewed from UTC",
             "SSL Labs grade":          "SSL Labs grade indicates serious TLS issues",
+            "Cert chain completeness": "Server sends incomplete certificate chain — clients fall back to AIA fetching",
+            "DKIM key strength":       "DKIM key uses RSA <1024 (broken)",
+            "Default error page":      {
+                "_default":             "Default error page detected",
+                "default_with_version": "Default error page detected with version disclosure",
+                "default_no_version":   "Default error page detected (server software disclosed, no version)"
+            },
+            "CORS configuration":      {
+                "_default":                       "CORS configuration is unsafe",
+                "weak_wildcard_with_credentials": "CORS — wildcard ACAO combined with Allow-Credentials=true",
+                "weak_null_origin":               "CORS — Allow-Origin set to 'null' (sandboxed origins trusted)",
+                "weak_reflective":                "CORS — server reflects arbitrary Origin: header (any origin trusted)"
+            },
         }
         if label in per_label:
             entry = per_label[label]
@@ -662,6 +675,26 @@ class _ReportData:
                     outcome = "http1"
                 else:
                     outcome = None
+                if outcome and outcome in entry:
+                    return entry[outcome]
+            # Default error page: outcome stored on the error_page check itself.
+            if label == "Default error page":
+                ep = self.results.get("error_page") or {}
+                outcome = ep.get("outcome")
+                if outcome and outcome in entry:
+                    return entry[outcome]
+            # DKIM key strength: worst observed strength across found selectors.
+            if label == "DKIM key strength":
+                dkim = self.results.get("dkim") or {}
+                outcome = dkim.get("worst_strength")
+                if outcome and outcome in entry:
+                    return entry[outcome]
+            # CORS configuration: outcome stored on cors result itself.
+            # Used by _failure_phrasing's dict-form lookup; the actual partial
+            # case (no_cors → 0/0) is rendered via _info_phrasing instead.
+            if label == "CORS configuration":
+                cors = self.results.get("cors") or {}
+                outcome = cors.get("outcome")
                 if outcome and outcome in entry:
                     return entry[outcome]
             # Future multi-tier checks would add their lookups here.

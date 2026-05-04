@@ -2223,6 +2223,18 @@ def render(original_domain, audit_domain, r, dns_server):
                     else:
                         outcome = None
                     desc = entry.get(outcome) or entry.get("_default")
+                elif label == "Default error page":
+                    ep = r.get("error_page") or {}
+                    outcome = ep.get("outcome")
+                    desc = entry.get(outcome) or entry.get("_default")
+                elif label == "DKIM key strength":
+                    dkim = r.get("dkim") or {}
+                    outcome = dkim.get("worst_strength")
+                    desc = entry.get(outcome) or entry.get("_default")
+                elif label == "CORS configuration":
+                    cors = r.get("cors") or {}
+                    outcome = cors.get("outcome")
+                    desc = entry.get(outcome) or entry.get("_default")
                 else:
                     desc = entry.get("_default")
                 if not desc:

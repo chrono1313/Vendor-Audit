@@ -1182,8 +1182,22 @@
         "Server clock accuracy": "Server clock skew is small but noticeable",
         "Subresource Integrity": "Some external scripts have SRI but not all",
         "CAA records": "CAA present but no iodef= reporting contact",
-        "DKIM key strength": "DKIM key uses RSA-1024 (deprecated by RFC 8301 \u2014 upgrade to RSA-2048+ or Ed25519)",
-        "Default error page": "Default error page detected (server software disclosed, no version)"
+        "DKIM key strength": {
+            "_comment": "Multi-tier outcome — different outcomes need different finding text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
+            "_default":     "DKIM key strength outcome unrecognised",
+            "weak":         "DKIM key uses RSA-1024 (deprecated by RFC 8301 \u2014 upgrade to RSA-2048+ or Ed25519)",
+            "broken":       "DKIM key uses RSA <1024 (broken)",
+            "unparseable":  "DKIM key found but could not be parsed",
+            "revoked":      "DKIM key explicitly revoked (p= empty) \u2014 deliberate operator action"
+        },
+        "Default error page": {
+            "_comment": "Multi-tier outcome — different outcomes need different finding text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
+            "_default":             "Default error page outcome unrecognised",
+            "default_no_version":   "Default error page detected (server software disclosed, no version)",
+            "default_with_version": "Default error page detected with version disclosure",
+            "spa_or_2xx":           "Default error page check did not run (probe returned 2xx/3xx \u2014 SPA shell, wildcard route, or WAF redirect)",
+            "error":                "Default error page check could not run (probe failed)"
+        }
     },
     "_comment_scoring_policy_eol": "Per-library 0/1 scoring for detected EOL libraries, per-OS 0/3 scoring for detected EOL operating systems. Both implementations work the same way: score_results() in audit_checks.py iterates the relevant list (results['versioned_libs']['libraries'] for libs, results['os_eol']['os_findings'] for OSes) after all other checks and appends per-finding tuples with hardcoded weights (libraries are 0/1, OSes are 0/3). The rubric does NOT contain weight entries for these labels — they're appended directly. Category resolution falls through to 'Website' (the catch-all), which is the correct destination.",
     "_comment_starttls_mx_aggregation": "STARTTLS-MX is scored worst-CONFIRMED-of across MX hosts. Severity ordering of confirmed outcomes (worst → best): no_starttls > tls_legacy > tls_1_2 > tls_1_3. Unprobed hosts are dropped from the aggregation when ANY confirmed result exists — a network error on one host (port 25 blocked egress, timeout, refused connection) does not pull down the score for a domain where other MX hosts produced clean handshakes. Only when EVERY host was unprobed does the entire check evaluate to 'unprobed' (0/0). The 0/0 row still appears in the breakdown rather than being silently dropped, so the operator sees the check ran but produced no signal."
