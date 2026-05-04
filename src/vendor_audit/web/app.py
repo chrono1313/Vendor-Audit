@@ -249,15 +249,41 @@ def _format_age(seconds: float) -> str:
 
 def _inject_age(html: str, audit_ts: float) -> str:
     """Replace the <!--AGO--> placeholder in rendered HTML with the
-    current "scanned N ... ago" string.
+    appropriate "scanned status" string for this request.
 
-    Called on every serve path (cache hit and cache miss) so each visitor
-    sees the age relative to *their* moment of viewing, not the audit
-    runner's. The placeholder pattern lets us cache HTML domain-keyed
-    (one entry per domain) rather than per-minute or per-visitor.
+    Two cases the user can be in:
+      1. They just triggered an audit (form submit or re-audit). They
+         sat through the loading page and got a result. From their
+         perspective they ran an audit. Show "just now" — *not* "from
+         cache" — even though the 303-redirect mechanics mean the
+         response technically came through the cache that their own
+         fresh=1 request populated milliseconds earlier.
+      2. They opened a shared link or refreshed a previous result.
+         The data was prepared by someone else's prior request. Show
+         "From cache, N ago".
+
+    The two cases differ by cache-entry age. The redirect-after-fresh
+    round-trip takes ~50-200ms, so a sub-2-second-old entry is almost
+    certainly being served to the user who triggered the audit. An
+    older entry is a genuine cache hit by a different visitor.
+
+    Edge case: if user B opens a shared link 1.5 seconds after user
+    A's audit completes, user B sees "just now" instead of "From
+    cache, just now." Benign — the data IS fresh, and "just now" is
+    accurate even if the framing is slightly off.
+
+    The placeholder pattern lets us cache HTML domain-keyed (one entry
+    per domain) and still produce per-request text — each visitor
+    gets the substitution that matches their moment of viewing.
     """
     age = time.time() - audit_ts
-    return html.replace("<!--AGO-->", f" · {_format_age(age)}")
+    # Sub-2-second threshold: the user is almost certainly viewing a
+    # result they just triggered (303-redirect round trip).
+    if age < 2:
+        replacement = " · just now"
+    else:
+        replacement = f" · From cache, {_format_age(age)}"
+    return html.replace("<!--AGO-->", replacement)
 
 
 # security.txt content (RFC 9116). Configured via env so the operator can
