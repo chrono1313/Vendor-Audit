@@ -15,7 +15,7 @@ Two public entry points:
       errors and on hard failures inside checks (individual check failures
       are absorbed into results[<check>] = {"error": str(exc)} as before).
 
-  safe_run_audit(domain, *, deep=False, http_timeout=15, dns_server=None,
+  safe_run_audit(domain, *, deep=False, http_timeout=5, dns_server=None,
                  ssl_active=False) -> dict
       Wraps run_audit() with exception handling and ALWAYS returns a
       uniform {ok, error, ...} envelope. This is the function the web
@@ -51,13 +51,14 @@ import idna
 # completed by this many seconds, we collect what we have, mark the rest as
 # deadline-skipped, and return a partial-results envelope.
 #
-# Healthy audits finish in 1-3 seconds, but several checks chain serial
-# HTTP fetches under their own _http_timeout (security.txt has two
-# attempts: /.well-known/security.txt then /security.txt; redirect target
-# audits do those again on the destination). Each blackholed fetch waits
-# its full _http_timeout before failing. 15s is a generous ceiling that
-# accommodates these chains for slow-but-legitimate hosts while still
-# killing a hard blackhole comfortably under Cloudflare's tunnel timeout.
+# Healthy audits finish in 1-3 seconds. Several checks chain serial HTTP
+# fetches under their own _http_timeout (security.txt has two attempts:
+# /.well-known/security.txt then /security.txt; redirect target audits do
+# those again on the destination). With _http_timeout at 5s per request,
+# the worst-case sequential chain is ~10-15s for a fully-blackholed host.
+# Setting the deadline to 15s lets such checks fail naturally without
+# tripping the partial-audit path on hosts where individual fetches are
+# slow but ultimately succeed.
 AUDIT_WALL_DEADLINE_S = 15
 
 from . import audit_checks
@@ -602,7 +603,7 @@ def safe_run_audit(
     domain: str,
     *,
     deep: bool = False,
-    http_timeout: int = 15,
+    http_timeout: int = 5,
     dns_server: Optional[str] = None,
     ssl_active: bool = False,
 ) -> dict:
