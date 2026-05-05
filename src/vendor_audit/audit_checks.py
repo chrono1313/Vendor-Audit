@@ -64,8 +64,14 @@ import dns.exception
 import httpx
 import tldextract as _tldextract
 
-# ── tldextract: bundled PSL only, no network at import time ────────────────────
-_tld_extractor = _tldextract.TLDExtract(suffix_list_urls=())
+# ── tldextract: bundled PSL only, no network and no cache writes ──────────────
+# suffix_list_urls=() prevents tldextract from fetching the PSL over HTTP.
+# cache_dir=None disables the cache-write attempt entirely — the service runs
+# under a user with HOME=/nonexistent (defense in depth), and even though we
+# never refresh the PSL, tldextract still tries to write the bundled snapshot
+# to $HOME on first use. That write fails harmlessly but emits a warning per
+# audit and slows startup. Disabling cache_dir avoids both.
+_tld_extractor = _tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 
 # ── Rubric loader ─────────────────────────────────────────────────────────────
 # The rubric ships alongside this module. Loaded once at import time; rubric
