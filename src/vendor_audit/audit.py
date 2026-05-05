@@ -373,8 +373,9 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                 "Findings shown are based on the checks that completed."
             )
             log.warning(
-                "audit deadline exceeded for %s: %d/%d checks unfinished",
+                "audit deadline exceeded for %s: %d/%d checks unfinished: %s",
                 domain, len(unfinished), len(all_checks),
+                ", ".join(sorted(key for _fut, key in unfinished)),
             )
     finally:
         # wait=False: don't block on stuck threads.
@@ -534,8 +535,9 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                             f"{pp_deadline}s. The host may be unreachable."
                         )
                     log.warning(
-                        "post-pool deadline exceeded for %s: %d/%d unfinished",
+                        "post-pool deadline exceeded for %s: %d/%d unfinished: %s",
                         domain, len(unfinished_pp), len(post_pool_jobs),
+                        ", ".join(sorted(key for _fut, key in unfinished_pp)),
                     )
             finally:
                 pp_ex.shutdown(wait=False, cancel_futures=True)
