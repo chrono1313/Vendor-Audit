@@ -187,7 +187,20 @@ _http_timeout: int = 5  # default; overridden by set_http_timeout() before worke
 # Module logger. Used for per-call timing instrumentation (currently just
 # RIPEstat in check_ip_routing). Lines appear in journalctl as
 # "INFO vendor_audit.audit_checks: ip_routing ...".
+#
+# We attach our own StreamHandler for the same reason web/app.py and
+# audit.py do: nothing else in the stack configures a handler that
+# captures our messages, and uvicorn's own logger config doesn't pick
+# up application-level loggers. Without this, log.info() calls are
+# silently discarded. propagate=False prevents duplication if a future
+# operator calls logging.basicConfig() elsewhere.
 log = logging.getLogger(__name__)
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 
 def set_dns_server(server: str | None) -> None:
