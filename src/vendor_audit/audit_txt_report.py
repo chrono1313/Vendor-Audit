@@ -87,7 +87,7 @@ _MARKERS = {
 # IP / ASN / RPKI section. The base RFC 6480 (RPKI) is on the parent
 # section heading; these add the per-protocol IP standards.
 _AF_LABEL_WITH_RFC = {
-    "IPv4": "IPv4 (RFC 791)",
+    "IPv4": "IPv4 (legacy IP, RFC 791)",
     "IPv6": "IPv6 (RFC 8200)",
 }
 
@@ -437,7 +437,7 @@ EXPLANATIONS = {
             "Transport Layer Security (TLS) is the encryption layer underneath HTTPS. TLS 1.3 (RFC 8446, 2018) is the current standard — it removed every cipher suite the older versions had cryptographic weaknesses in, simplified the handshake to a single round-trip, and made forward secrecy mandatory. TLS 1.2 (RFC 5246) is still widely deployed and acceptable; TLS 1.0 and 1.1 are formally deprecated by RFC 8996 and should be disabled.",
             "Vendor Audit verifies the TLS version negotiated during the handshake, the certificate's name match against the requested host, the certificate lifetime, and chain completeness. Specific cipher-suite probing (which suites the server accepts, key-exchange parameters, named-CVE conditions like POODLE or ROBOT) is not part of this audit by design — that's what the Qualys SSL Labs assessment is for.",
             "If you want a comprehensive TLS configuration review, run the SSL Labs assessment at https://ssllabs.com/ssltest/. It probes every cipher suite the server accepts, reports forward-secrecy support, flags named vulnerabilities, and gives a letter grade. Modern stacks (recent nginx, Apache, Cloudflare, Caddy, AWS ALB) configured with the Mozilla Intermediate or Modern profile typically score A or A+ without further tuning.",
-            "Certificate lifetime is becoming an enforcement point in its own right. Apple, Google, and the major browser vendors are progressively shortening the maximum lifetime — already capped at 398 days, with proposals to push it to 47 days by 2029. Short-lived certificates with automated renewal (ACME / Let's Encrypt) are the path that scales; manually-renewed long certificates are increasingly fragile.",
+            "Certificate lifetime is now an enforcement point in its own right. Under the CA/Browser Forum's Ballot SC081v3, the maximum lifetime stepped down from 398 days to 200 days on March 15, 2026; it drops to 100 days on March 15, 2027 and to 47 days on March 15, 2029. Short-lived certificates with automated renewal (ACME / Let's Encrypt) are the only path that scales at the 47-day endpoint; manually-renewed certificates are already strained at 200 days and won't be viable at 100. Operators still on annual-renewal workflows should plan automation now rather than during the next squeeze.",
         ],
     },
     "hsts": {
@@ -466,7 +466,7 @@ EXPLANATIONS = {
         "why":  "Modern protocols are faster and more reliable; missing HTTPS redirects let attackers serve content unencrypted; off-host first hops leak Referer and bypass HSTS.",
         "fix":  "Enable HTTP/2 and HTTP/3 in your server or CDN, ensure http://<domain> 301-redirects directly to https://<domain> on the same host.",
         "details": [
-            "The HTTP transport layer has evolved significantly since HTTP/1.1 was standardised in 1997. HTTP/2 (RFC 9113, 2015) introduced multiplexing — many requests over a single TCP connection — which fixed head-of-line blocking and dramatically reduced page load times for resource-heavy sites. HTTP/3 (RFC 9114, 2022) replaced TCP with QUIC over UDP, fixing head-of-line blocking at the transport layer too and reducing handshake latency on lossy networks like mobile and satellite.",
+            "The HTTP transport layer has evolved significantly since HTTP/1.1 was standardised in 1997. HTTP/2 (RFC 7540 in 2015, updated by RFC 9113 in 2022) introduced multiplexing — many requests over a single TCP connection — which fixed head-of-line blocking and dramatically reduced page load times for resource-heavy sites. HTTP/3 (RFC 9114, 2022) replaced TCP with QUIC over UDP, fixing head-of-line blocking at the transport layer too and reducing handshake latency on lossy networks like mobile and satellite.",
             "Enabling these is essentially free for most operators: nginx, Apache, Caddy, IIS and every major CDN support HTTP/2 with a one-line config change. HTTP/3 needs UDP allowed through your firewall but otherwise drops in the same way. There's no compatibility downside — clients fall back to HTTP/1.1 transparently if the newer versions aren't advertised.",
             "First-hop redirect hygiene is the small but important detail of redirecting users to HTTPS on the same host before redirecting anywhere else. http://example.com should land on https://example.com, which can then redirect to https://www.example.com. Skipping that step (going straight to the www variant) means the apex domain never gets an HSTS header for the user's browser, leaving the next plain-HTTP visit to example.com unprotected.",
         ],
@@ -476,7 +476,7 @@ EXPLANATIONS = {
         "why":  "HTTP/3 in particular improves performance on mobile networks and high-latency links; both fix head-of-line blocking from HTTP/1.1.",
         "fix":  "Enable HTTP/2 and HTTP/3 in your web server or CDN; most modern stacks support both with a single config flag.",
         "details": [
-            "HTTP/2 (RFC 9113) and HTTP/3 (RFC 9114) are the modern HTTP transports. HTTP/2 multiplexes many requests over a single TCP connection, eliminating the connection-pool overhead of HTTP/1.1 and the artificial sharding workarounds (multiple subdomains, sprite sheets) sites used to need. HTTP/3 takes the same idea to UDP via QUIC, improving handshake latency and resilience to packet loss.",
+            "HTTP/2 (originally RFC 7540 in 2015, current revision RFC 9113 in 2022) and HTTP/3 (RFC 9114, 2022) are the modern HTTP transports. HTTP/2 multiplexes many requests over a single TCP connection, eliminating the connection-pool overhead of HTTP/1.1 and the artificial sharding workarounds (multiple subdomains, sprite sheets) sites used to need. HTTP/3 takes the same idea to UDP via QUIC, improving handshake latency and resilience to packet loss.",
             "Vendor Audit detects HTTP/2 by the negotiated ALPN protocol on the TLS handshake, and HTTP/3 by the presence of an Alt-Svc header on the response advertising h3. Some servers support HTTP/3 but don't advertise it via Alt-Svc — in those cases the audit will report HTTP/3 as not advertised even though it works.",
             "Enabling them in your server stack is usually trivial: nginx 1.25+ ships HTTP/3 behind a flag; Apache via mod_http2 and mod_http3; Caddy enables both by default; and every major CDN (Cloudflare, Fastly, Akamai, AWS CloudFront) supports both transparently. There's no compatibility risk: clients negotiate down to HTTP/1.1 if needed.",
         ],
@@ -572,7 +572,7 @@ EXPLANATIONS = {
     },
     "routing": {
         "what": "This section covers IP-level reachability and routing security: IPv6 connectivity and RPKI Route Origin Authorizations for both IP families.",
-        "why":  "IPv6-only users can't reach IPv4-only sites, and prefixes without ROAs are vulnerable to BGP hijacks that redirect traffic to attackers.",
+        "why":  "IPv6-only users can't reach sites that are IPv4 (legacy IP) only, and prefixes without ROAs are vulnerable to BGP hijacks that redirect traffic to attackers.",
         "fix":  "Add AAAA records to enable IPv6, and ask your hosting provider or RIR to publish ROAs for every prefix your AS announces.",
         "details": [
             "Routing-layer security and reachability are usually invisible — until they aren't. The two checks in this section cover the cases where they aren't: a domain that's unreachable for users on IPv6-only networks, and a prefix that's vulnerable to BGP hijacking because no Route Origin Authorisation has been published.",
@@ -581,10 +581,10 @@ EXPLANATIONS = {
     },
     "ipv6": {
         "what": "IPv6 connectivity makes your site reachable for the growing share of users on IPv6-only networks (mobile, enterprise, some ISPs).",
-        "why":  "IPv4 address exhaustion means more networks are deploying IPv6-only access; IPv4-only domains are simply unreachable for those users.",
+        "why":  "IPv4 (legacy IP) address exhaustion means more networks are deploying IPv6-only access; IPv4-only domains are simply unreachable for those users.",
         "fix":  "Add AAAA records pointing to IPv6 addresses on your hosting; most CDNs and cloud providers offer this with a single config flag.",
         "details": [
-            "IPv6 deployment crossed 40% of global traffic in 2023 and is still climbing — driven by mobile carriers (T-Mobile, Verizon, Vodafone are mostly IPv6 internally), large ISPs in India and China, and the simple fact that IPv4 addresses cost real money now. A growing fraction of users reach the internet via IPv6 first; for them, an IPv4-only domain looks slow at best (NAT64 translation in the path) and unreachable at worst (carrier-grade NAT failures).",
+            "IPv6 is now the majority. Cisco's 6lab measurement puts the internet core at 88% IPv6, global content at 64%, and user-side deployment at 57%. IPv4 is the legacy protocol on the way out — addresses cost real money (AWS bills per public IPv4 per hour) and a growing fraction of users sit behind carrier-grade NAT or NAT64, where an IPv4-only domain looks slow at best and unreachable at worst. If you haven't enabled IPv6 yet, now is the time.",
             "Enabling IPv6 is usually trivial. Every major cloud provider (AWS, GCP, Azure, Cloudflare, Fastly, Akamai) offers IPv6 with a config-flag toggle. The DNS record is an AAAA pointing to the IPv6 address; that's the entire DNS-side change. Server-side, every modern web server (nginx, Apache, IIS) listens on IPv6 by default; if you're running them on a VPS, the provider has likely already assigned you a /64.",
             "The check looks for an AAAA record on the apex domain. A common deployment mistake is to enable IPv6 on www but not on the apex (or vice versa) — both should resolve to IPv6 addresses. If the audit reports IPv6 not configured on a site you know has IPv6, double-check that AAAA exists for the exact hostname in the report (apex vs. www).",
         ],
@@ -1018,9 +1018,9 @@ class _ReportData:
             "DNSSEC AD flag":          "DNSSEC validation chain not authenticated (AD flag unset)",
             "Nameserver count":        "Fewer than two authoritative nameservers (RFC 1034)",
             "IPv6":                    "IPv6 not configured",
-            "IPv4 RPKI":               "IPv4 prefix has no Route Origin Authorization (RPKI)",
+            "IPv4 RPKI":               "IPv4 (legacy IP) prefix has no Route Origin Authorization (RPKI)",
             "IPv6 RPKI":               "IPv6 prefix has no Route Origin Authorization (RPKI)",
-            "IPv4 IRR/RIS":            "IPv4 route not registered in IRR / RIS",
+            "IPv4 IRR/RIS":            "IPv4 (legacy IP) route not registered in IRR / RIS",
             "IPv6 IRR/RIS":            "IPv6 route not registered in IRR / RIS",
             "TLS connection":          "TLS connection failed",
             "TLS 1.3":                 "TLS 1.3 not supported",
@@ -1101,8 +1101,8 @@ class _ReportData:
             # times out, so the row appears in the executive summary
             # rather than silently disappearing. See score_results in
             # audit_checks for the emission point.
-            "IPv4 RPKI":      "IPv4 RPKI check could not run (RIPEstat lookup failed)",
-            "IPv4 IRR/RIS":   "IPv4 IRR/RIS check could not run (RIPEstat lookup failed)",
+            "IPv4 RPKI":      "IPv4 (legacy IP) RPKI check could not run (RIPEstat lookup failed)",
+            "IPv4 IRR/RIS":   "IPv4 (legacy IP) IRR/RIS check could not run (RIPEstat lookup failed)",
             "IPv6 RPKI":      "IPv6 RPKI check could not run (RIPEstat lookup failed)",
             "IPv6 IRR/RIS":   "IPv6 IRR/RIS check could not run (RIPEstat lookup failed)",
         }
