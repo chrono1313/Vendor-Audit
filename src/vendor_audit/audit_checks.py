@@ -1223,21 +1223,35 @@ def check_ip_routing(domain):
     """Resolve the first IPv4 and IPv6 addresses for the domain, then for each
     query RIPEstat for BGP prefix, ASN, RPKI validity, and IRR/RIS presence.
     Never raises.
+
+    RIPEstat-call efficiency notes:
+      - Every call carries sourceapp=vendor-audit per RIPEstat's polite-
+        usage convention, so RIPEstat can attribute traffic and contact
+        us if we cause problems.
+      - The ris-prefixes call is narrowed to (a) our address family
+        only, (b) originating routes only, (c) noise prefixes filtered.
+        Without these, the call returns the entire originated +
+        transited prefix list for the ASN across both v4 and v6 — for
+        large transit networks (Cloudflare AS13335, AWS AS16509, etc.)
+        that's a megabyte-plus of JSON the server has to assemble and
+        we have to parse, just to check if our specific prefix is in
+        the originating list. With the narrowing it's typically
+        kilobytes.
+      - Per-call timeout is bounded by _http_timeout (default 5s).
+        Single attempt — no retries. RIPEstat is reliable when healthy;
+        retrying on transient slowness just doubles wall time without
+        adding much success probability.
     """
     RIPESTAT = "https://stat.ripe.net/data"
+    SOURCEAPP = "vendor-audit"
     timeout = _http_timeout
-    RETRIES = 2
 
     def _ripe_get(url, params):
-        last_exc = None
-        for _ in range(RETRIES):
-            try:
-                resp = _get_client().get(url, params=params, timeout=timeout)
-                resp.raise_for_status()
-                return resp
-            except Exception as e:
-                last_exc = e
-        raise last_exc
+        params = dict(params)
+        params.setdefault("sourceapp", SOURCEAPP)
+        resp = _get_client().get(url, params=params, timeout=timeout)
+        resp.raise_for_status()
+        return resp
 
     def _empty_addr():
         return {
@@ -1265,7 +1279,18 @@ def check_ip_routing(domain):
         try:
             resp = _ripe_get(
                 f"{RIPESTAT}/ris-prefixes/data.json",
-                params={"resource": f"AS{asn}", "list_prefixes": "true"},
+                params={
+                    "resource":       f"AS{asn}",
+                    "list_prefixes":  "true",
+                    # Narrow the response: our address family only,
+                    # originating routes only (we don't care about
+                    # transit), and filter noise prefixes (private
+                    # ranges, /0). Drops typical response size from
+                    # ~1MB+ to ~kilobytes for large networks.
+                    "af":             "v4" if afi == "v4" else "v6",
+                    "types":          "o",
+                    "noise":          "filter",
+                },
             )
             prefixes = resp.json().get("data", {}).get("prefixes", {})
             orig_key = "v4" if afi == "v4" else "v6"
