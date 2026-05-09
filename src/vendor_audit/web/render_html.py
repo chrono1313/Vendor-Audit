@@ -1041,18 +1041,23 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
 def _render_action_bar_html(data, domain):
     """Render the top-of-report action bar.
 
-    Three things in this row:
+    Two things in this row:
       1. Download as .txt
-      2. Re-audit this domain (form, preserves deep flag)
-      3. Audit another domain — an inline form with a domain input,
-         Audit button, and Deep checkbox. Lets the reader pivot to
-         a different domain without going back to the home page.
+      2. Inline audit-another-domain form: a domain input, Deep
+         checkbox, and Audit button. The form has data attributes
+         that the result-page JS reads to enable two conveniences:
+         (a) submitting with the input empty audits the current
+         domain; (b) submitting with the same domain that's already
+         displayed automatically adds fresh=1 to bypass the cache,
+         since the user is asking for a re-audit not a stale view.
+         Without JS the form behaves as a plain inline-audit form
+         and the user types the domain manually for both cases.
 
-    The third element is a real <form> submitting to /audit (not a
-    link), so the loading page kicks in just like submitting from
-    the home page. The Deep checkbox defaults to whatever the
-    current report ran with — if you're reading a deep-mode report,
-    you probably want deep mode for the next domain too.
+    A separate "Re-audit this domain" button used to live here. It
+    was removed once the inline form covered the same case (blank
+    input + Audit, with the JS shortcut making it a single click).
+    The footer still has an "Audit another domain" link as a
+    fallback.
 
     The slowest-checks panel and version line stay in the footer.
     """
@@ -1061,8 +1066,6 @@ def _render_action_bar_html(data, domain):
     if deep:
         txt_href += "?deep=1"
 
-    deep_input_reaudit = ('<input type="hidden" name="deep" value="1">'
-                          if deep else "")
     deep_checkbox_attrs = ' checked' if deep else ''
 
     out = ['<aside class="top-action-bar">']
@@ -1071,32 +1074,22 @@ def _render_action_bar_html(data, domain):
         f'    <a class="download-link" href="{txt_href}" '
         f'download>Download as .txt</a>'
     )
-    # Re-audit re-runs against the same domain. Done as a real <form>
-    # GET to /audit (not /audit/result directly) so the user sees the
-    # loading page during the 3-5s re-audit. /audit forwards the fresh
-    # flag through to /audit/result, which bypasses the cache and runs
-    # a fresh audit. The deep flag is preserved so a re-audit of a
-    # deep result stays a deep result.
-    out.append(
-        f'    <form class="reaudit-form" method="get" action="/audit">'
-        f'<input type="hidden" name="domain" value="{_h(domain)}">'
-        f'<input type="hidden" name="fresh" value="1">'
-        f'{deep_input_reaudit}'
-        f'<button type="submit" class="as-link">Re-audit this domain</button>'
-        f'</form>'
-    )
     out.append('  </div>')
 
-    # Inline audit-another-domain form. Submits to /audit (the loading-
-    # page entry), same as the home form. The deep checkbox defaults to
-    # the current report's deep state. Autocomplete-suppression
-    # attributes match the home page's input so password managers and
-    # form-fill tools stay out of the way.
-    out.append('  <form class="inline-audit-form" method="get" action="/audit"'
-               ' aria-label="Audit another domain">')
+    # Inline audit-another-domain form. The data-current-domain attribute
+    # carries the currently-displayed domain so the result-page JS can
+    # (a) fill the input on blank submit, and (b) add fresh=1 when the
+    # submitted domain matches. The placeholder shows the current domain
+    # so users see what blank-submit will audit.
+    placeholder = f"Audit a domain (default: {domain})"
     out.append(
-        '    <input type="text" name="domain" placeholder="Audit another domain..."'
-        ' required autocomplete="off" autocapitalize="off" autocorrect="off"'
+        f'  <form class="inline-audit-form" method="get" action="/audit"'
+        f' aria-label="Audit another domain"'
+        f' data-current-domain="{_h(domain)}">'
+    )
+    out.append(
+        f'    <input type="text" name="domain" placeholder="{_h(placeholder)}"'
+        ' autocomplete="off" autocapitalize="off" autocorrect="off"'
         ' spellcheck="false" data-1p-ignore data-lpignore="true"'
         ' data-form-type="other">'
     )
@@ -1122,8 +1115,6 @@ def _render_footer_html(data, domain):
     txt_href = f"/audit/{_h(domain)}.txt"
     if deep:
         txt_href += "?deep=1"
-    deep_input = ('<input type="hidden" name="deep" value="1">'
-                  if deep else "")
 
     out = ['<footer class="report-footer">']
     out.append('  <div class="footer-actions">')
@@ -1131,14 +1122,10 @@ def _render_footer_html(data, domain):
         f'    <a class="download-link" href="{txt_href}" '
         f'download>Download as .txt</a>'
     )
-    out.append(
-        f'    <form class="reaudit-form" method="get" action="/audit">'
-        f'<input type="hidden" name="domain" value="{_h(domain)}">'
-        f'<input type="hidden" name="fresh" value="1">'
-        f'{deep_input}'
-        f'<button type="submit" class="as-link">Re-audit this domain</button>'
-        f'</form>'
-    )
+    # The "Re-audit this domain" button used to live here. It was
+    # removed once the inline audit form in the top action bar covered
+    # the same case (blank input + Audit, with same-domain submission
+    # auto-adding fresh=1 to bypass the cache via the result-page JS).
     out.append('    <a href="/">Audit another domain</a>')
     out.append('  </div>')
     out.append('  <div class="footer-info">')

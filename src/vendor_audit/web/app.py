@@ -751,9 +751,11 @@ async def _run_audit_and_render(request: Request, domain: str, *,
     cached result if one exists, otherwise runs the audit and caches.
 
     deep=True enables the audit's --deep-mode checks (DANE, STARTTLS-MX,
-    page parse). Deep and non-deep results are cached under separate
-    keys so a deep request never sees a non-deep cached result and
-    vice versa — they're meaningfully different audits.
+    page parse). Cache lookup honors deep-as-superset: a regular
+    request first checks its own slot, then falls back to the deep
+    slot if present. A deep request only checks the deep slot — it
+    never serves a regular-cached result, because the regular result
+    doesn't have the deep checks the user asked for.
     """
     # Two-stage validation: shape-only first (cheap, no I/O) so we can
     # check the cache without a DNS round-trip. Full validation with the
@@ -775,23 +777,33 @@ async def _run_audit_and_render(request: Request, domain: str, *,
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Cache key includes the deep flag so deep and non-deep audits don't
-    # share a slot. A "::deep" suffix on the deep variant is short and
-    # leaves human-friendly cache keys for the regular case.
+    # Cache keys: regular at <domain>, deep at <domain>::deep.
     cache_key = shape_only.domain + ("::deep" if deep else "")
 
-    # Cache check. Hits return instantly without burning a worker, and
-    # without a DNS round-trip. Skipped when fresh=True (re-audit). The
-    # cache key is the normalized domain (plus optional ::deep suffix)
-    # so 'Example.com', ' example.com ', etc. share a cache entry.
-    # Errors are not cached (the user should retry promptly, not wait
-    # the full TTL).
+    # Cache check, with deep-as-superset fallback.
+    #
+    # Lookup order:
+    #   - Regular request: own slot first; if miss, deep slot.
+    #     Rationale: a deep audit ran every check a regular audit
+    #     would have, plus more. Serving deep-cached to a regular
+    #     requester is honest (the page declares --deep) and avoids
+    #     a redundant audit run when we already have the answer.
+    #   - Deep request: only the deep slot. Never falls back to
+    #     regular — that would silently downgrade what the user
+    #     asked for.
+    # Skipped when fresh=True (re-audit / explicit cache bypass).
     if not fresh:
         cached = _result_cache_get(cache_key)
+        cache_hit_kind = "exact" if cached else None
+        if cached is None and not deep:
+            # Regular request, regular cache missed → try the deep slot.
+            cached = _result_cache_get(shape_only.domain + "::deep")
+            if cached is not None:
+                cache_hit_kind = "deep-fallback"
         if cached is not None:
             cached_html, _, _, cached_audit_ts = cached
-            log.info("audit cache hit: domain=%r ip=%s%s",
-                     shape_only.domain, _client_ip(request),
+            log.info("audit cache hit (%s): domain=%r ip=%s%s",
+                     cache_hit_kind, shape_only.domain, _client_ip(request),
                      " deep=1" if deep else "")
             return HTMLResponse(content=_inject_age(cached_html, cached_audit_ts))
 
@@ -924,7 +936,13 @@ async def download_txt(request: Request, domain: str, deep: int = 0):
 
     deep_flag = bool(deep)
     cache_key = shape_only.domain + ("::deep" if deep_flag else "")
+    # Cache lookup with deep-as-superset fallback. A regular .txt request
+    # falls back to the deep slot if the regular slot misses; a deep
+    # request only checks the deep slot. Same logic as the HTML serve
+    # path — see _run_audit_and_render for the rationale.
     cached = _result_cache_get(cache_key)
+    if cached is None and not deep_flag:
+        cached = _result_cache_get(shape_only.domain + "::deep")
     if cached is not None:
         _, txt, txt_headers, _ = cached
         return PlainTextResponse(content=txt, headers=txt_headers)
@@ -1103,6 +1121,7 @@ _RESULT_JS = """\
 (function () {
   'use strict';
 
+  // ── Expand-all / collapse-all controls ────────────────────────────
   function setAll(open) {
     var nodes = document.querySelectorAll(
       'details.detail-section, details.subsection'
@@ -1116,7 +1135,7 @@ _RESULT_JS = """\
     }
   }
 
-  function init() {
+  function initExpandCollapse() {
     var buttons = document.querySelectorAll('.detail-controls .detail-btn');
     for (var i = 0; i < buttons.length; i++) {
       (function (btn) {
@@ -1131,6 +1150,62 @@ _RESULT_JS = """\
         });
       })(buttons[i]);
     }
+  }
+
+  // ── Inline audit form: blank-submit → current domain; same-domain
+  //    submit → bypass cache (fresh=1).
+  //
+  // Two conveniences for users on the result page who want to either
+  // re-audit the current domain (with possibly different deep state)
+  // or audit something different:
+  //
+  //   1. Blank submit → fill input with the current domain. The form's
+  //      data-current-domain attribute carries it. Without this, the
+  //      form would refuse to submit (or the server would see an empty
+  //      domain). With this, clicking Audit with an empty input audits
+  //      whatever's currently displayed.
+  //
+  //   2. Same-domain submit → add a hidden fresh=1 input before submit,
+  //      so the server bypasses the cache. Without this, asking to
+  //      "re-audit example.com" on the example.com result page would
+  //      just return the same cached page, which isn't what the user
+  //      meant.
+  //
+  // Domain comparison is case-insensitive and trims whitespace, so
+  // "Example.com" submitted against "example.com" still triggers the
+  // fresh-1 path.
+  function initInlineForm() {
+    var form = document.querySelector('.inline-audit-form');
+    if (!form) return;
+    var input = form.querySelector('input[name="domain"]');
+    if (!input) return;
+    var current = (form.getAttribute('data-current-domain') || '').trim().toLowerCase();
+
+    form.addEventListener('submit', function (ev) {
+      var typed = (input.value || '').trim();
+      // (1) Blank submit → fill with current domain.
+      if (typed === '' && current) {
+        input.value = current;
+        typed = current;
+      }
+      // (2) Same-domain submit → add fresh=1 to bypass cache.
+      if (typed && current && typed.toLowerCase() === current) {
+        // Avoid duplicate hidden inputs if the user submits twice.
+        var existing = form.querySelector('input[name="fresh"]');
+        if (!existing) {
+          var hidden = document.createElement('input');
+          hidden.type = 'hidden';
+          hidden.name = 'fresh';
+          hidden.value = '1';
+          form.appendChild(hidden);
+        }
+      }
+    });
+  }
+
+  function init() {
+    initExpandCollapse();
+    initInlineForm();
   }
 
   if (document.readyState === 'loading') {
