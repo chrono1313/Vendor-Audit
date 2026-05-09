@@ -8,19 +8,22 @@ See `example_reports_and_screenshots/` for a console screenshot and
 sample `.txt` and `.csv` outputs.
 
 A default-mode run audits 60+ scored data points in roughly a second.
-`--deep` adds two or three seconds. In bulk mode
-(`--file`), domains are audited 10 at a time in parallel — over 200
-domains in under a minute is typical. `--ssl` is sequential and adds 1–2
-minutes per domain because SSL Labs runs the assessment server-side.
+`--deep` adds 3–5 seconds. In bulk mode (`--file`), domains are audited
+10 at a time in parallel — over 200 domains in under a minute is typical.
+`--ssl` is sequential and adds 1–2 minutes per domain because SSL Labs
+runs the assessment server-side.
 
 ## Web version
 
 A hosted version of Vendor Audit runs at
 [vendoraudit.org](https://vendoraudit.org). It's the same audit logic,
 no install required — type a domain, get a report, optionally download
-it as a `.txt` for sharing with the vendor. The web version is intentionally
-narrower than the CLI: no `--deep`, no `--ssl` (those need SSL Labs
-registration), and no bulk mode.
+it as a `.txt` for sharing with the vendor. The web version supports an
+opt-in **Deep checks** checkbox (DANE, STARTTLS-MX, page parse) that
+adds 3–5 seconds when enabled. SSL Labs (`--ssl`) and bulk mode
+(`--file`) remain CLI-only — the SSL Labs Terms of Use don't permit
+exposing their API on a public website, and bulk mode is meant for
+batch CSV generation.
 
 If you want to self-host the web service, see
 [`deploy/INSTALL.md`](deploy/INSTALL.md). It's an optional, separate install
@@ -36,8 +39,8 @@ vendor-audit --ssl email@example.com --deep --report --domain addy.io
 
 [vendor_audit_example.webm](https://github.com/user-attachments/assets/a35e5c2f-12ad-42db-957f-41ac44dee42d)
 
-In this example, the full output is generated in about ~2 seconds and a report is created. 
-See example_reports_and_screenshots for this report.
+In this example, the full output is generated in about 2 seconds and a report is created.
+See `example_reports_and_screenshots/` for this report.
 
 
 ## How it's meant to be used
@@ -118,9 +121,9 @@ and a basic accessibility subset.
 pipx install git+https://github.com/chrono1313/Vendor-Audit.git
 ```
 
-Pipx installs the tool into its own isolated virtualenv and puts a `vendor-audit` 
-command on your `PATH`, so dependenciesdon't collide with anything else on the 
-system. This is the smoothest path on modern Linux distros.
+Pipx installs the tool into its own isolated virtualenv and puts a `vendor-audit`
+command on your `PATH`, so dependencies don't collide with anything else on
+the system. This is the smoothest path on modern Linux distros.
 
 This installs **the CLI only**. It does not install a web server, does not
 listen on any port, and does not start anything in the background. The
@@ -201,8 +204,8 @@ positive rate on bot-mitigated sites:
 - HTML page parse for Subresource Integrity, mixed content, third-party
   origins, and accessibility signals
 
-Default-mode runs typically complete in 1–2 seconds per domain. `--deep` adds
-2–5 seconds depending on MX count and server responsiveness.
+Default-mode runs typically complete in 1–3 seconds per domain. `--deep` adds
+3–5 seconds depending on MX count and server responsiveness.
 
 ### SSL Labs
 
@@ -265,9 +268,10 @@ support floor frequently.
   Re-run periodically or wire into a scheduled CI job for trend tracking.
 - **Bot-mitigated sites.** Cloudflare / Akamai / AWS WAF challenge pages
   produce unreliable page-level findings, which is why page parsing is
-  gated behind `--deep` rather than running by default. These reverse-proxy's
-  may obscure other findings like outdated server OS's, but the report should
-  still be accurate as to external exposure and configuration.
+  gated behind `--deep` rather than running by default. These reverse
+  proxies may obscure other findings like outdated server OSes, but the
+  report should still be accurate as to externally-visible exposure
+  and configuration.
 
 ## Contributing
 

@@ -6,29 +6,40 @@
 <title>Vendor Audit — passive domain security audit</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
+  /* ── Palette — kept in sync with render_html.py's _DOC_HEAD. If you
+     change one, change both. The shared palette gives the form,
+     loading page, and result page a single visual identity rather
+     than three near-identical-but-different dark themes. */
   :root {
-    --bg: rgb(40, 40, 38);
-    --fg: #ececea;
-    --muted: #999;
-    --accent: #5fa3ff;
-    --border: #4a4a47;
-    --panel: rgb(48, 48, 45);
+    --bg:           rgb(34, 34, 33);
+    --surface:      rgb(44, 44, 42);
+    --surface-2:    rgb(52, 52, 49);
+    --surface-hover: rgb(56, 56, 53);
+    --fg:           #ededeb;
+    --muted:        #bdbdba;
+    --muted-soft:   #98968f;
+    --border:       #57574f;
+    --border-soft:  #3e3e3a;
+    --accent:       #7eb6ff;
+    --accent-hover: #a3cbff;
   }
+  * { box-sizing: border-box; }
   body {
-    font: 15px/1.5 system-ui, -apple-system, sans-serif;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     color: var(--fg);
     background: var(--bg);
+    background-image: linear-gradient(180deg, rgb(36, 36, 35) 0%, rgb(33, 33, 32) 100%);
+    background-attachment: fixed;
     margin: 0;
     min-height: 100vh;
     display: grid;
     place-items: center;
     padding: 2rem 1rem;
-    box-sizing: border-box;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
-  /* On phones, content is taller than the viewport — centering pushes the
-     logo lower than it should be, and the 2rem top padding wastes scarce
-     vertical real-estate. Top-align the content and tighten the padding so
-     the brand sits where the eye expects it. */
+  /* On phones the content runs taller than the viewport; centering
+     pushes the logo too low. Top-align there and tighten the padding. */
   @media (max-width: 600px) {
     body {
       place-items: start center;
@@ -50,74 +61,110 @@
     width: 48px;
     height: 48px;
     margin: 0 auto 0.6rem;
-    color: var(--fg);  /* drives currentColor in the SVG */
+    color: var(--fg);
   }
   .logo svg { display: block; width: 100%; height: 100%; }
   h1 {
     font-size: 1.7rem;
     margin: 0 0 0.4rem;
+    color: var(--fg);
   }
   .lede {
     color: var(--muted);
     margin: 0 0 1.6rem;
     font-size: 1.05rem;
   }
-  /* Form and explainer copy below should read left-aligned, not centered.
-     Only the header (logo + h1 + lede) is centered. */
+  /* Body copy below the header reads left-aligned. Only the header
+     (logo + h1 + lede) is centered. */
   form, .what { text-align: left; }
   form {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto;
     gap: 0.5rem;
-    margin-bottom: 3rem;
+    margin-bottom: 0.7rem;
   }
   input[type="text"] {
-    flex: 1;
     font: inherit;
-    padding: 0.6rem 0.8rem;
+    padding: 0.65rem 0.85rem;
     border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--panel);
+    border-radius: 5px;
+    background: var(--surface);
     color: var(--fg);
   }
-  input[type="text"]::placeholder { color: var(--muted); }
+  input[type="text"]::placeholder { color: var(--muted-soft); }
   input[type="text"]:focus {
     outline: 2px solid var(--accent);
     outline-offset: -1px;
     border-color: var(--accent);
   }
-  button {
+  button[type="submit"] {
     font: inherit;
-    padding: 0.6rem 1.2rem;
+    padding: 0.65rem 1.3rem;
     background: var(--accent);
-    color: white;
+    color: rgb(20, 22, 28);
+    font-weight: 600;
     border: none;
-    border-radius: 4px;
+    border-radius: 5px;
     cursor: pointer;
+    transition: background-color 0.12s ease;
   }
-  button:hover { filter: brightness(1.1); }
-  .what {
-    color: var(--muted);
+  button[type="submit"]:hover { background: var(--accent-hover); }
+
+  /* Deep-mode checkbox row. Sits under the input/button row so it
+     doesn't crowd the primary action. The label is the click target;
+     the input is positioned for alignment, not styled into a custom
+     control — native checkboxes are perfectly fine and accessible. */
+  .options {
+    margin: 0 0 2.6rem;
     font-size: 0.92rem;
-    border-top: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .options label {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    cursor: pointer;
+    user-select: none;
+    padding: 0.25rem 0.4rem 0.25rem 0;
+    border-radius: 4px;
+  }
+  .options input[type="checkbox"] {
+    margin: 0.18rem 0 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .options .opt-label { color: var(--fg); font-weight: 500; }
+  .options .opt-note  { color: var(--muted); }
+
+  .what {
+    color: var(--fg);
+    font-size: 0.95rem;
+    border-top: 1px solid var(--border-soft);
     padding-top: 1.2rem;
   }
   .what h2 {
-    /* These are introductory headings inside the explainer block —
-       smaller than the page H1, and slightly brighter than the muted
-       body text so they punctuate without dominating. */
     font-size: 1rem;
     color: var(--fg);
     margin: 0 0 0.6rem;
+    font-weight: 600;
   }
   .what h2:not(:first-child) { margin-top: 1.5rem; }
-  .what p { margin: 0 0 0.8rem; }
+  .what p {
+    margin: 0 0 0.8rem;
+    color: var(--fg);
+  }
   .what strong { color: var(--fg); }
   .what code {
     font: 0.9em ui-monospace, monospace;
-    background: rgba(255, 255, 255, 0.06);
-    padding: 1px 4px;
+    background: var(--surface);
+    padding: 1px 5px;
     border-radius: 3px;
+    color: var(--fg);
   }
+  .what a { color: var(--accent); }
+  .what a:hover { color: var(--accent-hover); }
+
   footer {
     text-align: center;
     color: var(--muted);
@@ -125,15 +172,23 @@
     margin-top: 2.4rem;
   }
   footer a { color: var(--muted); }
+  footer a:hover { color: var(--fg); }
+
   .privacy {
     color: var(--muted);
-    font-size: 0.82rem;
-    line-height: 1.5;
+    font-size: 0.86rem;
+    line-height: 1.55;
     margin-top: 2.4rem;
     padding-top: 1rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    border-top: 1px solid var(--border-soft);
   }
   .privacy strong { color: var(--fg); font-weight: 600; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
 </style>
 </head>
 <body>
@@ -145,12 +200,12 @@
   <desc id="va-desc">Magnifying glass framing a small node graph, representing domain posture inspection.</desc>
   <circle cx="40" cy="40" r="28" fill="none" stroke="currentColor" stroke-width="3"/>
   <line x1="60" y1="60" x2="82" y2="82" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
-  <line x1="32" y1="38" x2="46" y2="34" stroke="#5fa3ff" stroke-width="1"/>
-  <line x1="46" y1="34" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>
-  <line x1="32" y1="38" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>
-  <circle cx="32" cy="38" r="3" fill="#5fa3ff"/>
-  <circle cx="46" cy="34" r="3" fill="#5fa3ff"/>
-  <circle cx="50" cy="48" r="3" fill="#5fa3ff"/>
+  <line x1="32" y1="38" x2="46" y2="34" stroke="#7eb6ff" stroke-width="1"/>
+  <line x1="46" y1="34" x2="50" y2="48" stroke="#7eb6ff" stroke-width="1"/>
+  <line x1="32" y1="38" x2="50" y2="48" stroke="#7eb6ff" stroke-width="1"/>
+  <circle cx="32" cy="38" r="3" fill="#7eb6ff"/>
+  <circle cx="46" cy="34" r="3" fill="#7eb6ff"/>
+  <circle cx="50" cy="48" r="3" fill="#7eb6ff"/>
 </svg>
 </div>
 <h1>Vendor Audit</h1>
@@ -168,6 +223,12 @@
          data-lpignore="true"
          data-form-type="other">
   <button type="submit">Audit</button>
+  <div class="options" style="grid-column: 1 / -1;">
+    <label>
+      <input type="checkbox" name="deep" value="1">
+      <span><span class="opt-label">Deep checks</span> <span class="opt-note">— DANE, STARTTLS-MX, page parse for SRI / mixed content / accessibility. Adds 3–5 seconds.</span></span>
+    </label>
+  </div>
 </form>
 
 <section class="what">
@@ -175,16 +236,16 @@
 
   <p>Vendor Audit is a due-diligence tool. Run it on a vendor's domain before purchasing a product or service to get a quick, evidence-based read on how their configuration aligns with current best practices. A weak score isn't a deal-breaker on its own, but it's a useful conversation starter and a data point alongside everything else you're evaluating.</p>
 
-  <p><strong>Please download the .txt report and share it with the vendor.</strong> Every section cites the RFC, W3C spec, OWASP guidance, or CA/Browser Forum baseline it's measured against — so the report reads as feedback, not as an accusation. Most vendors appreciate a heads-up they can act on; the .txt gives them one in a form they can take straight to the people who can address it. When more than one prospect shares these reports with the same vendor, they're more likely to prioritize the issues raised.</p>
+  <p><strong>Please share the .txt report with the vendor.</strong> Every section cites the RFC, W3C spec, OWASP guidance, or CA/Browser Forum baseline it's measured against — so the report reads as feedback, not as an accusation. Most vendors appreciate a heads-up they can act on; the .txt gives them one in a form they can take straight to the people who can address it. When more than one prospect shares these reports with the same vendor, they're more likely to prioritize the issues raised.</p>
 
   <h2>What this checks</h2>
 
-  <p>The audit covers SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS configuration, HSTS, HTTP/2 and HTTP/3 support, security headers, cookie attributes, EOL libraries and operating systems, and more — about 60 scored checks against published standards.</p>
+  <p>The audit covers SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS configuration, HSTS, HTTP/2 and HTTP/3 support, security headers, cookie attributes, end-of-life libraries and operating systems, and more — about 60 scored checks against published standards.</p>
 
-  <p>This service is passive: it reads what the domain voluntarily publishes (DNS, HTTPS GET, public APIs). It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, deep-mode checks, SSL Labs integration, and bulk audits.</p>
+  <p>This service is passive: it reads what the domain voluntarily publishes (DNS, a single HTTPS GET, public APIs). It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, SSL Labs integration, and bulk audits.</p>
 </section>
 
-<p class="privacy"><strong>Privacy.</strong> Visitor IP and submitted domain logged for 30 days for abuse prevention. Audit results are not retained. No cookies, no analytics, no trackers, no data sold or shared. Cloudflare privacy policy applies to traffic in transit.</p>
+<p class="privacy"><strong>Privacy.</strong> Visitor IP and submitted domain are logged for 30 days for abuse prevention. Audit results are not retained. No cookies, no analytics, no trackers, no data sold or shared. Cloudflare's privacy policy applies to traffic in transit.</p>
 
 <footer>
   Vendor Audit

@@ -199,6 +199,318 @@ _CERT_ISSUER_EXPANSIONS = {
 }
 
 
+# ── Criticality ranking for the executive summary ─────────────────────────────
+#
+# The Possible Issues block in the executive summary is a flat priority list:
+# the most consequential findings first, regardless of category. Items not in
+# this map fall back to a default rank (placed after all named items, in their
+# original rubric order). EOL OS and EOL libraries don't appear here as fixed
+# labels because their actual labels include the OS/library name (e.g.
+# "EOL OS: centos 7"); they're handled by a label-prefix check in the sort
+# key — see _criticality_rank() below.
+#
+# Lower number = higher priority. Spread out so future inserts have room.
+_CRITICALITY_RANK_TABLE = {
+    # ── Tier 1: domain takeover / direct compromise ─────────────────────
+    # EOL OS is handled separately (rank 5) by the prefix check in
+    # _criticality_rank, since the label embeds the OS name.
+    "SPF policy":                   10,   # +all = anyone can spoof
+    "DMARC present":                12,   # no DMARC = no enforcement
+    "DMARC policy":                 13,   # p=none = no enforcement
+    "TLS connection":               15,   # TLS broken = users can't reach site safely
+    "Certificate name match":       16,
+    "DNSSEC AD flag":               18,   # validation chain broken
+
+    # ── Tier 2: enables phishing / MITM / takeover ──────────────────────
+    "DMARC pct":                    25,
+    "DMARC sp":                     26,
+    "DMARC rua reporting":          27,
+    "SPF lookup count":             28,
+    "SPF redirect":                 29,
+    "HSTS present":                 30,
+    "HSTS includeSubDomains":       32,
+    "HSTS max-age strength":        33,
+    "HSTS preloaded":               34,
+    "MTA-STS":                      36,
+    "TLS-RPT":                      37,
+    "DANE TLSA on MX":              38,
+    "STARTTLS-MX":                  39,
+    "CAA records":                  42,   # any CA can issue for the domain
+    "DNSSEC TLD signed":            43,
+    "DNSSEC DNSKEY":                44,
+    "Cert chain completeness":      45,
+    "Cert covers www variant":      46,
+    "Certificate lifetime":         47,
+    "DKIM key strength":            48,
+
+    # ── Tier 3: defence-in-depth / hardening ────────────────────────────
+    "TLS 1.3":                      55,
+    "HTTP→HTTPS redirect":          56,
+    "CSP":                          58,
+    "CSP script-src safety":        59,
+    "CSP object-src":               60,
+    "CSP base-uri":                 61,
+    "CSP frame-ancestors":          62,
+    "CSP enforcement mode":         63,
+    "X-Frame-Options":              65,
+    "X-Content-Type-Options":       66,
+    "Subresource Integrity":        67,
+    "Mixed content (in-page)":      68,
+    "CORS configuration":           70,
+    "Default error page":           71,
+    "Server header":                72,
+    "X-Powered-By absent":          73,
+    "Server clock accuracy":        74,
+    "Cookie Secure":                75,
+    "Cookie HttpOnly":              76,
+    "Cookie SameSite":              77,
+    "Cookie name prefixes":         78,
+
+    # ── Tier 4: best-practice / informational signals ───────────────────
+    "Referrer-Policy":              85,
+    "Permissions-Policy":           86,
+    "Cross-Origin-Opener-Policy":   87,
+    "Cross-Origin-Resource-Policy": 88,
+    "X-XSS-Protection deprecated":  89,
+    "Reporting endpoints":          90,
+    "security.txt":                 92,
+
+    # ── Tier 5: routing / availability — important but rarely a vendor's
+    # most pressing issue when other things are also wrong ──────────────
+    "IPv4 RPKI":                    95,
+    "IPv6 RPKI":                    96,
+    "IPv4 IRR/RIS":                 97,
+    "IPv6 IRR/RIS":                 98,
+    "IPv6":                        100,
+    "Nameserver count":            102,
+    "MX records":                  103,
+    "HTTP version":                105,
+    "Redirect first-hop hygiene":  106,
+}
+
+# Default rank for any label not in the table — sorts after everything named.
+_CRITICALITY_DEFAULT_RANK = 500
+
+
+def _criticality_rank(label):
+    """Return the criticality rank for a finding label.
+
+    EOL OS is given a top-tier rank (5) by prefix match, since its labels
+    embed the OS name (e.g. "EOL OS: centos 7"). EOL libraries get a
+    second-tier rank (50) — significant but rarely as urgent as an
+    EOL operating system.
+    """
+    if not label:
+        return _CRITICALITY_DEFAULT_RANK
+    if label.startswith("EOL OS:"):
+        return 5
+    if label.startswith("EOL library:"):
+        return 50
+    return _CRITICALITY_RANK_TABLE.get(label, _CRITICALITY_DEFAULT_RANK)
+
+
+# ── Subsection explanations (shown in detail sections) ────────────────────────
+#
+# Internet.nl-style "what / why / fix" copy attached to each subsection. Read
+# by the txt renderer (injected after the _subheading line) and by the HTML
+# renderer (rendered as a small explanation panel under the section summary).
+#
+# Keys are stable identifiers used by the renderers. Each entry has:
+#   what  — one sentence: what this control is.
+#   why   — one sentence: why a vendor should care.
+#   fix   — one sentence: what to do if it's missing or weak.
+# Keep each line under ~140 characters so they wrap cleanly in the 100-col
+# txt report and don't require a second wrap on a typical browser width.
+EXPLANATIONS = {
+    "spf": {
+        "what": "SPF is a DNS record that lists which mail servers are allowed to send email using your domain.",
+        "why":  "Without enforcement, anyone can spoof your domain in phishing emails — recipients can't tell a forgery from a real message.",
+        "fix":  "Publish a v=spf1 record listing your senders and end with -all (hard fail) so receivers reject unauthorised mail.",
+    },
+    "dmarc": {
+        "what": "DMARC tells receiving mail servers what to do when an email claiming to be from your domain fails SPF or DKIM checks.",
+        "why":  "Without DMARC at p=reject, attackers can spoof your domain in phishing campaigns — DMARC is the only control that actually stops it.",
+        "fix":  "Publish a DMARC record with p=reject, pct=100, and a rua= reporting address so you also get visibility into spoofing attempts.",
+    },
+    "dkim": {
+        "what": "DKIM adds a cryptographic signature to outgoing mail so receivers can verify the message was authorised by your domain.",
+        "why":  "DKIM is one of the two pillars (with SPF) that DMARC relies on — without it, legitimate forwarded mail tends to fail authentication.",
+        "fix":  "Generate a DKIM key with your mail provider and publish the public key as a DNS TXT record at <selector>._domainkey.<domain>.",
+    },
+    "mta_sts": {
+        "what": "MTA-STS publishes a policy telling sending mail servers they must use TLS when delivering mail to your domain.",
+        "why":  "Without it, an attacker between mail servers can downgrade the connection to plaintext (STARTTLS stripping) and read or alter messages.",
+        "fix":  "Publish a TXT record at _mta-sts.<domain> and host an MTA-STS policy file at https://mta-sts.<domain>/.well-known/mta-sts.txt with mode=enforce.",
+    },
+    "tls_rpt": {
+        "what": "TLS-RPT (SMTP TLS Reporting) gives your domain visibility into mail-delivery TLS failures observed by receiving servers.",
+        "why":  "Without TLS-RPT, you can't tell if MTA-STS is being honoured or if downgrade attacks are happening — you're operating blind.",
+        "fix":  "Publish a TXT record at _smtp._tls.<domain> with v=TLSRPTv1; rua=mailto:<reporting-address>.",
+    },
+    "mail_transport": {
+        "what": "Mail-transport hardening (MTA-STS, TLS-RPT, DKIM, DANE, STARTTLS) protects email in transit between mail servers.",
+        "why":  "Without these, mail can be intercepted in plaintext, signatures can be stripped, and downgrade attacks are undetectable.",
+        "fix":  "Publish MTA-STS in enforce mode, a TLS-RPT reporting endpoint, and a DKIM signing key; use a mail provider that supports DANE if possible.",
+    },
+    "dnssec": {
+        "what": "DNSSEC cryptographically signs your DNS records so resolvers can verify they haven't been tampered with in transit.",
+        "why":  "Without DNSSEC, an attacker on the network path can poison DNS responses and redirect users to attacker-controlled servers.",
+        "fix":  "Enable DNSSEC at your registrar and DNS provider; both must support it and the chain must be published to the parent zone.",
+    },
+    "caa": {
+        "what": "CAA records tell certificate authorities which CAs are allowed to issue certificates for your domain.",
+        "why":  "Without CAA, any of hundreds of trusted public CAs can issue a certificate for your domain — a single compromised CA is enough.",
+        "fix":  "Publish a CAA record listing your authorised CA(s), e.g. 0 issue \"letsencrypt.org\" and 0 issuewild \"letsencrypt.org\".",
+    },
+    "nameservers": {
+        "what": "RFC 1034 requires every domain to have at least two authoritative nameservers for redundancy.",
+        "why":  "A single nameserver is a single point of failure — if it goes down, your domain effectively disappears from the internet.",
+        "fix":  "Configure at least two nameservers, ideally on different networks; most DNS providers do this automatically.",
+    },
+    "tls": {
+        "what": "Modern TLS (1.3 preferred, 1.2 acceptable) protects all HTTPS traffic between visitors and your server.",
+        "why":  "Older TLS versions and weak ciphers leave traffic vulnerable to interception and tampering by anyone on the network path.",
+        "fix":  "Enable TLS 1.3 in your web server; disable TLS 1.0/1.1 and any cipher suites flagged by SSL Labs as weak.",
+    },
+    "hsts": {
+        "what": "HTTP Strict Transport Security tells browsers to only ever connect to your site over HTTPS, even if the user types http://.",
+        "why":  "Without HSTS, attackers can intercept the first plain-HTTP request and downgrade the user to an unencrypted session (SSL stripping).",
+        "fix":  "Send Strict-Transport-Security: max-age=63072000; includeSubDomains; preload and submit your domain to hstspreload.org.",
+    },
+    "http_redirect": {
+        "what": "Plain HTTP requests should redirect to HTTPS so users are never served content over an unencrypted channel.",
+        "why":  "Without redirect, content served over HTTP can be read or modified by anyone on the network — including injected malicious scripts.",
+        "fix":  "Configure your web server to 301-redirect all http:// URLs to their https:// equivalents.",
+    },
+    "http": {
+        "what": "This section covers HTTP transport: HTTP/2 and HTTP/3 support, plain-HTTP→HTTPS redirect, and first-hop redirect hygiene.",
+        "why":  "Modern protocols are faster and more reliable; missing HTTPS redirects let attackers serve content unencrypted; off-host first hops leak Referer and bypass HSTS.",
+        "fix":  "Enable HTTP/2 and HTTP/3 in your server or CDN, ensure http://<domain> 301-redirects directly to https://<domain> on the same host.",
+    },
+    "http_version": {
+        "what": "HTTP/2 and HTTP/3 are modern transport protocols that are faster and more efficient than HTTP/1.1.",
+        "why":  "HTTP/3 in particular improves performance on mobile networks and high-latency links; both fix head-of-line blocking from HTTP/1.1.",
+        "fix":  "Enable HTTP/2 and HTTP/3 in your web server or CDN; most modern stacks support both with a single config flag.",
+    },
+    "server_disclosure": {
+        "what": "The Server and X-Powered-By headers can reveal the exact software and version running on your server.",
+        "why":  "Disclosure helps attackers match your server to known vulnerabilities and saves them time when targeting your stack specifically.",
+        "fix":  "Configure your web server to suppress or genericise these headers (e.g. ServerTokens Prod in Apache, server_tokens off in Nginx).",
+    },
+    "csp": {
+        "what": "Content Security Policy is a header telling the browser which sources of scripts, styles, and other resources are allowed to load.",
+        "why":  "A strong CSP is the most effective defence against cross-site scripting (XSS) — without one, an injected script can do anything.",
+        "fix":  "Start with Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none' and tighten further; avoid 'unsafe-inline'.",
+    },
+    "security_headers": {
+        "what": "X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and Permissions-Policy harden the browser against common attack patterns.",
+        "why":  "Each closes a specific class of vulnerability: clickjacking, MIME sniffing, referrer leakage, and unauthorised feature access.",
+        "fix":  "Add all four headers in your web server config; sensible defaults are DENY, nosniff, strict-origin-when-cross-origin, and an empty Permissions-Policy.",
+    },
+    "cookies": {
+        "what": "Cookies should be marked Secure, HttpOnly, and SameSite, and ideally use the __Host- or __Secure- prefix.",
+        "why":  "Missing flags leak session cookies over HTTP, expose them to JavaScript-based theft, or allow cross-site request forgery (CSRF).",
+        "fix":  "When setting cookies, always include Secure; HttpOnly; SameSite=Lax (or Strict) and use the __Host- prefix for session cookies.",
+    },
+    "security_txt": {
+        "what": "A security.txt file at /.well-known/security.txt tells researchers how to report vulnerabilities they find on your site (RFC 9116).",
+        "why":  "Without one, well-meaning researchers struggle to find a contact and may give up — the issue stays unreported and unfixed.",
+        "fix":  "Publish a security.txt file with at least Contact: and Expires: fields; see securitytxt.org for a generator.",
+    },
+    "eol_os": {
+        "what": "An end-of-life operating system no longer receives security patches from its vendor.",
+        "why":  "Newly-discovered vulnerabilities — including remote code execution and privilege escalation — will never be fixed on this system.",
+        "fix":  "Upgrade to a supported OS version. If business constraints require staying on this version, isolate it heavily and document the risk.",
+    },
+    "eol_libraries": {
+        "what": "An end-of-life client-side library (jQuery, Bootstrap, Angular, etc.) no longer receives security or compatibility updates.",
+        "why":  "Browser environments evolve constantly; an unmaintained library is increasingly likely to break or harbour known XSS vulnerabilities.",
+        "fix":  "Upgrade to the current major version of the library, or migrate to a supported alternative.",
+    },
+    "rpki": {
+        "what": "RPKI (Route Origin Authorization) lets you cryptographically declare which Autonomous Systems are allowed to announce your IP prefixes.",
+        "why":  "Without ROAs, anyone can hijack your IP space via BGP — sending your traffic through their network and impersonating your services.",
+        "fix":  "Ask your hosting provider or RIR (ARIN/RIPE/APNIC/etc) to create ROAs covering each prefix you announce.",
+    },
+    "routing": {
+        "what": "This section covers IP-level reachability and routing security: IPv6 connectivity and RPKI Route Origin Authorizations for both IP families.",
+        "why":  "IPv6-only users can't reach IPv4-only sites, and prefixes without ROAs are vulnerable to BGP hijacks that redirect traffic to attackers.",
+        "fix":  "Add AAAA records to enable IPv6, and ask your hosting provider or RIR to publish ROAs for every prefix your AS announces.",
+    },
+    "ipv6": {
+        "what": "IPv6 connectivity makes your site reachable for the growing share of users on IPv6-only networks (mobile, enterprise, some ISPs).",
+        "why":  "IPv4 address exhaustion means more networks are deploying IPv6-only access; IPv4-only domains are simply unreachable for those users.",
+        "fix":  "Add AAAA records pointing to IPv6 addresses on your hosting; most CDNs and cloud providers offer this with a single config flag.",
+    },
+    "page_analysis": {
+        "what": "A passive read of the homepage HTML for Subresource Integrity, mixed content, third-party origins, and basic accessibility signals.",
+        "why":  "Missing SRI on third-party scripts means a CDN compromise injects code into your site; mixed content allows tampering with HTTPS pages.",
+        "fix":  "Add integrity= attributes to all <script> and <link> tags loading from third-party origins; never include http:// resources in HTTPS pages.",
+    },
+}
+
+
+def _explanation_lines_txt(key, indent="  "):
+    """Render an explanation block as a list of indented txt lines.
+
+    Returns [] if `key` isn't in EXPLANATIONS so callers can append
+    unconditionally without an existence check on every site.
+    """
+    entry = EXPLANATIONS.get(key)
+    if not entry:
+        return []
+    out = []
+    body_w = WIDTH - len(indent) - 6  # leave room for the "What:" label
+    for label, text in (("What", entry["what"]),
+                        ("Why",  entry["why"]),
+                        ("Fix",  entry["fix"])):
+        wrapped = _wrap_at_words(text, body_w)
+        # First line gets the label; continuations align under the body text.
+        if not wrapped:
+            continue
+        out.append(f"{indent}{label}: {wrapped[0]}")
+        cont_indent = indent + " " * (len(label) + 2)
+        for cont in wrapped[1:]:
+            out.append(f"{cont_indent}{cont}")
+    return out
+
+
+def _subheading_with_explanation(title, explanation_key):
+    """Shorthand: subheading line, blank, explanation block, blank.
+
+    Used by the section renderers to produce a subsection heading
+    followed immediately by the Internet.nl-style "What / Why / Fix"
+    explanation paragraph. Returns a list of strings ready to be
+    appended to the section's `parts` or `out` list.
+
+    If `explanation_key` is unknown, falls back to a bare subheading
+    + blank line so existing behaviour is preserved for sections we
+    haven't yet authored explanations for.
+    """
+    lines = [_subheading(title), ""]
+    expl = _explanation_lines_txt(explanation_key)
+    if expl:
+        lines.extend(expl)
+        lines.append("")
+    return lines
+
+
+def _section_explanation_lines(explanation_key):
+    """Render an explanation block for use right after a top-level
+    `_heading(...)` line. Returns a list of strings (the explanation
+    body and a trailing blank), or [] if the key isn't known.
+
+    Used by sections whose first subsection's explanation also serves
+    as the natural top-of-section context (e.g. Routing, where we
+    explain RPKI/IPv6 once at the top rather than twice — once per
+    address family).
+    """
+    expl = _explanation_lines_txt(explanation_key)
+    if not expl:
+        return []
+    return expl + [""]
+
+
 # ── Generic helpers ──────────────────────────────────────────────────────────
 
 def _severity_for_score(earned, possible):
@@ -870,26 +1182,24 @@ def _render_executive_summary(data):
     """Executive summary: heading + severity-grouped finding lists.
 
     Fails and warns are folded into a single "POSSIBLE ISSUES" block,
-    sorted by category. The marker symbol (✗ vs !) still distinguishes
-    severity within the list. "Not evaluated" and "Passing" stay as
-    their own separate blocks.
+    sorted by criticality (most consequential issues first, regardless
+    of category — see _CRITICALITY_RANK_TABLE). The marker symbol
+    (✗ vs !) still distinguishes severity within the list. "Not
+    evaluated" and "Passing" stay as their own separate blocks.
     """
     fails  = [r for r in data.finding_rows if r["severity"] == "fail"]
     warns  = [r for r in data.finding_rows if r["severity"] == "warn"]
     infos  = [r for r in data.finding_rows if r["severity"] == "info"]
     passes = [r for r in data.finding_rows if r["severity"] == "pass"]
 
-    # Combined Possible Issues: fails + warns sorted by category, then by
-    # severity (fail before warn within a category), then preserving the
-    # rubric order within a (category, severity) group.
-    cat_order = {c: i for i, c in enumerate(
-        ["Email", "DNS", "Routing", "TLS", "HTTP", "Website"]
-    )}
+    # Combined Possible Issues: fails + warns sorted by criticality (a flat
+    # priority list, not grouped by category — most consequential issue
+    # first, whether it's email, TLS, or website). Within the same
+    # criticality rank, fails come before warns so the sharper signal leads.
     sev_order = {"fail": 0, "warn": 1}
-
     issues = sorted(
         fails + warns,
-        key=lambda r: (cat_order.get(r["category"], 99),
+        key=lambda r: (_criticality_rank(r["label"]),
                        sev_order.get(r["severity"], 99)),
     )
 
@@ -912,8 +1222,8 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
     out = []
 
     # ── SPF ──────────────────────────────────────────────────────────────
-    out.append(_subheading(f"SPF — {domain_label} (RFC 7208)"))
-    out.append("")
+    out.extend(_subheading_with_explanation(
+        f"SPF — {domain_label} (RFC 7208)", "spf"))
     if spf:
         s = spf.get("status", "missing")
         record = spf.get("record")
@@ -984,8 +1294,8 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
     out.append("")
 
     # ── DMARC ────────────────────────────────────────────────────────────
-    out.append(_subheading(f"DMARC — {domain_label} (RFC 7489)"))
-    out.append("")
+    out.extend(_subheading_with_explanation(
+        f"DMARC — {domain_label} (RFC 7489)", "dmarc"))
     if dmarc:
         if dmarc.get("error"):
             out.append(_status("info",
@@ -1196,8 +1506,9 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
         if items:
             out.append("")
             out.append("")
-            out.append(_subheading(f"Mail transport hardening — {domain_label} (RFC 8461, 8460, 6376, 7672)"))
-            out.append("")
+            out.extend(_subheading_with_explanation(
+                f"Mail transport hardening — {domain_label} (RFC 8461, 8460, 6376, 7672)",
+                "mail_transport"))
             out.extend(items)
 
     return "\n".join(out)
@@ -1256,8 +1567,7 @@ def _render_dns_section(data):
 
     # DNSSEC
     if dnssec:
-        parts.append(_subheading("DNSSEC (RFC 4033)"))
-        parts.append("")
+        parts.extend(_subheading_with_explanation("DNSSEC (RFC 4033)", "dnssec"))
         tld_d = dnssec.get("tld", {}) or {}
         dom_d = dnssec.get("domain", {}) or {}
 
@@ -1290,8 +1600,8 @@ def _render_dns_section(data):
 
     # Nameservers / SOA
     if ns_soa:
-        parts.append(_subheading("Nameservers (RFC 1034)"))
-        parts.append("")
+        parts.extend(_subheading_with_explanation(
+            "Nameservers (RFC 1034)", "nameservers"))
         if ns_soa.get("ns_error"):
             parts.append(_status("info",
                 f"NS lookup failed: {ns_soa['ns_error']}"))
@@ -1324,8 +1634,8 @@ def _render_dns_section(data):
 
     # CAA
     if caa:
-        parts.append(_subheading("Certification Authority Authorization (CAA) (RFC 8659)"))
-        parts.append("")
+        parts.extend(_subheading_with_explanation(
+            "Certification Authority Authorization (CAA) (RFC 8659)", "caa"))
         if caa.get("error"):
             parts.append(_status("info",
                 f"CAA lookup failed: {caa['error']}"))
@@ -1363,6 +1673,7 @@ def _render_routing_section(data):
         return ""
 
     parts = ["", _heading("IP / ASN / RPKI (RFC 6480)"), ""]
+    parts.extend(_section_explanation_lines("routing"))
 
     def _af_block(af_label, af):
         addr   = af.get("address")
@@ -1449,6 +1760,7 @@ def _render_tls_section(data):
         return ""
 
     parts = ["", _heading("TLS (RFC 8446)"), ""]
+    parts.extend(_section_explanation_lines("tls"))
 
     if tls.get("error"):
         parts.append(_status("fail",
@@ -1561,6 +1873,7 @@ def _render_http_section(data):
         return ""
 
     parts = ["", _heading("HTTP (RFC 9113, 9114)"), ""]
+    parts.extend(_section_explanation_lines("http"))
 
     elapsed = redirect.get("elapsed_ms")
     if elapsed is not None:
@@ -1656,6 +1969,7 @@ def _render_hsts_section(data):
         return ""
 
     parts = ["", _heading("HSTS (RFC 6797)"), ""]
+    parts.extend(_section_explanation_lines("hsts"))
 
     if hsts.get("error"):
         parts.append(_status("info",
@@ -1714,6 +2028,7 @@ def _render_server_disclosure_section(data):
         return ""
 
     parts = ["", _heading("SERVER & TECHNOLOGY DISCLOSURE (OWASP information leakage)"), ""]
+    parts.extend(_section_explanation_lines("server_disclosure"))
 
     if srv.get("error"):
         parts.append("    Site unreachable. Server and security headers cannot be evaluated.")
@@ -1769,8 +2084,8 @@ def _render_server_disclosure_section(data):
     if os_findings or tls_old_stack or os_eol.get("error"):
         parts.append("")
         parts.append("")
-        parts.append(_subheading("Operating system inference"))
-        parts.append("")
+        parts.extend(_subheading_with_explanation(
+            "Operating system inference", "eol_os"))
         if os_eol.get("error"):
             parts.append(_status("info",
                 f"OS detection error: {os_eol['error']}"))
@@ -1840,6 +2155,7 @@ def _render_versioned_libraries_section(data):
         return ""
 
     parts = ["", _heading("VERSIONED LIBRARIES (OWASP A06:2021 — vulnerable & outdated components)"), ""]
+    parts.extend(_section_explanation_lines("eol_libraries"))
     parts.append(
         f"  {len(vlibs)} client-side librar"
         f"{'y' if len(vlibs)==1 else 'ies'} detected in static HTML."
@@ -1881,6 +2197,7 @@ def _render_browser_security_headers_section(data):
         return ""
 
     parts = ["", _heading("BROWSER SECURITY HEADERS (W3C / OWASP secure-headers)"), ""]
+    parts.extend(_section_explanation_lines("security_headers"))
 
     csp_q      = srv.get("csp_quality")
     csp_a      = r.get("csp_analysis", {}) or {}
@@ -2110,6 +2427,7 @@ def _render_security_txt_section(data):
         return ""
 
     parts = ["", _heading("SECURITY CONTACT (RFC 9116)"), ""]
+    parts.extend(_section_explanation_lines("security_txt"))
 
     if sectxt.get("error"):
         parts.append(_status("info",
@@ -2324,6 +2642,7 @@ def _render_page_analysis_section(data):
 
     redirect = r.get("redirect", {}) or {}
     parts = ["", _heading("PAGE ANALYSIS (--deep) (W3C SRI, W3C Mixed Content, WCAG 2.1)"), ""]
+    parts.extend(_section_explanation_lines("page_analysis"))
 
     cap_used = redirect.get("body_cap_used") or 262144
     cap_str  = (f"{cap_used // (1024 * 1024)}MB" if cap_used >= 1048576

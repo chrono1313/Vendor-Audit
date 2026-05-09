@@ -88,12 +88,12 @@ _LOGO_SVG = (
     'representing domain posture inspection.</desc>'
     '<circle cx="40" cy="40" r="28" fill="none" stroke="currentColor" stroke-width="3"/>'
     '<line x1="60" y1="60" x2="82" y2="82" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>'
-    '<line x1="32" y1="38" x2="46" y2="34" stroke="#5fa3ff" stroke-width="1"/>'
-    '<line x1="46" y1="34" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>'
-    '<line x1="32" y1="38" x2="50" y2="48" stroke="#5fa3ff" stroke-width="1"/>'
-    '<circle cx="32" cy="38" r="3" fill="#5fa3ff"/>'
-    '<circle cx="46" cy="34" r="3" fill="#5fa3ff"/>'
-    '<circle cx="50" cy="48" r="3" fill="#5fa3ff"/>'
+    '<line x1="32" y1="38" x2="46" y2="34" stroke="#7eb6ff" stroke-width="1"/>'
+    '<line x1="46" y1="34" x2="50" y2="48" stroke="#7eb6ff" stroke-width="1"/>'
+    '<line x1="32" y1="38" x2="50" y2="48" stroke="#7eb6ff" stroke-width="1"/>'
+    '<circle cx="32" cy="38" r="3" fill="#7eb6ff"/>'
+    '<circle cx="46" cy="34" r="3" fill="#7eb6ff"/>'
+    '<circle cx="50" cy="48" r="3" fill="#7eb6ff"/>'
     '</svg>'
 )
 
@@ -333,11 +333,15 @@ def _render_executive_summary_html(data):
     """Severity-grouped finding rows. Reads data._finding_rows directly.
 
     Each row is a (severity, category, display_text, earned, possible)
-    tuple. We group fail+warn into "Possible Issues", show info, and
-    show passes expanded — passes are evidence the vendor is doing the
-    right thing, and the report's value to a vendor is in seeing what
-    they got right alongside what needs work. Informational stays
-    collapsed by default since it's the lowest-signal group.
+    tuple. We group fail+warn into "Possible Issues" sorted by
+    criticality (most consequential first, regardless of category —
+    see audit_txt_report._CRITICALITY_RANK_TABLE), show info, and
+    show passes expanded — passes are evidence the vendor is doing
+    the right thing, and the report's value to a vendor is in seeing
+    what they got right alongside what needs work. Informational is
+    auto-expanded too: at the executive-summary level it's typically
+    a small list, and leaving it collapsed makes the page feel like
+    it's hiding things.
     """
     rows = getattr(data, 'finding_rows', None)
     if rows is None:
@@ -352,15 +356,22 @@ def _render_executive_summary_html(data):
         if sev in by_sev:
             by_sev[sev].append(r)
 
+    # Sort possible issues by criticality, then severity within same rank.
+    sev_order = {"fail": 0, "warn": 1}
+    issues = sorted(
+        by_sev["fail"] + by_sev["warn"],
+        key=lambda r: (audit_txt_report._criticality_rank(r.get("label", "")),
+                       sev_order.get(r.get("severity"), 99)),
+    )
+
     out = ['<section class="exec-summary" aria-label="Executive summary">']
     out.append('  <h2>Findings</h2>')
 
-    issues = by_sev["fail"] + by_sev["warn"]
     if issues:
         out.append(_findings_block_html("Possible Issues", issues, open_=True))
     if by_sev["info"]:
         out.append(_findings_block_html("Informational", by_sev["info"],
-                                        open_=False))
+                                        open_=True))
     if by_sev["pass"]:
         out.append(_findings_block_html(
             "Passing", by_sev["pass"], open_=True,
@@ -466,6 +477,19 @@ _RE_FINDING_LINE = re.compile(
     r"^(?P<indent>\s+)(?P<marker>[✓!✗·])\s+(?P<message>.*)$"
 )
 
+# Explanation lines, emitted by audit_txt_report._explanation_lines_txt:
+#   "  What: <body>"
+#   "  Why:  <body>"
+#   "  Fix:  <body>"
+# Continuation lines align under the body text:
+#   "        more body"
+# We detect the labelled lead line; the parser then greedily absorbs
+# the continuation lines that are deeper-indented but not finding lines.
+_RE_EXPLANATION_LEAD = re.compile(
+    r"^  (?P<label>What|Why|Fix):\s+(?P<body>.+)$"
+)
+_EXPLANATION_LABELS = {"What", "Why", "Fix"}
+
 # Headings: the txt renderer wraps headings in horizontal rule lines.
 # Heavy rule (═) marks top-level section headings; light rule (─) marks
 # subheadings. The line ABOVE the rule is the heading text. The bottom
@@ -506,37 +530,60 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
         # renderer's center-padding (it pads section titles to 100 cols)
         # bleeds through as runs of leading whitespace. Strip it here —
         # heading text in HTML doesn't want column-aligned padding.
+        #
+        # The txt module uses ═ (RULE_HEAVY) only for the document banner
+        # at the top and bottom of the report. Section headings ("EMAIL",
+        # "DNS", "TLS", etc.) all use ─ (RULE_LIGHT) — see
+        # audit_txt_report._heading. So `suppress_first_heading` (which
+        # drops the redundant top-of-section title because the <summary>
+        # already names the section) keys to the LIGHT rule.
         if stripped and all(ch == _RULE_HEAVY_CHAR for ch in stripped):
             close_findings()
             if pending_heading:
-                if suppress_first_heading and not h3_emitted:
-                    # Drop the redundant top-level heading; <summary>
-                    # already serves this role for detail sections.
-                    pass
-                else:
-                    out.append(
-                        f'<h3 class="section-heading">'
-                        f'{_h(pending_heading.strip())}</h3>'
-                    )
-                h3_emitted = True
+                out.append(
+                    f'<h3 class="section-heading">'
+                    f'{_h(pending_heading.strip())}</h3>'
+                )
                 pending_heading = None
             i += 1
             continue
         if stripped and all(ch == _RULE_LIGHT_CHAR for ch in stripped):
             close_findings()
             if pending_heading:
-                out.append(
-                    f'<h4 class="section-subheading">'
-                    f'{_h(pending_heading.strip())}</h4>'
-                )
+                if suppress_first_heading and not h3_emitted:
+                    # Drop the redundant top-of-section heading; the
+                    # detail-section <summary> already names the section
+                    # (Email / DNS / TLS / etc.) so emitting another
+                    # <h4> would just duplicate the label.
+                    pass
+                else:
+                    out.append(
+                        f'<h4 class="section-subheading">'
+                        f'{_h(pending_heading.strip())}</h4>'
+                    )
+                h3_emitted = True
                 pending_heading = None
             i += 1
             continue
 
-        # Blank line — flushes any pending heading candidate.
+        # Blank line — usually flushes any pending heading candidate as
+        # a plain paragraph. Exception: if the next non-blank line is an
+        # explanation lead (What:/Why:/Fix:), keep the pending heading
+        # so the explanation handler can promote it to <h4>. Without
+        # this peek, a "subheading\n\nexplanation" sequence would render
+        # the subheading as a generic <p> and lose the heading semantics.
         if not stripped:
             close_findings()
             if pending_heading:
+                # Peek for explanation lead in the upcoming non-blank lines.
+                k = i + 1
+                while k < len(lines) and not lines[k].strip():
+                    k += 1
+                if k < len(lines) and _RE_EXPLANATION_LEAD.match(lines[k]):
+                    # Hold the pending heading; the explanation handler
+                    # will consume it. Skip past the blanks.
+                    i = k
+                    continue
                 out.append(f'<p>{_h(pending_heading)}</p>')
                 pending_heading = None
             i += 1
@@ -588,6 +635,63 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
             i = j
             continue
 
+        # Explanation line (What: / Why: / Fix:). When detected, absorb any
+        # deeper-indented continuation lines that immediately follow (the
+        # txt renderer wraps long explanations to align under the body
+        # text). Render as a single <p class="expl-line"> so the CSS can
+        # style it as advisory copy distinct from raw values.
+        em = _RE_EXPLANATION_LEAD.match(line)
+        if em:
+            close_findings()
+            if pending_heading:
+                # The pending line is the subsection heading that
+                # introduces this explanation block (e.g. "SPF —
+                # example.com (RFC 7208)"). The txt renderer doesn't
+                # rule-decorate subheadings that have explanations
+                # underneath — the explanation is the visual cue. So we
+                # promote the pending line to <h4> here instead of
+                # flushing it as a raw paragraph; the result is a proper
+                # heading element that screen readers and CSS can target.
+                out.append(
+                    f'<h4 class="section-subheading">'
+                    f'{_h(pending_heading.strip())}</h4>'
+                )
+                pending_heading = None
+            label = em.group("label")
+            body_parts = [em.group("body").rstrip()]
+            j = i + 1
+            # Continuation lines: deeper-indented than 2 spaces, not a
+            # finding marker, not a rule, not blank, not another
+            # explanation lead. Stop at any of those.
+            while j < len(lines):
+                nxt = lines[j]
+                if not nxt.strip():
+                    break
+                if _RE_FINDING_LINE.match(nxt):
+                    break
+                if _RE_EXPLANATION_LEAD.match(nxt):
+                    break
+                stripped_nxt = nxt.strip()
+                if all(ch == _RULE_HEAVY_CHAR for ch in stripped_nxt) or \
+                   all(ch == _RULE_LIGHT_CHAR for ch in stripped_nxt):
+                    break
+                # Continuation lines are indented beyond 2 spaces (the
+                # body sits at column 8 — see _explanation_lines_txt).
+                # Anything indented less than that isn't a continuation.
+                lead_ws = len(nxt) - len(nxt.lstrip(" "))
+                if lead_ws < 4:
+                    break
+                body_parts.append(stripped_nxt)
+                j += 1
+            full_body = " ".join(body_parts)
+            out.append(
+                f'<p class="expl-line">'
+                f'<strong>{_h(label)}</strong>'
+                f'{_h(full_body)}</p>'
+            )
+            i = j
+            continue
+
         # Generic non-marker, non-blank, non-rule line. Could be a heading
         # candidate (followed by a rule) or a raw value or a plain note.
         # We hold it as a "pending heading" — if the next line is a rule,
@@ -622,25 +726,31 @@ def _render_action_bar_html(data, domain):
     after the report, not before it. The version line is also omitted up
     top; one footer is enough for that.
     """
+    deep = bool(data.results.get("_scan", {}).get("deep", False))
+    txt_href = f"/audit/{_h(domain)}.txt"
+    if deep:
+        txt_href += "?deep=1"
+
     out = ['<aside class="top-action-bar">']
     out.append('  <div class="footer-actions">')
     out.append(
-        f'    <a class="download-link" href="/audit/{_h(domain)}.txt" '
+        f'    <a class="download-link" href="{txt_href}" '
         f'download>Download as .txt</a>'
     )
     # Re-audit re-runs against the same domain. Done as a real <form>
     # GET to /audit (not /audit/result directly) so the user sees the
     # loading page during the 3-5s re-audit. /audit forwards the fresh
     # flag through to /audit/result, which bypasses the cache and runs
-    # a fresh audit. Without the loading page, a re-audit click on a
-    # cache-hit page leaves the user staring at the old page with no
-    # feedback that anything is happening.
-    # Styled as a link via .as-link so it matches the surrounding
-    # action-bar items visually.
+    # a fresh audit. The deep flag is preserved so a re-audit of a
+    # deep result stays a deep result; without this the user would
+    # silently switch to a faster, shallower audit on re-audit.
+    deep_input = ('<input type="hidden" name="deep" value="1">'
+                  if deep else "")
     out.append(
         f'    <form class="reaudit-form" method="get" action="/audit">'
         f'<input type="hidden" name="domain" value="{_h(domain)}">'
         f'<input type="hidden" name="fresh" value="1">'
+        f'{deep_input}'
         f'<button type="submit" class="as-link">Re-audit this domain</button>'
         f'</form>'
     )
@@ -658,16 +768,24 @@ def _render_footer_html(data, domain):
         key=lambda kv: -kv[1],
     )[:5]
 
+    deep = bool(data.results.get("_scan", {}).get("deep", False))
+    txt_href = f"/audit/{_h(domain)}.txt"
+    if deep:
+        txt_href += "?deep=1"
+    deep_input = ('<input type="hidden" name="deep" value="1">'
+                  if deep else "")
+
     out = ['<footer class="report-footer">']
     out.append('  <div class="footer-actions">')
     out.append(
-        f'    <a class="download-link" href="/audit/{_h(domain)}.txt" '
+        f'    <a class="download-link" href="{txt_href}" '
         f'download>Download as .txt</a>'
     )
     out.append(
         f'    <form class="reaudit-form" method="get" action="/audit">'
         f'<input type="hidden" name="domain" value="{_h(domain)}">'
         f'<input type="hidden" name="fresh" value="1">'
+        f'{deep_input}'
         f'<button type="submit" class="as-link">Re-audit this domain</button>'
         f'</form>'
     )
@@ -735,27 +853,51 @@ _DOC_HEAD = """<!doctype html>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 :root {
-  --bg: rgb(40, 40, 38);          /* warm dark — the requested page bg */
-  --panel: rgb(48, 48, 45);       /* one step lighter than bg for cards */
-  --fg: #ececea;                  /* primary text, warm off-white */
-  --muted: #999;                  /* secondary text */
-  --border: #4a4a47;              /* subtle dividers — just lighter than bg */
-  --accent: #5fa3ff;              /* links, brighter than light-mode for contrast */
-  --pass: #4ade80;
-  --pass-bg: #1a3a22;
-  --warn: #fbbf24;
-  --warn-bg: #3a2e0e;
-  --fail: #f87171;
-  --fail-bg: #3a1a1a;
-  --info: #999;
-  --info-bg: #38383a;
+  /* ── Palette ──────────────────────────────────────────────────────────
+     Neutral, warm-dark, professional. The previous palette had three
+     near-identical grays and a #999 muted text that fell below WCAG AA
+     against the page background. This pass:
+       - lifts muted text to #bdbdba (~6.6:1) so secondary copy reads
+         comfortably at body sizes,
+       - keeps primary text at a soft off-white (#ececea) instead of pure
+         white (avoids the harsh-on-eyes effect of #fff on dark),
+       - settles on a single panel color (--surface) instead of multiple
+         near-identical shades that just looked like banding,
+       - uses a distinct hover surface (--surface-hover) so interactive
+         affordances are obvious without needing animation. */
+  --bg:           rgb(34, 34, 33);     /* page background, slightly deeper */
+  --surface:      rgb(44, 44, 42);     /* panels and cards */
+  --surface-2:    rgb(52, 52, 49);     /* nested elements (raw values, sub) */
+  --surface-hover: rgb(56, 56, 53);    /* hover state on summary rows */
+  --fg:           #ededeb;             /* primary text, ~14.5:1 on --bg */
+  --muted:        #bdbdba;             /* secondary text, ~6.6:1 on --bg */
+  --muted-soft:   #98968f;             /* tertiary, only for non-text uses */
+  --border:       #57574f;             /* visible dividers */
+  --border-soft:  #3e3e3a;             /* subtle dividers within panels */
+  --accent:       #7eb6ff;             /* links / focus, brighter for contrast */
+  --accent-hover: #a3cbff;
+  --pass:         #4ade80;
+  --pass-bg:      #1a3a22;
+  --warn:         #fbbf24;
+  --warn-bg:      #3a2e0e;
+  --fail:         #f87171;
+  --fail-bg:      #3a1a1a;
+  --info:         #bdbdba;
+  --info-bg:      #38383a;
 }
 * { box-sizing: border-box; }
 body {
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: var(--fg);
   background: var(--bg);
   margin: 0;
+  /* Subtle baseline so dark themes don't look completely flat. The
+     gradient is invisible to most viewers — it just gives the page a
+     little vertical depth. */
+  background-image: linear-gradient(180deg, rgb(36, 36, 35) 0%, rgb(33, 33, 32) 100%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 .report {
   max-width: 920px;
@@ -769,9 +911,6 @@ body {
   text-align: center;
 }
 .brand-link {
-  /* The logo + brand are wrapped in a link to "/" so users can return to
-     the form without using the back button. We undo the default link
-     coloring here so it doesn't paint the logo blue and the wordmark blue. */
   display: inline-block;
   color: inherit;
   text-decoration: none;
@@ -782,7 +921,7 @@ body {
   width: 48px;
   height: 48px;
   margin: 0 auto 0.5rem;
-  color: var(--fg);  /* drives the magnifying-glass outline via currentColor */
+  color: var(--fg);
 }
 .logo svg { display: block; width: 100%; height: 100%; }
 .brand {
@@ -795,27 +934,35 @@ body {
 .domain {
   font: 1.6rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
   margin: 0 0 0.4rem;
+  color: var(--fg);
   word-break: break-all;
 }
 .scan-meta {
-  /* Override the default left-aligned scan-meta to keep the centered look. */
   display: flex;
   justify-content: center;
   gap: 1.2rem;
+  margin-top: 0.6rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.scan-meta .flag {
+  font-family: ui-monospace, monospace;
+  color: var(--warn);
+}
+.scan-age {
+  font-style: italic;
+  opacity: 0.9;
 }
 .redirect-notice {
   background: var(--warn-bg);
   color: var(--warn);
-  padding: 0.45rem 0.8rem;
+  padding: 0.5rem 0.85rem;
   margin: 0.6rem 0 0;
   border-left: 3px solid var(--warn);
-  border-radius: 0 3px 3px 0;
+  border-radius: 0 4px 4px 0;
   font-size: 0.92rem;
 }
-/* Partial-audit banner shown when run_audit hits its wall-clock
-   deadline. Higher visibility than the redirect notice — it's a
-   warning that the report below is incomplete, and the user should
-   know that before they share or score it. */
+.redirect-notice strong { font-family: ui-monospace, monospace; }
 .partial-banner {
   background: var(--fail-bg);
   color: var(--fail);
@@ -829,33 +976,13 @@ body {
   font-weight: 600;
   margin-right: 0.4rem;
 }
-.redirect-notice strong { font-family: ui-monospace, monospace; }
-/* .scan-meta layout is centered (see header block above); these are the
-   color/typography rules. */
-.scan-meta {
-  margin-top: 0.6rem;
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-.scan-meta .flag {
-  font-family: ui-monospace, monospace;
-  color: var(--warn);
-}
-/* The "scanned N minutes/hours ago" text is supplementary metadata
-   alongside the absolute UTC timestamp. Slightly muted and italic so
-   it reads as a secondary label rather than competing with the
-   timestamp itself. */
-.scan-age {
-  font-style: italic;
-  opacity: 0.85;
-}
 
 /* ── Score panel ──────────────────────────────────────────────────────── */
 .score-panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 1rem 1.2rem;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 1.1rem 1.3rem;
   margin-bottom: 1.4rem;
 }
 .score-row {
@@ -869,11 +996,11 @@ body {
   font-size: 1.05rem;
   font-weight: 600;
   padding-bottom: 0.7rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
   margin-bottom: 0.4rem;
 }
 .score-overall .score-label { font-size: 1.05rem; }
-.score-categories .score-row { font-size: 0.9rem; }
+.score-categories .score-row { font-size: 0.92rem; }
 .score-label { color: var(--fg); }
 .score-fraction {
   font: 0.92rem ui-monospace, monospace;
@@ -884,7 +1011,7 @@ body {
 .score-fraction .sep { padding: 0 0.1rem; }
 .score-bar {
   height: 10px;
-  background: #38383a;
+  background: rgb(60, 60, 57);
   border-radius: 5px;
   overflow: hidden;
 }
@@ -901,6 +1028,7 @@ body {
   font: 0.92rem ui-monospace, monospace;
   text-align: right;
   font-weight: 600;
+  color: var(--fg);
 }
 
 /* ── Executive summary ──────────────────────────────────────────────── */
@@ -910,22 +1038,25 @@ body {
   font-size: 1.05rem;
   margin: 0 0 0.7rem;
   letter-spacing: 0.02em;
+  color: var(--fg);
 }
 .findings-block {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
   margin-bottom: 0.6rem;
   overflow: hidden;
 }
 .findings-block summary {
   cursor: pointer;
-  padding: 0.6rem 0.9rem;
+  padding: 0.7rem 1rem;
   font-weight: 600;
   user-select: none;
-  background: var(--panel);
+  background: var(--surface);
+  color: var(--fg);
+  transition: background-color 0.12s ease;
 }
-.findings-block summary:hover { background: #3a3a37; }
+.findings-block summary:hover { background: var(--surface-hover); }
 .findings-block summary .count {
   color: var(--muted);
   font-weight: 400;
@@ -935,16 +1066,16 @@ body {
   list-style: none;
   margin: 0;
   padding: 0;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-soft);
 }
 .findings-list .finding {
   display: grid;
   grid-template-columns: 28px 80px 1fr auto;
   gap: 0.5rem;
   align-items: baseline;
-  padding: 0.4rem 0.9rem;
+  padding: 0.5rem 1rem;
   font-size: 0.92rem;
-  border-bottom: 1px solid #3a3a37;
+  border-bottom: 1px solid var(--border-soft);
 }
 .findings-list .finding:last-child { border-bottom: none; }
 .finding-marker {
@@ -955,7 +1086,7 @@ body {
 .sev-pass .finding-marker { color: var(--pass); }
 .sev-warn .finding-marker { color: var(--warn); }
 .sev-fail .finding-marker { color: var(--fail); }
-.sev-info .finding-marker { color: var(--info); }
+.sev-info .finding-marker { color: var(--muted); }
 /* Inline markers — used inside multi-attribute lines like cookie flags
    ("✓ Secure · ✗ HttpOnly · ✓ SameSite=Strict") so each attribute's
    marker takes its own color independent of the line's overall severity. */
@@ -965,11 +1096,14 @@ body {
 .m-info { color: var(--muted); }
 .finding-cat {
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
 }
-.finding-text { word-break: break-word; }
+.finding-text {
+  word-break: break-word;
+  color: var(--fg);
+}
 .finding-frac {
   font: 0.85rem ui-monospace, monospace;
   color: var(--muted);
@@ -979,35 +1113,42 @@ body {
 
 /* ── Detail sections ─────────────────────────────────────────────────── */
 .detail-section {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
   margin-bottom: 0.6rem;
   overflow: hidden;
 }
 .detail-section > summary {
   cursor: pointer;
-  padding: 0.6rem 0.9rem;
+  padding: 0.7rem 1rem;
   font-weight: 600;
   user-select: none;
   font-size: 0.95rem;
+  color: var(--fg);
+  transition: background-color 0.12s ease;
 }
-.detail-section > summary:hover { background: #3a3a37; }
+.detail-section > summary:hover { background: var(--surface-hover); }
 .detail-section[open] > summary {
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
 }
-.detail-body { padding: 0.9rem 1rem; }
+.detail-body {
+  padding: 1rem 1.1rem;
+  color: var(--fg);
+}
 .detail-body h3.section-heading {
   font-size: 0.95rem;
   margin: 0.6rem 0 0.4rem;
   letter-spacing: 0.02em;
+  color: var(--fg);
 }
 .detail-body h4.section-subheading {
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   color: var(--muted);
-  margin: 1rem 0 0.4rem;
+  margin: 1.1rem 0 0.5rem;
+  font-weight: 600;
 }
 .detail-body h3.section-heading:first-child,
 .detail-body h4.section-subheading:first-child { margin-top: 0; }
@@ -1028,20 +1169,47 @@ body {
   grid-template-columns: 24px 1fr;
   gap: 0.5rem;
   align-items: baseline;
-  padding: 0.25rem 0;
+  padding: 0.3rem 0;
   font-size: 0.92rem;
   border: none;
+  color: var(--fg);
 }
 .detail-body .finding-sub {
-  margin-top: 0.2rem;
+  margin-top: 0.25rem;
   margin-left: 0;
-  padding: 0.4rem 0.6rem;
-  background: #2c2c2a;
-  border-radius: 3px;
+  padding: 0.5rem 0.7rem;
+  background: var(--surface-2);
+  border-radius: 4px;
   font: 0.85rem ui-monospace, monospace;
+  color: var(--fg);
   word-break: break-all;
   white-space: pre-wrap;
   grid-column: 2;
+}
+/* Internet.nl-style "What / Why / Fix" explanation block. Rendered as
+   a small panel with a left accent so it reads as advisory copy
+   distinct from the actual findings below it. The text is at full
+   foreground brightness (not muted) since it's the substantive
+   explanation a vendor will read; the labels (What/Why/Fix) take
+   the muted color so they read as labels rather than competing for
+   attention with the body text. */
+.detail-body p.explanation,
+.detail-body p.expl-line {
+  font-size: 0.9rem;
+  color: var(--fg);
+  margin: 0.2rem 0;
+  line-height: 1.55;
+}
+.detail-body p.explanation strong,
+.detail-body p.expl-line strong {
+  color: var(--muted);
+  font-weight: 600;
+  margin-right: 0.3rem;
+  letter-spacing: 0.02em;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  display: inline-block;
+  min-width: 2.5rem;
 }
 .section-error {
   color: var(--fail);
@@ -1051,22 +1219,23 @@ body {
   border-radius: 3px;
 }
 
+/* ── Links ───────────────────────────────────────────────────────────── */
+a { color: var(--accent); }
+a:hover { color: var(--accent-hover); }
+
 /* ── Footer ──────────────────────────────────────────────────────────── */
 .report-footer {
   margin-top: 2rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--border-soft);
   font-size: 0.85rem;
   color: var(--muted);
 }
-/* Top action bar — same visual treatment as the footer's actions row,
-   inverted (border-bottom rather than border-top) so it reads as a divider
-   between the header and the score panel below it. */
 .top-action-bar {
   margin-bottom: 1.4rem;
-  padding-bottom: 0.8rem;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.85rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 0.88rem;
 }
 .top-action-bar .footer-actions { margin-bottom: 0; }
 .footer-actions { margin-bottom: 0.6rem; }
@@ -1075,13 +1244,13 @@ body {
   color: var(--accent);
   text-decoration: none;
 }
-.footer-actions a:hover { text-decoration: underline; }
+.footer-actions a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
 .download-link {
   font-weight: 600;
 }
-/* The re-audit form is inline so the button sits in line with the
-   surrounding link-style action items. The button itself is styled to
-   match the links so the row reads as three peers. */
 .reaudit-form {
   display: inline;
   margin: 0;
@@ -1096,15 +1265,30 @@ body {
   cursor: pointer;
   text-decoration: none;
 }
-.reaudit-form .as-link:hover { text-decoration: underline; }
+.reaudit-form .as-link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
 .footer-info span { margin-right: 1.2rem; }
 .footer-info a { color: var(--muted); }
+.footer-info a:hover { color: var(--fg); }
 .timings {
-  margin-top: 0.6rem;
+  margin-top: 0.8rem;
   font: 0.8rem ui-monospace, monospace;
+  color: var(--muted);
 }
 .timings-label { color: var(--muted); margin-right: 0.5rem; }
 .timings .timing { margin-right: 0.6rem; }
+
+/* ── Focus states ─────────────────────────────────────────────────────
+   Keyboard focus needs to be obviously visible — the default browser
+   focus ring is invisible against the dark theme on most browsers.
+   A 2px accent outline is enough without being heavy-handed. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 
 /* ── Mobile ──────────────────────────────────────────────────────────── */
 @media (max-width: 600px) {
@@ -1127,20 +1311,25 @@ body {
     grid-area: cat;
     margin-top: 0.1rem;
   }
+  .detail-body p.explanation strong,
+  .detail-body p.expl-line strong {
+    display: block;
+    margin-bottom: 0.1rem;
+  }
 }
 
 /* ── Print ───────────────────────────────────────────────────────────── */
 @media print {
-  /* Dark theme is for screens. Print reverts to a light scheme so vendors
-     can print and read the report on paper without burning toner. We
-     override the whole palette in scope here rather than redefine each
-     component. */
   :root {
     --bg: white;
-    --panel: white;
+    --surface: white;
+    --surface-2: #f5f5f3;
+    --surface-hover: white;
     --fg: #1a1a1a;
-    --muted: #555;
+    --muted: #4a4a47;
     --border: #999;
+    --border-soft: #c0c0bc;
+    --accent: #1d4ed8;
     --pass-bg: #ddf4e0;
     --warn-bg: #fef0d2;
     --fail-bg: #fdecea;

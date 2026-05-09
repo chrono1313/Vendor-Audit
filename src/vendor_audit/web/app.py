@@ -38,6 +38,7 @@ re-runs the audit; that's fine for v1 traffic.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import time
@@ -600,7 +601,7 @@ async def form_page(request: Request):
 @app.get("/audit", include_in_schema=False)
 @app.get("/audit/", include_in_schema=False)
 @limiter.limit(LIMIT_FORM)
-async def audit_get(request: Request, domain: str = "", fresh: int = 0):
+async def audit_get(request: Request, domain: str = "", fresh: int = 0, deep: int = 0):
     """GET entry point — bookmarkable / shareable URL.
 
     With no `?domain=` query param, redirects to the form page (303).
@@ -621,6 +622,12 @@ async def audit_get(request: Request, domain: str = "", fresh: int = 0):
     too — important now that re-audit always runs a fresh audit (the
     cache is 24h, so re-audit is a real 3-5s operation, not the
     sub-second cache hit it used to be when TTL was 60s).
+
+    deep=1 enables --deep-mode checks (DANE, STARTTLS-MX, page parse).
+    The form's optional checkbox sends this; it adds 3-5 seconds and
+    is opt-in to keep the default audit fast. The flag is forwarded
+    through to /audit/result and contributes to the cache key, so
+    deep and non-deep results don't poison each other's cache.
 
     Rate-limited under LIMIT_FORM (60/min) since this endpoint does no
     audit work — the actual audit happens at /audit/result, where
@@ -658,13 +665,15 @@ async def audit_get(request: Request, domain: str = "", fresh: int = 0):
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Pass the domain (and the fresh flag if set) straight through. We
+    # Pass the domain (and the fresh / deep flags if set) through. We
     # URL-encode the domain to be safe against any character that might
     # survive shape validation but confuse the URL parser.
     from urllib.parse import quote
     result_url = f"/audit/result?domain={quote(domain.strip())}"
     if fresh:
         result_url += "&fresh=1"
+    if deep:
+        result_url += "&deep=1"
     return templates.TemplateResponse(
         request=request,
         name="loading.html",
@@ -677,7 +686,7 @@ async def audit_get(request: Request, domain: str = "", fresh: int = 0):
 
 @app.get("/audit/result", include_in_schema=False)
 @limiter.limit(LIMIT_AUDIT)
-async def audit_result(request: Request, domain: str = "", fresh: int = 0):
+async def audit_result(request: Request, domain: str = "", fresh: int = 0, deep: int = 0):
     """Actual audit-running endpoint. Renders the result page.
 
     Shape: same as the old /audit GET — validate, run audit, render.
@@ -689,13 +698,20 @@ async def audit_result(request: Request, domain: str = "", fresh: int = 0):
     cache entry with the new result). The re-audit form submits with
     fresh=1 so a user explicitly asking for a fresh audit always gets
     one, not a 60-second-old cache hit.
+
+    deep=1 enables the audit's --deep-mode checks. Becomes part of the
+    cache key — a deep-mode result and a regular result for the same
+    domain are stored separately so the user always sees what they
+    asked for, not an opportunistically-cached different mode.
     """
     if not domain or not domain.strip():
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-    return await _run_audit_and_render(request, domain, fresh=bool(fresh))
+    return await _run_audit_and_render(request, domain,
+                                        fresh=bool(fresh), deep=bool(deep))
 
 
-async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = False):
+async def _run_audit_and_render(request: Request, domain: str, *,
+                                 fresh: bool = False, deep: bool = False):
     """Shared audit→render flow used by both POST and GET /audit.
 
     Returns:
@@ -709,6 +725,11 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
     fresh=True bypasses the HTML cache check; the audit runs and the
     new result is stored in the cache. fresh=False (default) returns a
     cached result if one exists, otherwise runs the audit and caches.
+
+    deep=True enables the audit's --deep-mode checks (DANE, STARTTLS-MX,
+    page parse). Deep and non-deep results are cached under separate
+    keys so a deep request never sees a non-deep cached result and
+    vice versa — they're meaningfully different audits.
     """
     # Two-stage validation: shape-only first (cheap, no I/O) so we can
     # check the cache without a DNS round-trip. Full validation with the
@@ -730,17 +751,24 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
+    # Cache key includes the deep flag so deep and non-deep audits don't
+    # share a slot. A "::deep" suffix on the deep variant is short and
+    # leaves human-friendly cache keys for the regular case.
+    cache_key = shape_only.domain + ("::deep" if deep else "")
+
     # Cache check. Hits return instantly without burning a worker, and
     # without a DNS round-trip. Skipped when fresh=True (re-audit). The
-    # cache key is the normalized domain so 'Example.com',
-    # ' example.com ', etc. all share a cache entry. Errors are not
-    # cached (the user should retry promptly, not wait the full TTL).
+    # cache key is the normalized domain (plus optional ::deep suffix)
+    # so 'Example.com', ' example.com ', etc. share a cache entry.
+    # Errors are not cached (the user should retry promptly, not wait
+    # the full TTL).
     if not fresh:
-        cached = _result_cache_get(shape_only.domain)
+        cached = _result_cache_get(cache_key)
         if cached is not None:
             cached_html, _, _, cached_audit_ts = cached
-            log.info("audit cache hit: domain=%r ip=%s",
-                     shape_only.domain, _client_ip(request))
+            log.info("audit cache hit: domain=%r ip=%s%s",
+                     shape_only.domain, _client_ip(request),
+                     " deep=1" if deep else "")
             return HTMLResponse(content=_inject_age(cached_html, cached_audit_ts))
 
     # Cache miss (or fresh=True): full validation with DNS / SSRF guard
@@ -761,13 +789,15 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
         )
 
     log.info(
-        "audit request: original=%r normalized=%r addresses=%s ip=%s%s",
+        "audit request: original=%r normalized=%r addresses=%s ip=%s%s%s",
         validated.original, validated.domain,
         ",".join(validated.addresses), _client_ip(request),
         " fresh=1" if fresh else "",
+        " deep=1" if deep else "",
     )
 
-    envelope = await _run_audit_in_pool(request.app.state.pool, validated.domain)
+    envelope = await _run_audit_in_pool(
+        request.app.state.pool, validated.domain, deep=deep)
 
     if envelope["ok"]:
         body = render_html.render_result(envelope)
@@ -798,19 +828,23 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
             ),
         }
         # Store in cache regardless of fresh flag — fresh requests should
-        # update the cache so subsequent hits get the latest result.
-        _result_cache_set(validated.domain, body, txt, txt_headers, audit_ts)
+        # update the cache so subsequent hits get the latest result. Use
+        # the deep-aware cache_key, not the bare domain.
+        _result_cache_set(cache_key, body, txt, txt_headers, audit_ts)
 
         # On a fresh audit, redirect to the canonical URL (without
-        # fresh=1). Otherwise the browser's address bar shows the
-        # ?fresh=1 query, and any reload or shared link forces another
-        # cache-bypassing audit. The redirect strips the flag so the
-        # next hit is a normal cache lookup. The follow-up request
-        # finds the entry we just populated and serves it instantly
-        # (~tens of ms), so the extra round-trip is negligible.
+        # fresh=1, but keeping deep=1 if it was set). Otherwise the
+        # browser's address bar shows the ?fresh=1 query, and any reload
+        # or shared link forces another cache-bypassing audit. The
+        # redirect strips the fresh flag so the next hit is a normal
+        # cache lookup. The follow-up request finds the entry we just
+        # populated and serves it instantly (~tens of ms), so the extra
+        # round-trip is negligible.
         if fresh:
             from urllib.parse import quote
             canonical = f"/audit/result?domain={quote(validated.domain)}"
+            if deep:
+                canonical += "&deep=1"
             return RedirectResponse(
                 url=canonical,
                 status_code=status.HTTP_303_SEE_OTHER,
@@ -832,7 +866,7 @@ async def _run_audit_and_render(request: Request, domain: str, *, fresh: bool = 
 
 
 @app.get("/audit/{domain}.txt", response_class=PlainTextResponse)
-async def download_txt(request: Request, domain: str):
+async def download_txt(request: Request, domain: str, deep: int = 0):
     """Plain-text report. Serves from the unified result cache on hit;
     runs the audit on miss (and populates both HTML and txt entries
     so a subsequent HTML view of the same domain returns the page that
@@ -845,14 +879,17 @@ async def download_txt(request: Request, domain: str):
     serializes that work, and the per-client form-page limit catches
     obvious flooding.
 
-    Cache: shared with the HTML serve path. Same TTL, same key.
+    Cache: shared with the HTML serve path. Same TTL, same key. Deep
+    and non-deep audits use distinct cache keys so the .txt always
+    matches the HTML view that linked to it.
     Cache survives only as long as the process; restart purges it.
     """
     # Two-stage validation: shape-only first (cheap, no I/O) so a cache
     # hit doesn't pay the DNS round-trip. Same pattern as the HTML
-    # serve path. The cache key is the normalized domain produced by
-    # validation; this matches what the HTML handler uses, so a cache
-    # entry seeded by either handler is visible to the other.
+    # serve path. The cache key is the normalized domain (plus the
+    # ::deep suffix when applicable) — matches what the HTML handler
+    # uses, so a cache entry seeded by either handler is visible to
+    # the other.
     try:
         shape_only = validate_domain_input(domain, dns_check=False)
     except ValidationError as exc:
@@ -861,7 +898,9 @@ async def download_txt(request: Request, domain: str):
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    cached = _result_cache_get(shape_only.domain)
+    deep_flag = bool(deep)
+    cache_key = shape_only.domain + ("::deep" if deep_flag else "")
+    cached = _result_cache_get(cache_key)
     if cached is not None:
         _, txt, txt_headers, _ = cached
         return PlainTextResponse(content=txt, headers=txt_headers)
@@ -876,7 +915,8 @@ async def download_txt(request: Request, domain: str):
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    envelope = await _run_audit_in_pool(request.app.state.pool, validated.domain)
+    envelope = await _run_audit_in_pool(
+        request.app.state.pool, validated.domain, deep=deep_flag)
     if not envelope["ok"]:
         return PlainTextResponse(
             content=(
@@ -910,7 +950,7 @@ async def download_txt(request: Request, domain: str):
         ).timestamp()
     except (ValueError, AttributeError):
         audit_ts = time.time()
-    _result_cache_set(validated.domain, body, txt, txt_headers, audit_ts)
+    _result_cache_set(cache_key, body, txt, txt_headers, audit_ts)
     return PlainTextResponse(content=txt, headers=txt_headers)
 
 
@@ -984,11 +1024,11 @@ _FAVICON_SVG = (
     # Default text color for tab strips in dark UAs is white-ish, in
     # light UAs it's dark. Use a neutral mid-tone that reads on both —
     # we pin to the brand accent so the icon matches the site.
-    '<circle cx="40" cy="40" r="28" fill="none" stroke="#5fa3ff" stroke-width="6"/>'
-    '<line x1="60" y1="60" x2="82" y2="82" stroke="#5fa3ff" stroke-width="10" stroke-linecap="round"/>'
-    '<circle cx="32" cy="38" r="5" fill="#5fa3ff"/>'
-    '<circle cx="46" cy="34" r="5" fill="#5fa3ff"/>'
-    '<circle cx="50" cy="48" r="5" fill="#5fa3ff"/>'
+    '<circle cx="40" cy="40" r="28" fill="none" stroke="#7eb6ff" stroke-width="6"/>'
+    '<line x1="60" y1="60" x2="82" y2="82" stroke="#7eb6ff" stroke-width="10" stroke-linecap="round"/>'
+    '<circle cx="32" cy="38" r="5" fill="#7eb6ff"/>'
+    '<circle cx="46" cy="34" r="5" fill="#7eb6ff"/>'
+    '<circle cx="50" cy="48" r="5" fill="#7eb6ff"/>'
     '</svg>'
 )
 
@@ -1021,22 +1061,29 @@ async def favicon_svg():
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-async def _run_audit_in_pool(pool: ProcessPoolExecutor, domain: str) -> dict:
+async def _run_audit_in_pool(pool: ProcessPoolExecutor, domain: str,
+                              *, deep: bool = False) -> dict:
     """Submit the audit to the worker pool with a wall-clock cap.
 
     Returns the safe_run_audit envelope. On wall-clock timeout we
     synthesize a timeout envelope here rather than waiting for the worker
     to finish; the worker will eventually return its own result, but we
     don't await it.
+
+    `deep` toggles --deep-mode checks. ProcessPoolExecutor.run_in_executor
+    can't pass kwargs, so we wrap _worker_audit with functools.partial to
+    bind the deep flag before submission.
     """
     loop = asyncio.get_running_loop()
     started_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     started_mono = time.monotonic()
-    future = loop.run_in_executor(pool, _worker_audit, domain)
+    submit = functools.partial(_worker_audit, domain, deep=deep)
+    future = loop.run_in_executor(pool, submit)
     try:
         return await asyncio.wait_for(future, timeout=AUDIT_TIMEOUT_S)
     except asyncio.TimeoutError:
-        log.warning("audit timed out after %ds: domain=%r", AUDIT_TIMEOUT_S, domain)
+        log.warning("audit timed out after %ds: domain=%r%s",
+                    AUDIT_TIMEOUT_S, domain, " deep=1" if deep else "")
         # Deliberately do NOT cancel the future — ProcessPoolExecutor
         # cancellation of an already-running task isn't supported, and
         # the worker will finish its own work via internal timeouts. We
