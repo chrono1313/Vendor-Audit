@@ -1155,6 +1155,13 @@ _RESULT_JS = """\
 (function () {
   'use strict';
 
+  // Flag for diagnostics. Lets us confirm from the browser console
+  // whether the IIFE actually ran on a given page load:
+  //   window.__VENDOR_AUDIT_JS_RAN__   // -> true if this ran
+  // Useful when investigating script-execution issues (CSP, third-
+  // party tag interference, deferred-script ordering bugs).
+  try { window.__VENDOR_AUDIT_JS_RAN__ = true; } catch (e) { /* sandboxed */ }
+
   // ── Expand-all / collapse-all controls ────────────────────────────
   function setAll(open) {
     var nodes = document.querySelectorAll(

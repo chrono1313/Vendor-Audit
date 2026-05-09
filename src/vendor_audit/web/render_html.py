@@ -235,17 +235,25 @@ def render_result(envelope: dict) -> str:
     # can stay at script-src 'self' instead of needing 'unsafe-inline'
     # or a per-payload SHA hash.
     #
+    # No `defer` attribute. Earlier versions used <script ... defer>,
+    # which queues the script to run after HTML parsing but in document
+    # order with other deferred scripts on the page. Cloudflare's
+    # auto-injected analytics beacon — itself a deferred external
+    # script that Firefox's Enhanced Tracking Protection blocks at
+    # load time — was preceding ours in document order, and the
+    # failed-to-load defer script caused our defer script to never
+    # execute (Firefox quirk; the script loaded with status 200 but
+    # the IIFE never ran). Without `defer`, the script executes
+    # synchronously when the parser reaches it. We place this tag at
+    # the very end of <body> so the entire DOM (the form, the detail
+    # sections, etc.) is already parsed by the time the script runs;
+    # no DOMContentLoaded waiting needed.
+    #
     # data-cfasync="false" tells Cloudflare Rocket Loader to leave this
     # script alone. Rocket Loader rewrites <script> tags to load
-    # asynchronously through its own loader, but the loader needs
-    # 'unsafe-inline' which our CSP correctly forbids — so without
-    # this attribute, Rocket Loader hijacks the script and then can't
-    # execute it, leaving the page JS-less. The attribute is a no-op
-    # if Rocket Loader is disabled. The recommended deploy also turns
-    # Rocket Loader off in the Cloudflare dashboard for vendoraudit.org;
-    # this attribute is belt-and-suspenders insurance against future
-    # policy changes.
-    parts.append('<script src="/static/result.js" data-cfasync="false" defer></script>')
+    # asynchronously through its own loader, which would defeat the
+    # point of placing the tag at the end of body.
+    parts.append('<script src="/static/result.js" data-cfasync="false"></script>')
     parts.append('</body></html>')
     return "\n".join(parts)
 
