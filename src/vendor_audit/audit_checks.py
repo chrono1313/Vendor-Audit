@@ -46,6 +46,7 @@ import time
 import uuid
 import base64
 import socket
+import logging
 import smtplib
 import threading
 import urllib.parse
@@ -182,6 +183,11 @@ except (OSError, json.JSONDecodeError):
 
 _dns_server: str | None = None
 _http_timeout: int = 5  # default; overridden by set_http_timeout() before workers run
+
+# Module logger. Used for per-call timing instrumentation (currently just
+# RIPEstat in check_ip_routing). Lines appear in journalctl as
+# "INFO vendor_audit.audit_checks: ip_routing ...".
+log = logging.getLogger(__name__)
 
 
 def set_dns_server(server: str | None) -> None:
@@ -1248,17 +1254,37 @@ def check_ip_routing(domain):
     timeout = _http_timeout
     RETRIES = 2
 
+    # Per-call timing log. Each _ripe_get call appends a tuple of
+    # (endpoint_short_name, total_elapsed_seconds, attempts, status).
+    # status is "ok" / "error" / "retry-ok" (succeeded after retry).
+    # Read at the end of check_ip_routing for the aggregate log line.
+    timings: list[tuple[str, float, int, str]] = []
+
+    def _short_name(url):
+        # Strip the RIPESTAT base and the trailing /data.json so the
+        # log line shows just the endpoint key (e.g. "prefix-overview").
+        s = url.replace(RIPESTAT + "/", "").replace("/data.json", "")
+        return s or url
+
     def _ripe_get(url, params):
         params = dict(params)
         params.setdefault("sourceapp", SOURCEAPP)
         last_exc = None
+        attempts = 0
+        t0 = time.monotonic()
         for _ in range(RETRIES):
+            attempts += 1
             try:
                 resp = _get_client().get(url, params=params, timeout=timeout)
                 resp.raise_for_status()
+                elapsed = time.monotonic() - t0
+                status = "retry-ok" if attempts > 1 else "ok"
+                timings.append((_short_name(url), elapsed, attempts, status))
                 return resp
             except Exception as e:
                 last_exc = e
+        elapsed = time.monotonic() - t0
+        timings.append((_short_name(url), elapsed, attempts, "error"))
         raise last_exc
 
     def _empty_addr():
@@ -1376,6 +1402,24 @@ def check_ip_routing(domain):
     else:
         result["v6"] = v6_fut.result()
         result["v6"]["all_addresses"] = aaaa_records
+
+    # Per-call timing breakdown — single line, easy to grep in journalctl.
+    # Format: "ip_routing RIPEstat: <endpoint>=<elapsed>s[/<attempts>x][/error] ..."
+    # Example: "ip_routing RIPEstat: prefix-overview=0.31s prefix-overview=0.28s
+    #           rpki-validation=0.42s ris-prefixes=4.21s/2x rpki-validation=0.39s
+    #           ris-prefixes=3.88s (total=9.49s)"
+    if timings:
+        parts = []
+        for name, elapsed, attempts, status in timings:
+            tag = f"{name}={elapsed:.2f}s"
+            if attempts > 1:
+                tag += f"/{attempts}x"
+            if status == "error":
+                tag += "/error"
+            parts.append(tag)
+        total = sum(t[1] for t in timings)
+        log.info("ip_routing %s RIPEstat: %s (total=%.2fs)",
+                 domain, " ".join(parts), total)
 
     return result
 
