@@ -342,13 +342,18 @@ def _render_executive_summary_html(data):
     Each row is a (severity, category, display_text, earned, possible)
     tuple. We group fail+warn into "Possible Issues" sorted by
     criticality (most consequential first, regardless of category —
-    see audit_txt_report._CRITICALITY_RANK_TABLE), show info, and
-    show passes expanded — passes are evidence the vendor is doing
-    the right thing, and the report's value to a vendor is in seeing
-    what they got right alongside what needs work. Informational is
-    auto-expanded too: at the executive-summary level it's typically
-    a small list, and leaving it collapsed makes the page feel like
-    it's hiding things.
+    see audit_txt_report._CRITICALITY_RANK_TABLE).
+
+    Disclosure defaults:
+      - Possible Issues: open. The reason a vendor opened the report.
+      - Informational:   closed. Useful context but not actionable on
+        its own; collapsing it keeps the page short on first paint.
+      - Passing:         closed. Evidence the vendor is doing the right
+        thing — worth showing, not worth pushing in their face.
+
+    The expand-all/collapse-all controls above the Detail section don't
+    touch these blocks; they're scoped to the Detail section only.
+    These three blocks are independently clickable.
     """
     rows = getattr(data, 'finding_rows', None)
     if rows is None:
@@ -378,10 +383,10 @@ def _render_executive_summary_html(data):
         out.append(_findings_block_html("Possible Issues", issues, open_=True))
     if by_sev["info"]:
         out.append(_findings_block_html("Informational", by_sev["info"],
-                                        open_=True))
+                                        open_=False))
     if by_sev["pass"]:
         out.append(_findings_block_html(
-            "Passing", by_sev["pass"], open_=True,
+            "Passing", by_sev["pass"], open_=False,
         ))
 
     if not (issues or by_sev["info"] or by_sev["pass"]):
