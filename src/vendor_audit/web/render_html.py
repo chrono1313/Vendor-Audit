@@ -229,12 +229,23 @@ def render_result(envelope: dict) -> str:
 
     parts.append('</main>')
     # Result-page JS — only on the result page. Wires up the expand-all
-    # / collapse-all buttons on the detail-controls toolbar. Loaded as
-    # an external <script src> rather than inline so the CSP can stay
-    # at script-src 'self' instead of needing 'unsafe-inline' or a
-    # per-payload SHA hash. Cached aggressively because the file
-    # rarely changes.
-    parts.append('<script src="/static/result.js" defer></script>')
+    # / collapse-all buttons on the detail-controls toolbar and the
+    # inline-form blank-submit / same-domain-bypass-cache helpers.
+    # Loaded as an external <script src> rather than inline so the CSP
+    # can stay at script-src 'self' instead of needing 'unsafe-inline'
+    # or a per-payload SHA hash.
+    #
+    # data-cfasync="false" tells Cloudflare Rocket Loader to leave this
+    # script alone. Rocket Loader rewrites <script> tags to load
+    # asynchronously through its own loader, but the loader needs
+    # 'unsafe-inline' which our CSP correctly forbids — so without
+    # this attribute, Rocket Loader hijacks the script and then can't
+    # execute it, leaving the page JS-less. The attribute is a no-op
+    # if Rocket Loader is disabled. The recommended deploy also turns
+    # Rocket Loader off in the Cloudflare dashboard for vendoraudit.org;
+    # this attribute is belt-and-suspenders insurance against future
+    # policy changes.
+    parts.append('<script src="/static/result.js" data-cfasync="false" defer></script>')
     parts.append('</body></html>')
     return "\n".join(parts)
 
