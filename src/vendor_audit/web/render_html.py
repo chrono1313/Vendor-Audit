@@ -63,6 +63,9 @@ from ..audit_txt_report import (
     _render_versioned_libraries_section,
     _render_browser_security_headers_section,
     _render_security_txt_section,
+    _render_error_page_section,
+    _render_cors_section,
+    _render_reporting_endpoints_section,
     _render_ssl_labs_section,
     _render_page_analysis_section,
     _render_starttls_section,
@@ -159,8 +162,11 @@ _SECTION_RENDERERS = [
     ("http",          "HTTP",                  _render_http_section),
     ("hsts",          "HSTS",                  _render_hsts_section),
     ("disclosure",    "Server Disclosure",     _render_server_disclosure_section),
+    ("error_page",    "Default Error Page",    _render_error_page_section),
     ("libraries",     "Client-side Libraries", _render_versioned_libraries_section),
     ("headers",       "Security Headers",      _render_browser_security_headers_section),
+    ("cors",          "CORS",                  _render_cors_section),
+    ("reporting",     "Reporting Endpoints",   _render_reporting_endpoints_section),
     ("security_txt",  "security.txt",          _render_security_txt_section),
     ("ssl_labs",      "SSL Labs",              _render_ssl_labs_section),
     ("page_analysis", "Page Analysis",         _render_page_analysis_section),
@@ -520,6 +526,9 @@ _SECTION_LEVEL_EXPLANATION_KEY: dict[str, list[tuple[str, str]]] = {
         ("Server identification", "server_disclosure"),
         ("End-of-life operating systems", "eol_os"),
     ],
+    "error_page": [
+        ("Default error page", "error_page"),
+    ],
     "libraries": [
         ("End-of-life client-side libraries", "eol_libraries"),
     ],
@@ -527,6 +536,12 @@ _SECTION_LEVEL_EXPLANATION_KEY: dict[str, list[tuple[str, str]]] = {
         ("Browser security headers", "security_headers"),
         ("Content Security Policy",  "csp"),
         ("Cookies",                  "cookies"),
+    ],
+    "cors": [
+        ("CORS configuration", "cors"),
+    ],
+    "reporting": [
+        ("Reporting endpoints", "reporting_endpoints"),
     ],
     "security_txt": [
         ("security.txt", "security_txt"),

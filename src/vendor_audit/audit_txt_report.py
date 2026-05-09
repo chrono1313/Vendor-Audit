@@ -295,17 +295,21 @@ _CRITICALITY_DEFAULT_RANK = 500
 def _criticality_rank(label):
     """Return the criticality rank for a finding label.
 
-    EOL OS is given a top-tier rank (5) by prefix match, since its labels
-    embed the OS name (e.g. "EOL OS: centos 7"). EOL libraries get a
-    second-tier rank (50) — significant but rarely as urgent as an
-    EOL operating system.
+    EOL OS and EOL libraries both sort to the very top — both signal
+    "running unpatched software" and are usually the most consequential
+    issues a vendor has, ahead of email or TLS configuration. EOL OS
+    edges ahead (rank 5) because a kernel-level CVE on an EOL OS is
+    typically more urgent than a client-side library bug; EOL libraries
+    sit just behind at rank 8. Both ranks are above the most-critical
+    Tier 1 entries (SPF policy, DMARC, TLS connection) so EOL findings
+    always lead the Possible Issues list when present.
     """
     if not label:
         return _CRITICALITY_DEFAULT_RANK
     if label.startswith("EOL OS:"):
         return 5
     if label.startswith("EOL library:"):
-        return 50
+        return 8
     return _CRITICALITY_RANK_TABLE.get(label, _CRITICALITY_DEFAULT_RANK)
 
 
@@ -557,6 +561,39 @@ EXPLANATIONS = {
             "Vendor Audit recognises about 185 client-side libraries via static HTML inspection — script src attributes, inline version markers, well-known global object signatures. Of those, 28 have curated EOL dates (jQuery 1.x and 2.x, Bootstrap 2.x and 3.x, AngularJS, Angular versions before the current LTS, etc.). The remaining ~150 are reported with their version but not flagged as EOL — version detection is reliable, but EOL judgments require maintenance and citation.",
             "Upgrading client-side libraries is sometimes a small change (a single CDN URL update) and sometimes a months-long migration. AngularJS to Angular is the canonical hard case: different framework, complete rewrite. jQuery 1.x to 3.x is mostly mechanical but breaks in subtle ways with custom plugins. Regardless, an EOL library is a known-fragile dependency and the cost of replacement only goes up over time.",
             "If immediate upgrade is impossible, the next-best step is to add Subresource Integrity (SRI) attributes to the library's <script> tag and pin the version — at least preventing a CDN compromise from substituting a malicious version. But SRI doesn't fix vulnerabilities in the library itself; it just keeps the library you have from being silently swapped out.",
+        ],
+    },
+    "error_page": {
+        "what": "Default error pages (the built-in 404 / 500 pages from Apache, Nginx, IIS, Tomcat, etc.) reveal the server software and often its exact version.",
+        "why":  "An attacker probing your domain learns which CVE list applies and which exploits to try — for free, without ever having to send a real attack.",
+        "fix":  "Configure a custom error page in your web server. nginx: error_page 404 /custom_404.html; Apache: ErrorDocument 404 /custom_404.html; IIS: customErrors mode='On' in web.config.",
+        "details": [
+            "Web servers ship with built-in error pages so that a fresh install responds to a 404 or 500 with something rather than a blank screen. Those defaults are the immediate giveaway — Apache's footer reads 'Apache/2.4.41 (Ubuntu) Server at example.com Port 443', nginx's reads 'nginx/1.18.0 (Ubuntu)', IIS shows the version and a link to support.microsoft.com, Tomcat shows the full stack trace and version. Vendor Audit probes a randomized non-existent URL to trigger the 404 and looks for these fingerprints in the response body.",
+            "The risk isn't theoretical. Once an attacker knows you're running Apache 2.4.41 on Ubuntu, the fingerprint matches a specific package version with a public CVE list. CVE-2021-44790 (mod_lua buffer overflow), CVE-2021-44224 (request smuggling), and dozens of others are tied to specific minor versions — a default error page reveals exactly which ones apply. The same goes for nginx version-tied CVEs, IIS-specific bugs, and version-tagged Tomcat advisories.",
+            "The fix is to override the default. Every major server has a custom-error-page configuration (nginx error_page directive, Apache ErrorDocument, IIS httpErrors, Tomcat <error-page>). Pair it with suppression of the Server header (server_tokens off in nginx, ServerTokens Prod in Apache) so your custom 404 doesn't reintroduce the disclosure via headers. CDNs (Cloudflare, Fastly, Akamai) override error pages automatically when their proxies handle the response — but the origin should still be hardened in case requests bypass the CDN.",
+            "Vendor Audit distinguishes between 'default page, no version' (the operator hid the version but left the default template) and 'default page with version' (full disclosure). The former is much better than the latter, but neither is as good as a custom page. A clean check means the audit's probe got either a fully customised response or a generic 404 with no recognizable fingerprint.",
+        ],
+    },
+    "cors": {
+        "what": "Cross-Origin Resource Sharing (CORS) headers tell the browser which other origins are allowed to read responses from your site.",
+        "why":  "A misconfigured CORS policy can let a malicious site read your authenticated API responses — turning a same-origin protection into a cross-origin information leak.",
+        "fix":  "Use Access-Control-Allow-Origin: <specific origin>, never *, especially when Allow-Credentials: true is set. Avoid reflective ACAO that echoes the request's Origin header.",
+        "details": [
+            "The Same-Origin Policy (SOP) is one of the foundational web security boundaries: a script on attacker.example can't read responses from victim.example, even if the user is logged in. CORS is the explicit relaxation of that boundary — your server can send Access-Control-Allow-Origin (ACAO) headers to authorise specific other origins to read its responses. Misconfigurations turn a protection into a leak.",
+            "The dangerous patterns are well-known. ACAO: * allows any origin to read responses, which is fine for genuinely public APIs but disastrous for anything authenticated. ACAO: * combined with Access-Control-Allow-Credentials: true is so dangerous that browsers reject it at runtime — but a server that emits the combination indicates the operator believes credentialed cross-origin reads are acceptable, which they almost never are. ACAO: null trusts sandboxed iframes and other null-origin contexts, which an attacker can trigger from a page they control. Reflective ACAO (echoing whatever Origin: the client sends) is effectively the same as allowing all origins, just slower.",
+            "The right configuration is to allowlist specific origins. ACAO: https://app.example.com (one origin per response, varied per request based on a server-side allowlist). If you support multiple origins, the server inspects the request's Origin: header, checks it against an explicit allowlist, and echoes it back only on match. Add Vary: Origin so caches don't serve one origin's response to another. For credentialed cross-origin reads, also set Allow-Credentials: true — but only on responses to specific allowlisted origins, never with ACAO: *.",
+            "Vendor Audit makes a single GET against the homepage with an Origin: header and inspects the response. Findings cover the four high-risk patterns (wildcard with credentials, null, reflective, broad wildcard) and the safe baseline (no CORS headers — meaning the browser refuses cross-origin reads, which is the secure default). Sites that legitimately need CORS for their own subdomains or partners will still pass this check as long as they enumerate allowed origins rather than wildcard them.",
+        ],
+    },
+    "reporting_endpoints": {
+        "what": "The Reporting-Endpoints header (and its predecessor Report-To) names URLs where the browser can POST violation reports for CSP, network errors, deprecations, and other policies.",
+        "why":  "Without a reporting endpoint, you're flying blind — CSP violations, certificate transparency failures, and other client-side issues are invisible to you.",
+        "fix":  "Add Reporting-Endpoints: csp-endpoint=\"https://example.com/csp\" (and other named endpoints), then reference them with report-to in your CSP and other policy headers.",
+        "details": [
+            "The Reporting API (W3C) is the modern way to collect telemetry from browsers about policy violations and network failures. CSP, Cross-Origin-Opener-Policy, Document-Policy, certificate transparency expectations, and deprecation/intervention reports all flow through this single channel. Without an endpoint configured, every violation is silently discarded — you find out about CSP misconfigurations from user complaints instead of telemetry.",
+            "Two header generations exist. The legacy Report-To header (JSON-formatted, with groups and endpoints) is being phased out. The modern Reporting-Endpoints header is simpler: a structured-fields list of named URLs, e.g. Reporting-Endpoints: csp-endpoint=\"https://example.com/csp\", coop-endpoint=\"https://example.com/coop\". Other policy headers reference an endpoint by name with report-to=\"csp-endpoint\". Browsers buffer reports and POST them as JSON to the endpoint, batched on a schedule.",
+            "Setting up an endpoint is straightforward but operationally meaningful. The URL receives JSON POSTs and needs to handle bursts (a misconfigured CSP can generate thousands of reports per minute when first deployed). Common patterns are pointing at a SaaS reporting service (Report URI, Sentry's CSP reporting, etc.) or a small in-house collector that drops reports into your existing log pipeline. The endpoint should be on a domain that doesn't itself trigger the policy you're reporting on — otherwise you create a loop.",
+            "Vendor Audit checks for either header. A passing site has at least one endpoint configured; a failing site has neither and is missing the visibility loop entirely. Note that having the endpoint header is just the plumbing — the policies (CSP, COOP, etc.) still need their own report-to= directives to actually emit reports through it.",
         ],
     },
     "rpki": {
@@ -942,6 +979,20 @@ class _ReportData:
             else:  # info / 0/0
                 display = self._info_phrasing(
                     label, self._resolve_partial_label(partial_label.get(label), label))
+
+            # Reinforce the "IPv4 is the legacy protocol" framing on every
+            # finding row whose display string leads with bare "IPv4 ".
+            # The rubric's partial_label and score_label_display strings
+            # (in scoring_rubric.json) carry phrasings like "IPv4 RPKI
+            # not-found" or "IPv4 route registered in IRR" that we don't
+            # rewrite at the rubric level (rubric is the system-of-record
+            # for scoring keys; we don't modify it). Patch the displayed
+            # text instead. Only triggers on the bare-leading form so we
+            # don't double-label something that's already been qualified
+            # (e.g. "IPv4 (legacy IP) prefix has no..." from
+            # _failure_phrasing).
+            if display and display.startswith("IPv4 ") and "IPv4 (legacy IP)" not in display:
+                display = "IPv4 (legacy IP) " + display[len("IPv4 "):]
 
             rows.append({
                 "label":     label,
@@ -1845,11 +1896,16 @@ def _render_routing_section(data):
         asn_name = af.get("asn_name", "")
         rpki   = af.get("rpki_status")
 
+        # Display label for messages — "IPv4 (legacy IP)" for v4 to
+        # reinforce the messaging that IPv4 is the deprecated protocol;
+        # plain "IPv6" for v6.
+        af_display = "IPv4 (legacy IP)" if af_label == "IPv4" else af_label
+
         sub = [_subheading(_AF_LABEL_WITH_RFC.get(af_label, af_label)), ""]
 
         if not addr and af_err:
             sev = "warn" if (af_label == "IPv6" and "no AAAA" in (af_err or "")) else "info"
-            sub.append(_status(sev, f"{af_label} — {af_err}"))
+            sub.append(_status(sev, f"{af_display} — {af_err}"))
             return sub
 
         all_addrs = af.get("all_addresses") or ([addr] if addr else [])
