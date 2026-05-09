@@ -1096,6 +1096,15 @@ class _ReportData:
         per_label = {
             "DKIM (common selectors)": "DKIM key not found at common selectors (operator may use a custom selector)",
             "STARTTLS-MX":             "STARTTLS-MX could not be probed (port 25 likely blocked egress)",
+            # RIPEstat lookup failures — emitted as 0/0 rows when the
+            # prefix-overview call to RIPEstat returns an error or
+            # times out, so the row appears in the executive summary
+            # rather than silently disappearing. See score_results in
+            # audit_checks for the emission point.
+            "IPv4 RPKI":      "IPv4 RPKI check could not run (RIPEstat lookup failed)",
+            "IPv4 IRR/RIS":   "IPv4 IRR/RIS check could not run (RIPEstat lookup failed)",
+            "IPv6 RPKI":      "IPv6 RPKI check could not run (RIPEstat lookup failed)",
+            "IPv6 IRR/RIS":   "IPv6 IRR/RIS check could not run (RIPEstat lookup failed)",
         }
         if label in per_label:
             return per_label[label]

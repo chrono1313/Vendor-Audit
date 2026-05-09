@@ -1238,20 +1238,28 @@ def check_ip_routing(domain):
         the originating list. With the narrowing it's typically
         kilobytes.
       - Per-call timeout is bounded by _http_timeout (default 5s).
-        Single attempt — no retries. RIPEstat is reliable when healthy;
-        retrying on transient slowness just doubles wall time without
-        adding much success probability.
+        Two attempts per call: RIPEstat is reliable when healthy, but
+        occasional transient slowness and 5xx errors do happen, and a
+        single retry recovers most of them. Worst-case wall time per
+        call is ~2× timeout.
     """
     RIPESTAT = "https://stat.ripe.net/data"
     SOURCEAPP = "vendor-audit"
     timeout = _http_timeout
+    RETRIES = 2
 
     def _ripe_get(url, params):
         params = dict(params)
         params.setdefault("sourceapp", SOURCEAPP)
-        resp = _get_client().get(url, params=params, timeout=timeout)
-        resp.raise_for_status()
-        return resp
+        last_exc = None
+        for _ in range(RETRIES):
+            try:
+                resp = _get_client().get(url, params=params, timeout=timeout)
+                resp.raise_for_status()
+                return resp
+            except Exception as e:
+                last_exc = e
+        raise last_exc
 
     def _empty_addr():
         return {
@@ -4105,19 +4113,32 @@ def score_results(results):
         rpki4 = v4.get("rpki_status")
         if rpki4 in ("valid", "not-found", "invalid"):
             _p("IPv4 RPKI", rpki4)
-        # "error" → excluded from denominator
-
-        if rpki4 != "error" and rpki4 is not None:
+            # IRR/RIS only meaningful when the RPKI/prefix lookup actually
+            # ran. If RPKI returned a recognized state, the prefix
+            # resolution worked, so IRR is a real signal.
             _p("IPv4 IRR/RIS", "in_ris" if v4.get("irr_in_ris") else "not_in_ris")
+        elif v4.get("address"):
+            # Lookup failed (RIPEstat error, missing prefix, missing ASN,
+            # transient network blip). Surface as info rows so the user
+            # sees "RPKI check failed" instead of the rows silently
+            # disappearing from the report. (0,0) → severity info via
+            # _severity_for_score; the rubric doesn't define an "error"
+            # outcome for these labels, so _w returns (0,0) on the
+            # unknown outcome and we get the same effect explicitly.
+            pts.append(("IPv4 RPKI",    0, 0))
+            pts.append(("IPv4 IRR/RIS", 0, 0))
 
     # ── IPv6 routing — only scored when IPv6 present ─────────────────────────
     if v6_present:
         rpki6 = v6.get("rpki_status")
         if rpki6 in ("valid", "not-found", "invalid"):
             _p("IPv6 RPKI", rpki6)
-
-        if rpki6 != "error" and rpki6 is not None:
             _p("IPv6 IRR/RIS", "in_ris" if v6.get("irr_in_ris") else "not_in_ris")
+        else:
+            # Same fall-through as v4: lookup failed, surface as info
+            # rather than silently drop.
+            pts.append(("IPv6 RPKI",    0, 0))
+            pts.append(("IPv6 IRR/RIS", 0, 0))
 
     # ── DNSSEC ────────────────────────────────────────────────────────────────
     tld_d = dnssec.get("tld", {})
