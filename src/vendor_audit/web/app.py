@@ -536,17 +536,41 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     allows HTML injection (Jinja autoescapes), but a strict CSP is the
     right belt-and-suspenders.
 
-    All our pages are JS-free — the loading page uses meta refresh for
-    progressive feedback, not JS — so script-src is uniformly 'none'.
-    The strongest possible setting.
+    All our pages are JS-free except for the result page, which loads
+    /static/result.js for the expand-all / collapse-all controls.
+    The CSP for the result page allows script-src 'self' (own-origin
+    only, no inline, no eval); every other page stays at script-src
+    'none'. The strongest possible setting per page.
     """
 
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
 
+        # Most pages are JS-free → script-src 'none' (the strictest setting,
+        # blocking even legitimate scripts on the page). The result page
+        # loads /static/result.js for the expand/collapse-all buttons, so
+        # for that path we allow script-src 'self' — own-origin scripts
+        # only, no inline, no 'unsafe-eval', no third-party.
+        #
+        # We match by URL path. The result page is served from
+        # /audit/result and from /audit/<domain>.txt's HTML twin (rendered
+        # by the same code path), but the .txt download is text/plain so
+        # CSP doesn't matter there. The /static/result.js path itself
+        # doesn't need script-src for its own response (it IS the script,
+        # not a page that loads scripts), but it doesn't hurt to keep
+        # consistent headers.
+        path = request.url.path
+        is_result_page = (
+            path == "/audit/result" or path == "/static/result.js"
+        )
+        if is_result_page:
+            script_src = "script-src 'self'"
+        else:
+            script_src = "script-src 'none'"
+
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'none'; "
+            f"{script_src}; "
             "style-src 'self' 'unsafe-inline'; "  # inline styles in templates
             "img-src 'self' data:; "
             "object-src 'none'; "
@@ -1056,6 +1080,89 @@ async def favicon_svg():
         content=_FAVICON_SVG,
         media_type="image/svg+xml",
         headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# ── Static JS for the result page ────────────────────────────────────────────
+
+# Small inline script for the result page's expand-all / collapse-all
+# buttons. Served as an external file (rather than inlined into the
+# rendered HTML) so the result-page CSP can stay at script-src 'self'
+# rather than needing 'unsafe-inline' or per-payload hashes.
+#
+# Behavior:
+#   - Click "Expand all details" → open every <details class="detail-section">
+#     and every <details class="subsection"> on the page. Does NOT toggle
+#     the deeper "More about this check" disclosures (those stay opt-in).
+#   - Click "Collapse all details" → close everything in the same set.
+#
+# The script is tolerant: if anything's missing (no buttons, no details,
+# JS disabled) the page still works because the buttons are convenience
+# only — every <details> remains independently clickable.
+_RESULT_JS = """\
+(function () {
+  'use strict';
+
+  function setAll(open) {
+    var nodes = document.querySelectorAll(
+      'details.detail-section, details.subsection'
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      if (open) {
+        nodes[i].setAttribute('open', '');
+      } else {
+        nodes[i].removeAttribute('open');
+      }
+    }
+  }
+
+  function init() {
+    var buttons = document.querySelectorAll('.detail-controls .detail-btn');
+    for (var i = 0; i < buttons.length; i++) {
+      (function (btn) {
+        btn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          var action = btn.getAttribute('data-action');
+          if (action === 'expand-all') {
+            setAll(true);
+          } else if (action === 'collapse-all') {
+            setAll(false);
+          }
+        });
+      })(buttons[i]);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+"""
+
+
+@app.get("/static/result.js")
+async def result_js():
+    """Tiny client-side script for the result page's expand/collapse-all
+    buttons. The result page is the only page that loads JS on the site;
+    the form, loading, and error pages stay JS-free (their CSP keeps
+    script-src 'none').
+
+    Cached aggressively — the file changes only when this app.py changes.
+    Cloudflare in front will further cache by URL.
+    """
+    return Response(
+        content=_RESULT_JS,
+        media_type="application/javascript; charset=utf-8",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            # The script is for the result page only; it has no need to
+            # be embedded by other origins. CORP=same-origin matches our
+            # default policy from SecurityHeadersMiddleware but is added
+            # here too as belt-and-suspenders.
+            "Cross-Origin-Resource-Policy": "same-origin",
+        },
     )
 
 

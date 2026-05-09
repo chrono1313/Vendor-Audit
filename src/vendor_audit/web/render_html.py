@@ -228,6 +228,13 @@ def render_result(envelope: dict) -> str:
     parts.append(_render_footer_html(data, domain))
 
     parts.append('</main>')
+    # Result-page JS — only on the result page. Wires up the expand-all
+    # / collapse-all buttons on the detail-controls toolbar. Loaded as
+    # an external <script src> rather than inline so the CSP can stay
+    # at script-src 'self' instead of needing 'unsafe-inline' or a
+    # per-payload SHA hash. Cached aggressively because the file
+    # rarely changes.
+    parts.append('<script src="/static/result.js" defer></script>')
     parts.append('</body></html>')
     return "\n".join(parts)
 
@@ -420,9 +427,37 @@ def _render_detail_sections_html(data):
     The txt renderer returns "" when its source data is absent, so
     sections that don't apply (e.g. SSL Labs without --ssl) are silently
     omitted. We mirror that.
+
+    A pair of expand-all / collapse-all controls sits at the top of the
+    Detail section. The buttons toggle every <details> inside the
+    section in bulk — both the top-level sections and the subsections
+    nested within them. The deeper "More about this check" disclosure
+    inside each subsection is NOT toggled by these buttons; it stays
+    closed unless the user explicitly clicks it. That's deliberate:
+    the long-form prose is opt-in, and a single click shouldn't dump
+    thousands of words on the user.
     """
     out = ['<section class="details" aria-label="Detailed findings">']
     out.append('  <h2>Detail</h2>')
+    # The controls — two buttons side by side. They have no JS event
+    # handlers in the markup; the inline-loaded /static/result.js
+    # attaches click handlers on DOMContentLoaded. If JS is disabled
+    # the buttons are non-functional but the page still works (each
+    # section is independently clickable, and the expand-all / collapse
+    # -all is a convenience, not load-bearing).
+    out.append(
+        '  <div class="detail-controls" role="toolbar" '
+        'aria-label="Expand or collapse all detail sections">'
+    )
+    out.append(
+        '    <button type="button" class="detail-btn" data-action="expand-all">'
+        'Expand all details</button>'
+    )
+    out.append(
+        '    <button type="button" class="detail-btn" data-action="collapse-all">'
+        'Collapse all details</button>'
+    )
+    out.append('  </div>')
 
     for section_id, title, renderer_fn in _SECTION_RENDERERS:
         try:
@@ -440,19 +475,141 @@ def _render_detail_sections_html(data):
     return "\n".join(out)
 
 
+# Sections that have a single section-level explanation (calling
+# _section_explanation_lines in audit_txt_report) rather than per-subsection
+# explanations. For these, the "More about this check" disclosure goes at
+# the section level — directly after the body — with one topic block per
+# logically-related EXPLANATIONS key.
+#
+# Each section maps to a list of (heading, key) tuples. The first tuple's
+# heading is used as the disclosure's overall summary; subsequent tuples
+# get bold inline subheadings inside the disclosure body. This lets
+# closely-related topics (CSP, security headers, cookies — all browser
+# hardening; or RPKI, IPv6, routing — all IP-layer reachability) cluster
+# under one "More about" rather than scatter into separate disclosures
+# the user has to find and click through.
+#
+# Sections NOT listed here (email, dns) use per-subsection explanations
+# instead; their long-form details are emitted inside each subsection's
+# closing </details> by the parser. Sections like ssl_labs and starttls
+# have no explanation at all.
+_SECTION_LEVEL_EXPLANATION_KEY: dict[str, list[tuple[str, str]]] = {
+    "routing": [
+        ("Routing and reachability", "routing"),
+        ("IPv6",                     "ipv6"),
+        ("RPKI",                     "rpki"),
+    ],
+    "tls": [
+        ("Transport Layer Security", "tls"),
+    ],
+    "http": [
+        ("HTTP transport",        "http"),
+        ("HTTP version",          "http_version"),
+        ("HTTPS redirect",        "http_redirect"),
+    ],
+    "hsts": [
+        ("HTTP Strict Transport Security", "hsts"),
+    ],
+    "disclosure": [
+        ("Server identification", "server_disclosure"),
+        ("End-of-life operating systems", "eol_os"),
+    ],
+    "libraries": [
+        ("End-of-life client-side libraries", "eol_libraries"),
+    ],
+    "headers": [
+        ("Browser security headers", "security_headers"),
+        ("Content Security Policy",  "csp"),
+        ("Cookies",                  "cookies"),
+    ],
+    "security_txt": [
+        ("security.txt", "security_txt"),
+    ],
+    "page_analysis": [
+        ("Page analysis", "page_analysis"),
+    ],
+}
+
+
 def _section_html(section_id, title, txt_block):
     """Wrap one txt-rendered section in HTML with a stable anchor id.
 
     The txt section starts with a section heading (e.g. "EMAIL") that's
     redundant in HTML — the <summary> already names the section. We
     suppress the first heading to avoid showing the title twice.
+
+    Top-level Detail sections are CLOSED by default (no `open` attribute).
+    The expand/collapse-all controls above the Detail section toggle
+    every <details> at once. Closing by default keeps the page short
+    on first load; the executive summary above carries the headlines,
+    and the user clicks into whatever section they want to read.
+
+    For sections that use a single section-level explanation (like TLS,
+    HSTS, HTTP — no per-check subsections), we emit the long-form
+    "More about this check" disclosure at the section level, right
+    after the body. Sections with per-subsection explanations (Email,
+    DNS) have the disclosure emitted inside each subsection's wrapper
+    by the parser instead.
     """
     body_html = _txt_to_html(txt_block, suppress_first_heading=True)
+
+    # Section-level long-form details (for non-subsection sections). The
+    # _SECTION_LEVEL_EXPLANATION_KEY map identifies sections where the
+    # body has just one set of What/Why/Fix at the top, with findings
+    # below. We emit a single "More about this check" disclosure at the
+    # end of the body, containing long-form prose for every key
+    # logically belonging to the section. Each topic gets a small
+    # heading inside the disclosure.
+    topics = _SECTION_LEVEL_EXPLANATION_KEY.get(section_id)
+    if topics:
+        more_html = _multi_topic_more_about_html(topics)
+        if more_html:
+            body_html = body_html + "\n" + more_html
+
     return (
-        f'  <details class="detail-section" id="section-{_h(section_id)}" open>\n'
+        f'  <details class="detail-section" id="section-{_h(section_id)}">\n'
         f'    <summary>{_h(title)}</summary>\n'
         f'    <div class="detail-body">{body_html}</div>\n'
         f'  </details>'
+    )
+
+
+def _multi_topic_more_about_html(topics: list[tuple[str, str]]) -> str:
+    """Render a section-level 'More about this check' disclosure with
+    one inline subheading per topic. Returns "" if no topic has any
+    long-form content.
+
+    Each topic is (heading_text, explanations_key). Topics whose key
+    isn't in EXPLANATIONS or has no 'details' field are silently
+    skipped.
+    """
+    try:
+        from .. import audit_txt_report as _atr
+    except ImportError:
+        from vendor_audit import audit_txt_report as _atr
+
+    chunks = []
+    for heading, key in topics:
+        entry = _atr.EXPLANATIONS.get(key)
+        if not entry or not entry.get("details"):
+            continue
+        # Show the heading only when there's more than one topic; for a
+        # single topic the disclosure summary already names it.
+        if len(topics) > 1:
+            chunks.append(f'<h5 class="more-about-topic">{_h(heading)}</h5>')
+        for p in entry["details"]:
+            chunks.append(f'<p>{_h(p)}</p>')
+
+    if not chunks:
+        return ""
+
+    return (
+        '<details class="more-about">\n'
+        '  <summary>More about this check</summary>\n'
+        '  <div class="more-about-body">\n    '
+        + "\n    ".join(chunks)
+        + '\n  </div>\n'
+        '</details>'
     )
 
 
@@ -495,17 +652,145 @@ _EXPLANATION_LABELS = {"What", "Why", "Fix"}
 # subheadings. The line ABOVE the rule is the heading text. The bottom
 # rule typically immediately follows the heading text.
 
+# Map from subheading text (first word, uppercased) to the EXPLANATIONS
+# key. Used by the HTML parser to look up long-form prose for the
+# "More about this check" disclosure under each subsection. A single
+# lookup table here means zero changes to audit_txt_report.py — the
+# txt module continues to emit subheadings with no out-of-band hints,
+# and the HTML side does the resolution at render time.
+#
+# Subheading text typically looks like "SPF — example.com (RFC 7208)";
+# we match on the first whitespace-bounded token (uppercased) and a
+# few special multi-token cases (MTA-STS, TLS-RPT, MAIL, etc.).
+_SUBHEADING_TO_KEY: dict[str, str] = {
+    "SPF":     "spf",
+    "DMARC":   "dmarc",
+    "DKIM":    "dkim",
+    "MTA-STS": "mta_sts",
+    "TLS-RPT": "tls_rpt",
+    "MX":      "mx",
+    "DNSSEC":  "dnssec",
+    "CAA":     "caa",
+    "TLS":     "tls",
+    "HSTS":    "hsts",
+    "HTTP":    "http",  # bare HTTP heading. Most "HTTP/2" etc. headings start with another token.
+    "CSP":     "csp",
+    "COOKIES": "cookies",
+    "IPV6":    "ipv6",
+    "RPKI":    "rpki",
+    "DANE":    "dane",
+}
+
+# Multi-token subheading prefixes — checked before the single-word map.
+# Order matters: longer prefixes win (e.g. "MAIL TRANSPORT" before "MAIL").
+_SUBHEADING_PREFIX_TO_KEY: list[tuple[str, str]] = [
+    ("CERTIFICATION AUTHORITY AUTHORIZATION", "caa"),
+    ("CERTIFICATION AUTHORITY AUTHORISATION", "caa"),
+    ("MAIL TRANSPORT",      "mail_transport"),
+    ("MX RECORDS",          "mx"),
+    ("NAME SERVERS",        "nameservers"),
+    ("NAMESERVERS",         "nameservers"),
+    ("HTTP REDIRECT",       "http_redirect"),
+    ("HTTP VERSION",        "http_version"),
+    ("PROTOCOL VERSION",    "http_version"),
+    ("SERVER DISCLOSURE",   "server_disclosure"),
+    ("SERVER",              "server_disclosure"),
+    ("SECURITY HEADERS",    "security_headers"),
+    ("SECURITY CONTACT",    "security_txt"),
+    ("SECURITY.TXT",        "security_txt"),
+    ("END-OF-LIFE OS",      "eol_os"),
+    ("OPERATING SYSTEM",    "eol_os"),
+    ("EOL OS",              "eol_os"),
+    ("OS DETECTION",        "eol_os"),
+    ("END-OF-LIFE",         "eol_libraries"),
+    ("EOL LIBRARIES",       "eol_libraries"),
+    ("CLIENT-SIDE LIBRARIES", "eol_libraries"),
+    ("LIBRARY DETECTION",   "eol_libraries"),
+    ("ROUTING",             "routing"),
+    ("PAGE ANALYSIS",       "page_analysis"),
+    ("PAGE",                "page_analysis"),
+]
+
+
+def _key_for_subheading(text: str) -> str | None:
+    """Resolve a subheading line ("SPF — example.com (RFC 7208)") to the
+    EXPLANATIONS dict key ("spf"), or None if no match.
+
+    Matching is case-insensitive on the prefix. Multi-word prefixes are
+    checked first (longest-first), then the single-word map. A miss is
+    fine — the section just won't get a "More about this check"
+    disclosure, which is better than a wrong one.
+    """
+    if not text:
+        return None
+    head = text.strip().upper()
+    # Strip any trailing parenthetical, em-dash detail, or " — ..." suffix
+    # so multi-word prefix matching sees the cleanest leading text.
+    for sep in [" — ", " - ", " ("]:
+        idx = head.find(sep)
+        if idx > 0:
+            head = head[:idx].strip()
+            break
+    # Multi-token prefixes
+    for prefix, key in _SUBHEADING_PREFIX_TO_KEY:
+        if head.startswith(prefix):
+            return key
+    # Single-word fallback
+    first = head.split()[0] if head.split() else ""
+    return _SUBHEADING_TO_KEY.get(first)
+
+
+def _explanation_details_html(key: str | None) -> str:
+    """Render the long-form 'More about this check' block as nested
+    <details>. Returns "" when no explanation exists for the key.
+
+    The output is a closed-by-default <details class="more-about">
+    inside the subsection. CSS styles it as a subtle disclosure rather
+    than an attention-grabbing card — the user opted in by clicking,
+    they don't need a heavy visual frame.
+    """
+    if not key:
+        return ""
+    try:
+        from .. import audit_txt_report as _atr
+    except ImportError:
+        from vendor_audit import audit_txt_report as _atr
+    entry = _atr.EXPLANATIONS.get(key)
+    if not entry or "details" not in entry:
+        return ""
+    paras = entry["details"]
+    if not paras:
+        return ""
+    parts = ['<details class="more-about">',
+             '  <summary>More about this check</summary>',
+             '  <div class="more-about-body">']
+    for p in paras:
+        parts.append(f'    <p>{_h(p)}</p>')
+    parts.append('  </div>')
+    parts.append('</details>')
+    return "\n".join(parts)
+
+
 def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
     """Convert a txt-renderer block to HTML, preserving structure.
 
     Approach: walk lines, identify each as a heading, finding line, raw
-    value, blank, or plain text, and emit appropriate HTML. The output
-    is a sequence of <h3>/<h4> headings, <ul>/<li> finding lists, and
-    <pre> blocks for raw values.
+    value, blank, or plain text, and emit appropriate HTML. Output is
+    a sequence of <details class="subsection"> blocks (each holding a
+    subsection's findings + What/Why/Fix + a nested "More about this
+    check" disclosure), plus <h3> for top-level section names that
+    weren't suppressed.
 
-    When suppress_first_heading is True, the first <h3> is replaced with
-    nothing — used by detail sections, where the <summary> already names
-    the section and a leading <h3> would duplicate it.
+    When suppress_first_heading is True, the first <h3>-class heading
+    is replaced with nothing — used by detail sections, where the
+    <summary> already names the section and a leading <h3> would
+    duplicate it.
+
+    Subsections are open by default. The expand/collapse-all controls
+    above the Detail section toggle them in bulk. The "More about this
+    check" nested <details> inside each subsection is closed by default
+    so casual readers see the short What/Why/Fix and findings only;
+    deeper readers click to expand the long-form prose.
     """
     lines = block.splitlines()
     out: list[str] = []
@@ -514,12 +799,44 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
     h3_emitted = False                  # tracks whether any <h3> has shipped
 
     findings_open = False  # are we currently inside a <ul class="findings">?
+    subsection_open = False
+    subsection_key: str | None = None   # explanation key for the current subsection
 
     def close_findings():
         nonlocal findings_open
         if findings_open:
             out.append('</ul>')
             findings_open = False
+
+    def close_subsection():
+        """Close any open subsection, emitting the long-form 'More about
+        this check' nested details before the outer </details>. Called
+        when we hit the next subheading (which starts a new subsection)
+        or when the parser ends."""
+        nonlocal subsection_open, subsection_key
+        if subsection_open:
+            close_findings()
+            details_html = _explanation_details_html(subsection_key)
+            if details_html:
+                out.append(details_html)
+            out.append('</details>')
+            subsection_open = False
+            subsection_key = None
+
+    def open_subsection(title: str):
+        """Open a new <details class="subsection"> block for a subheading.
+        Closes any previously-open subsection first. The new block is
+        open by default; the expand/collapse-all controls toggle it.
+        """
+        nonlocal subsection_open, subsection_key
+        close_subsection()
+        key = _key_for_subheading(title)
+        out.append(
+            f'<details class="subsection" open>'
+            f'<summary>{_h(title)}</summary>'
+        )
+        subsection_open = True
+        subsection_key = key
 
     while i < len(lines):
         line = lines[i]
@@ -538,7 +855,7 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
         # drops the redundant top-of-section title because the <summary>
         # already names the section) keys to the LIGHT rule.
         if stripped and all(ch == _RULE_HEAVY_CHAR for ch in stripped):
-            close_findings()
+            close_subsection()
             if pending_heading:
                 out.append(
                     f'<h3 class="section-heading">'
@@ -554,13 +871,14 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
                     # Drop the redundant top-of-section heading; the
                     # detail-section <summary> already names the section
                     # (Email / DNS / TLS / etc.) so emitting another
-                    # <h4> would just duplicate the label.
+                    # heading would just duplicate the label.
                     pass
                 else:
-                    out.append(
-                        f'<h4 class="section-subheading">'
-                        f'{_h(pending_heading.strip())}</h4>'
-                    )
+                    # Subheading promoted by a light rule. Open a new
+                    # subsection — collapsible block containing the
+                    # subheading's findings + What/Why/Fix + nested
+                    # "More about this check".
+                    open_subsection(pending_heading.strip())
                 h3_emitted = True
                 pending_heading = None
             i += 1
@@ -649,13 +967,10 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
                 # example.com (RFC 7208)"). The txt renderer doesn't
                 # rule-decorate subheadings that have explanations
                 # underneath — the explanation is the visual cue. So we
-                # promote the pending line to <h4> here instead of
-                # flushing it as a raw paragraph; the result is a proper
-                # heading element that screen readers and CSS can target.
-                out.append(
-                    f'<h4 class="section-subheading">'
-                    f'{_h(pending_heading.strip())}</h4>'
-                )
+                # open a new subsection here instead of flushing the
+                # heading as a paragraph; the result is a collapsible
+                # block with proper semantics.
+                open_subsection(pending_heading.strip())
                 pending_heading = None
             label = em.group("label")
             body_parts = [em.group("body").rstrip()]
@@ -705,8 +1020,11 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
         pending_heading = line.rstrip()
         i += 1
 
-    # Flush trailing state
+    # Flush trailing state. close_subsection emits the long-form details
+    # block (if any) inside the closing </details>, then any final raw
+    # paragraph that didn't get consumed.
     close_findings()
+    close_subsection()
     if pending_heading:
         out.append(f'<p class="raw-line">{_h(pending_heading)}</p>')
 
@@ -1211,6 +1529,165 @@ body {
   display: inline-block;
   min-width: 2.5rem;
 }
+
+/* ── Subsection (collapsible block per subheading) ──────────────────
+   Each subsection (SPF, DMARC, MX, etc.) is its own <details> inside
+   the section's detail-body. Default-open so the user sees content
+   when they expand a section. The expand-all/collapse-all buttons
+   above the Detail section toggle these in bulk. */
+.detail-body details.subsection {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border-soft);
+}
+.detail-body details.subsection:first-child {
+  margin-top: 0;
+  border-top: none;
+}
+.detail-body details.subsection > summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding: 0.7rem 0 0.5rem;
+  font-weight: 600;
+  user-select: none;
+  list-style: none;  /* hide default disclosure triangle */
+  position: relative;
+  padding-left: 1.2rem;
+}
+/* Custom disclosure indicator — small triangle that rotates on open.
+   Using a CSS pseudo-element rather than the browser default so it
+   stays consistent with our color palette and doesn't fight with the
+   uppercase summary text. */
+.detail-body details.subsection > summary::before {
+  content: "▸";
+  position: absolute;
+  left: 0;
+  top: 0.7rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.detail-body details.subsection[open] > summary::before {
+  transform: rotate(90deg);
+}
+.detail-body details.subsection > summary:hover {
+  color: var(--fg);
+}
+.detail-body details.subsection > summary:hover::before {
+  color: var(--fg);
+}
+/* Hide the legacy <h4 class="section-subheading"> rules — those were
+   for the old non-collapsible layout. The summary now plays that role.
+   But keep the rule for any subheading that wasn't promoted to a
+   subsection (rare edge cases like an error block). */
+.detail-body h4.section-subheading {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 1.1rem 0 0.5rem;
+  font-weight: 600;
+}
+
+/* ── More about this check (long-form prose disclosure) ────────────
+   Nested inside each subsection. Closed by default — opens only when
+   the reader explicitly clicks. The expand/collapse-all buttons do
+   NOT toggle these; they're a deeper-disclosure layer that should
+   stay opt-in. */
+.detail-body details.more-about {
+  margin: 0.7rem 0 0.4rem;
+  padding: 0;
+  border-left: 2px solid var(--border-soft);
+  padding-left: 0.8rem;
+}
+.detail-body details.more-about > summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--accent);
+  padding: 0.2rem 0;
+  user-select: none;
+  list-style: none;
+  position: relative;
+  padding-left: 0.9rem;
+}
+.detail-body details.more-about > summary::before {
+  content: "▸";
+  position: absolute;
+  left: 0;
+  top: 0.2rem;
+  color: var(--accent);
+  font-size: 0.7rem;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.detail-body details.more-about[open] > summary::before {
+  transform: rotate(90deg);
+}
+.detail-body details.more-about > summary:hover {
+  color: var(--accent-hover);
+}
+.detail-body details.more-about .more-about-body {
+  padding: 0.5rem 0 0.4rem;
+}
+.detail-body details.more-about .more-about-body p {
+  font-size: 0.9rem;
+  color: var(--fg);
+  line-height: 1.6;
+  margin: 0 0 0.7rem;
+}
+.detail-body details.more-about .more-about-body p:last-child {
+  margin-bottom: 0;
+}
+/* Inline topic headings inside a multi-topic "More about" disclosure.
+   Used when one section's long-form covers multiple related topics
+   (e.g. Security headers / CSP / Cookies all under the Headers
+   section's disclosure). Light treatment — these are inline within
+   the body, not a major heading hierarchy. */
+.detail-body details.more-about .more-about-body h5.more-about-topic {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 1.1rem 0 0.5rem;
+  font-weight: 600;
+}
+.detail-body details.more-about .more-about-body h5.more-about-topic:first-child {
+  margin-top: 0;
+}
+
+/* ── Expand-all / collapse-all controls ──────────────────────────────
+   Two buttons above the Detail section. Visually they're styled like
+   the link-buttons in the action bar — the outline is subtle, the
+   action is what matters. */
+.detail-controls {
+  display: flex;
+  gap: 0.6rem;
+  margin: 0 0 0.8rem;
+  flex-wrap: wrap;
+}
+.detail-btn {
+  font: inherit;
+  font-size: 0.85rem;
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border-soft);
+  padding: 0.4rem 0.85rem;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+.detail-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+.detail-btn:active {
+  background: var(--surface-2);
+}
+
 .section-error {
   color: var(--fail);
   font-size: 0.9rem;
@@ -1342,9 +1819,32 @@ a:hover { color: var(--accent-hover); }
     page-break-inside: avoid;
     background: white;
   }
-  details { open: open; }
-  details > summary { list-style: none; cursor: default; }
-  .footer-actions { display: none; }
+  /* Force ALL <details> elements open when printing — including the
+     top-level Detail sections, the per-subsection collapsibles, and
+     the "More about this check" deep-disclosures. The user printing
+     to PDF wants the full report; the collapsible UI is for screen
+     reading, not paper. The trick is content-visibility plus
+     display: contents on the details element itself, then forcing
+     the children visible. The CSS-only way (no JS): set the details
+     to display:block (default), and override the user agent's
+     hidden-when-closed behavior by making the *content* visible
+     unconditionally. */
+  details > * { display: revert !important; }
+  details:not([open]) > *:not(summary) {
+    display: revert !important;
+    visibility: visible !important;
+  }
+  details > summary {
+    list-style: none;
+    cursor: default;
+    /* Make the summary look like a heading on print rather than an
+       interactive control. */
+    font-weight: 600;
+  }
+  .detail-controls,
+  .footer-actions {
+    display: none;  /* expand/collapse buttons are screen-only */
+  }
   a { color: inherit; text-decoration: none; }
 }
 </style>

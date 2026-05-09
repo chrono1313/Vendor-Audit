@@ -326,126 +326,279 @@ EXPLANATIONS = {
         "what": "SPF is a DNS record that lists which mail servers are allowed to send email using your domain.",
         "why":  "Without enforcement, anyone can spoof your domain in phishing emails — recipients can't tell a forgery from a real message.",
         "fix":  "Publish a v=spf1 record listing your senders and end with -all (hard fail) so receivers reject unauthorised mail.",
+        "details": [
+            "Sender Policy Framework (SPF, RFC 7208) is published as a DNS TXT record on your domain. When a receiving mail server gets a message claiming to be from your domain, it can read the SPF record and check whether the sending IP appears on your authorised list. If it doesn't, the receiver applies whatever policy your record's qualifier specifies.",
+            "The qualifier — the symbol before all in the record — is what determines what receivers actually do. -all means hard fail (reject). ~all means soft fail (accept but mark, often spam-folder). ?all is neutral (no opinion). +all is permissive (anyone can send, almost certainly a misconfiguration). Only -all and a properly-published null sender (v=spf1 -all) on a non-sending domain are considered fully enforcing.",
+            "SPF has a well-known limitation: each include= or redirect= mechanism counts toward a hard cap of 10 DNS lookups per evaluation (RFC 7208 §4.6.4). Exceeding the cap causes receivers to treat the result as PermError and silently fail mail. If you use several SaaS providers (marketing, transactional, helpdesk) you can hit this quickly — flatten or consolidate via a SPF management service if you do.",
+            "SPF alone does not survive forwarding. When a mailing list or auto-forward rewrites the message, the original sender's SPF check fails for the new envelope sender. This is why DKIM and DMARC together cover what SPF can't — they sign the message itself, not just authorise the IP. A modern email-authentication setup uses all three.",
+        ],
     },
     "dmarc": {
         "what": "DMARC tells receiving mail servers what to do when an email claiming to be from your domain fails SPF or DKIM checks.",
-        "why":  "Without DMARC at p=reject, attackers can spoof your domain in phishing campaigns — DMARC is the only control that actually stops it.",
+        "why":  "Without DMARC at p=reject, receivers cannot reliably reject spoofed mail claiming to be from your domain — exactly the foothold phishing campaigns rely on.",
         "fix":  "Publish a DMARC record with p=reject, pct=100, and a rua= reporting address so you also get visibility into spoofing attempts.",
+        "details": [
+            "Domain-based Message Authentication, Reporting, and Conformance (DMARC, RFC 7489) is published as a DNS TXT record at _dmarc.<domain>. It binds together SPF and DKIM and tells receivers what to do when a message fails both — reject it, quarantine it, or just observe (none).",
+            "Deployment is typically a progression. Operators start at p=none with rua= reporting enabled to gather data on what's sending mail under their domain (legitimate or otherwise). After a few weeks of reports, they identify and authorise legitimate senders, then move to p=quarantine (spam-folder) and finally p=reject (drop). Jumping straight to p=reject without observation usually breaks something legitimate — newsletters, ticketing systems, payroll mail.",
+            "A few directives matter beyond the policy itself. pct= sets the percentage of failing mail the policy applies to (anything less than 100 is partial enforcement). sp= sets the policy for subdomains; without it, attackers can spoof random.<your-domain> and your main policy doesn't apply. rua= names the address(es) to receive aggregate XML reports — without it you have no visibility into what's hitting your domain.",
+            "DMARC enforces alignment, not just authentication. SPF must pass for the envelope-from domain that aligns with the From: header domain (relaxed alignment is the common default). DKIM must pass on a signature whose d= domain aligns with the From: header. A message can pass SPF for some other domain and still fail DMARC because the domains don't align — this is the property that actually stops spoofing.",
+        ],
     },
     "dkim": {
         "what": "DKIM adds a cryptographic signature to outgoing mail so receivers can verify the message was authorised by your domain.",
-        "why":  "DKIM is one of the two pillars (with SPF) that DMARC relies on — without it, legitimate forwarded mail tends to fail authentication.",
+        "why":  "DKIM is one of the two pillars (with SPF) that DMARC relies on; without it, legitimate forwarded mail tends to fail authentication and bounce.",
         "fix":  "Generate a DKIM key with your mail provider and publish the public key as a DNS TXT record at <selector>._domainkey.<domain>.",
+        "details": [
+            "DomainKeys Identified Mail (DKIM, RFC 6376) signs outgoing mail with a private key held by your mail-sending infrastructure. The public key is published in DNS, so any receiving server can verify the signature without contacting you. The signature covers the message body and selected headers — if either is altered in transit, verification fails.",
+            "Each signing key is identified by a selector, a short label your mail provider chooses. The DNS record lives at <selector>._domainkey.<domain>. Most providers choose semi-arbitrary selector names (google, default, mail, k1, selector1, etc.), so detection by external tools is heuristic — Vendor Audit probes the most common selectors and reports what it finds.",
+            "Key strength matters. RSA-1024 has been formally deprecated by RFC 8301 since 2018; modern best practice is RSA-2048 or higher, or the more efficient Ed25519. M3AAWG's DKIM Key Rotation Best Common Practices recommends rotating keys roughly every six months, which the selector mechanism makes easy: publish a new key under a new selector, switch your signer to it, retire the old selector after a propagation window.",
+            "DKIM survives forwarding because the signature travels with the message. SPF doesn't, because the envelope changes. This is why DMARC requires either SPF or DKIM to pass with alignment — DKIM is the one that holds up when a mailing list or corporate gateway rewrites the path.",
+        ],
     },
     "mta_sts": {
         "what": "MTA-STS publishes a policy telling sending mail servers they must use TLS when delivering mail to your domain.",
         "why":  "Without it, an attacker between mail servers can downgrade the connection to plaintext (STARTTLS stripping) and read or alter messages.",
         "fix":  "Publish a TXT record at _mta-sts.<domain> and host an MTA-STS policy file at https://mta-sts.<domain>/.well-known/mta-sts.txt with mode=enforce.",
+        "details": [
+            "Mail Transfer Agent Strict Transport Security (MTA-STS, RFC 8461) is the SMTP equivalent of HSTS for the web. It tells sending mail servers that mail to your domain must be delivered over a TLS-encrypted connection to a host whose certificate matches one of your declared MX hostnames.",
+            "Deployment has two parts. First, a DNS TXT record at _mta-sts.<domain> with v=STSv1; id=<unique-id> tells senders a policy exists and gives an identifier they can cache against. Second, an HTTPS-served policy file at https://mta-sts.<domain>/.well-known/mta-sts.txt declares the actual MX hostnames and the mode (none / testing / enforce). The HTTPS host itself must be reachable and present a valid publicly-trusted certificate — that's how senders verify the policy is authentic.",
+            "The mode= directive controls behaviour. mode=none disables the policy temporarily. mode=testing means senders should report failures via TLS-RPT but still deliver. mode=enforce means senders should refuse to deliver if the TLS or hostname checks fail. Most operators start in testing for several weeks while observing reports, then promote to enforce.",
+            "MTA-STS is best paired with TLS-RPT (RFC 8460). MTA-STS without reporting means downgrade attacks happen silently — the policy fires, mail is rejected, and you learn about it from a customer ticket two days later. With TLS-RPT you get aggregate reports of every TLS failure, including which sender saw it and what error code came back.",
+        ],
     },
     "tls_rpt": {
         "what": "TLS-RPT (SMTP TLS Reporting) gives your domain visibility into mail-delivery TLS failures observed by receiving servers.",
         "why":  "Without TLS-RPT, you can't tell if MTA-STS is being honoured or if downgrade attacks are happening — you're operating blind.",
         "fix":  "Publish a TXT record at _smtp._tls.<domain> with v=TLSRPTv1; rua=mailto:<reporting-address>.",
+        "details": [
+            "SMTP TLS Reporting (TLS-RPT, RFC 8460) is the feedback channel for mail-transport security. It lets sending mail servers tell you, after the fact, when TLS or MTA-STS failed for messages bound for your domain. Reports are sent as JSON, typically once a day per sender, and are aggregated rather than per-message.",
+            "The DNS record is small: a TXT record at _smtp._tls.<domain> with v=TLSRPTv1; rua=mailto:<address> (or rua=https://<endpoint> if you have a webhook receiver). Most operators point rua at an inbox they monitor or at a TLS-RPT processing service that aggregates and surfaces patterns.",
+            "TLS-RPT is most valuable when paired with MTA-STS. The combination gives you both a policy senders should follow and a feedback loop telling you when they don't. Running MTA-STS without TLS-RPT means you've published a policy whose violations are invisible to you — exactly the state of operating blind that the policy was meant to fix.",
+        ],
+    },
+    "mx": {
+        "what": "MX (Mail Exchanger) records in DNS list the servers that receive mail for your domain.",
+        "why":  "Every domain should publish an MX record — receiving mail if it does, or a Null MX (RFC 7505) if it doesn't, so attackers can't claim mail authority for it through the absence of a policy.",
+        "fix":  "Publish MX records pointing to your mail provider, or — if the domain sends/receives no mail — publish a Null MX (a single MX record with priority 0 and target \".\") per RFC 7505.",
+        "details": [
+            "MX records are the directory entry that tells the world which servers receive mail for your domain. They're consulted before any SMTP delivery: a sender looks up MX <your-domain>, picks the lowest-priority record, and connects to that host. Each MX entry is a (priority, hostname) pair; lower priority is preferred, with secondaries used as fallback.",
+            "A domain that sends or receives mail must publish MX records. A domain that does neither — many marketing domains, redirect-only domains, brand-protection registrations — should publish a Null MX (RFC 7505): a single MX record with priority 0 and the target \".\" (a literal period). This tells the world authoritatively that the domain refuses all mail and lets receivers reject delivery attempts immediately rather than timing out.",
+            "Without an MX record, sending servers fall back to the A or AAAA record of the apex domain (RFC 5321 §5.1) — meaning your web server suddenly fields SMTP traffic. That's never desirable: at best it's wasted load, at worst it accepts mail you can't see. A Null MX prevents that fallback path entirely.",
+            "Multiple MX records with different priorities give you geographic and provider redundancy. Two records at priority 10 and 20 mean senders prefer the priority-10 host but fall back to priority-20 if it's unreachable — useful for split between primary and secondary mail providers, or between regions of the same provider.",
+        ],
     },
     "mail_transport": {
         "what": "Mail-transport hardening (MTA-STS, TLS-RPT, DKIM, DANE, STARTTLS) protects email in transit between mail servers.",
         "why":  "Without these, mail can be intercepted in plaintext, signatures can be stripped, and downgrade attacks are undetectable.",
         "fix":  "Publish MTA-STS in enforce mode, a TLS-RPT reporting endpoint, and a DKIM signing key; use a mail provider that supports DANE if possible.",
+        "details": [
+            "Email's transport story has improved a lot in the past decade, but the underlying SMTP protocol is still optimistic about encryption: STARTTLS upgrades a plaintext connection only if both ends opt in, and a network attacker can strip the STARTTLS advertisement from the server response and force fallback to plaintext. Mail-transport hardening is the layered set of standards that closes that gap.",
+            "MTA-STS (RFC 8461) and DANE (RFC 7672) both make the TLS expectation explicit. MTA-STS publishes a policy via HTTPS that senders fetch and cache; DANE publishes TLSA records in DNSSEC-signed DNS that senders verify directly against the certificate. DANE is stronger (no caching window, cryptographic provenance) but requires DNSSEC. Most operators start with MTA-STS because it's deployable without DNSSEC.",
+            "TLS-RPT (RFC 8460) sits alongside both as the feedback channel. DKIM (RFC 6376) is the message-signing layer that survives forwarding. Together: STARTTLS + MTA-STS or DANE + TLS-RPT + DKIM gives you an in-transit story where downgrades are detectable, message tampering is detectable, and impersonation requires breaking cryptography rather than just spoofing an IP.",
+        ],
     },
     "dnssec": {
         "what": "DNSSEC cryptographically signs your DNS records so resolvers can verify they haven't been tampered with in transit.",
         "why":  "Without DNSSEC, an attacker on the network path can poison DNS responses and redirect users to attacker-controlled servers.",
         "fix":  "Enable DNSSEC at your registrar and DNS provider; both must support it and the chain must be published to the parent zone.",
+        "details": [
+            "DNS Security Extensions (DNSSEC, RFC 4033 and successors) add cryptographic signatures to DNS records. A resolver that supports DNSSEC validation can verify that the answer it received came from the authoritative nameserver and wasn't modified along the way. Without DNSSEC, any on-path attacker — a hostile WiFi gateway, a compromised ISP router, or a state actor — can substitute their own IP for yours and the user's browser has no way to tell.",
+            "The validation chain has three pieces. The TLD must be signed (most are now — .com, .org, .gov, .net, .uk, .de, the IETF-managed ones). Your domain must publish a DNSKEY record. And a Delegation Signer (DS) record must be published in the parent zone, linking the parent's signing chain to your DNSKEY. If any link is broken, the chain doesn't validate and resolvers fall back to unauthenticated DNS — defeating the protection entirely.",
+            "Vendor Audit checks the chain by querying for the AD (Authenticated Data) flag on the response. The AD flag is set by a validating resolver when every signature in the chain checks out. A missing AD flag with a present DNSKEY usually means the DS record at the parent is missing or stale — a common mistake when a domain is migrated to a new DNS provider but the registrar's DS record points at the old provider's keys.",
+            "Enabling DNSSEC is usually a one-click operation at modern registrars and DNS hosts; the registrar publishes the DS at the TLD when you turn it on. The harder part is keeping it healthy: key rollovers must be coordinated between DNS provider and registrar, and an expired or mismatched DS record makes the domain unresolvable for validating users.",
+        ],
     },
     "caa": {
         "what": "CAA records tell certificate authorities which CAs are allowed to issue certificates for your domain.",
         "why":  "Without CAA, any of hundreds of trusted public CAs can issue a certificate for your domain — a single compromised CA is enough.",
         "fix":  "Publish a CAA record listing your authorised CA(s), e.g. 0 issue \"letsencrypt.org\" and 0 issuewild \"letsencrypt.org\".",
+        "details": [
+            "Certification Authority Authorization (CAA, RFC 8659) is a DNS record that constrains which CAs are allowed to issue TLS certificates for your domain. Public CAs are required by the CA/Browser Forum Baseline Requirements to check CAA before issuing — if a non-authorised CA tries, the issuance must be refused.",
+            "A typical record set has issue tags listing CAs that may issue any certificate, and issuewild tags listing CAs that may issue wildcards. For example: 0 issue \"letsencrypt.org\" and 0 issuewild \"letsencrypt.org\". An issue \";\" record (with a single semicolon target) explicitly forbids issuance entirely — useful for parked domains.",
+            "When using ACME, you can tighten further with the validationmethods and accounturi parameters. validationmethods=http-01 restricts the CA to a specific challenge type; accounturi=<url> binds issuance to a specific ACME account. This prevents an attacker who briefly controls DNS or a webroot from issuing under your domain via a different account.",
+            "A few extra tags are worth including. issuemail \";\" and issuevmc \";\" forbid S/MIME and BIMI certificate issuance respectively if you don't use them — without these, the absence of issue-tag fallback rules in the spec means any CA can still issue those certificate types. iodef can name a contact (mailto: or https://) where CAs send notifications about policy violations they observed.",
+        ],
     },
     "nameservers": {
         "what": "RFC 1034 requires every domain to have at least two authoritative nameservers for redundancy.",
         "why":  "A single nameserver is a single point of failure — if it goes down, your domain effectively disappears from the internet.",
         "fix":  "Configure at least two nameservers, ideally on different networks; most DNS providers do this automatically.",
+        "details": [
+            "Two-or-more nameservers is one of the oldest requirements in DNS — RFC 1034 specified it in 1987. The reason hasn't changed: DNS resolution is the gate to every other service, and a single point of failure for DNS is a single point of failure for the entire domain. Mail, web, APIs all stop working if name resolution fails.",
+            "For redundancy to actually help, the nameservers should be diverse. Two nameservers at the same hosting provider in the same datacentre give you resilience against process crashes but not against network outages or BGP issues at that provider. Many TLDs and registries actively encourage anycast deployment (where each nameserver name resolves to multiple IPs around the world) and require nameservers to be on different IPv4 prefixes.",
+            "Modern managed DNS services (Cloudflare, Route 53, Google Cloud DNS, NS1) handle this automatically — assigning four or more anycast nameservers across global infrastructure. If you're running your own nameservers, RFC 2182 has specific guidance on diversity and security; in particular, secondaries should be at a different physical location and ideally a different ISP.",
+        ],
     },
     "tls": {
         "what": "Modern TLS (1.3 preferred, 1.2 acceptable) protects all HTTPS traffic between visitors and your server.",
         "why":  "Older TLS versions and weak ciphers leave traffic vulnerable to interception and tampering by anyone on the network path.",
         "fix":  "Enable TLS 1.3 in your web server; disable TLS 1.0/1.1 and any cipher suites flagged by SSL Labs as weak.",
+        "details": [
+            "Transport Layer Security (TLS) is the encryption layer underneath HTTPS. TLS 1.3 (RFC 8446, 2018) is the current standard — it removed every cipher suite the older versions had cryptographic weaknesses in, simplified the handshake to a single round-trip, and made forward secrecy mandatory. TLS 1.2 (RFC 5246) is still widely deployed and acceptable; TLS 1.0 and 1.1 are formally deprecated by RFC 8996 and should be disabled.",
+            "Vendor Audit verifies the TLS version negotiated during the handshake, the certificate's name match against the requested host, the certificate lifetime, and chain completeness. Specific cipher-suite probing (which suites the server accepts, key-exchange parameters, named-CVE conditions like POODLE or ROBOT) is not part of this audit by design — that's what the Qualys SSL Labs assessment is for.",
+            "If you want a comprehensive TLS configuration review, run the SSL Labs assessment at https://ssllabs.com/ssltest/. It probes every cipher suite the server accepts, reports forward-secrecy support, flags named vulnerabilities, and gives a letter grade. Modern stacks (recent nginx, Apache, Cloudflare, Caddy, AWS ALB) configured with the Mozilla Intermediate or Modern profile typically score A or A+ without further tuning.",
+            "Certificate lifetime is becoming an enforcement point in its own right. Apple, Google, and the major browser vendors are progressively shortening the maximum lifetime — already capped at 398 days, with proposals to push it to 47 days by 2029. Short-lived certificates with automated renewal (ACME / Let's Encrypt) are the path that scales; manually-renewed long certificates are increasingly fragile.",
+        ],
     },
     "hsts": {
         "what": "HTTP Strict Transport Security tells browsers to only ever connect to your site over HTTPS, even if the user types http://.",
         "why":  "Without HSTS, attackers can intercept the first plain-HTTP request and downgrade the user to an unencrypted session (SSL stripping).",
         "fix":  "Send Strict-Transport-Security: max-age=63072000; includeSubDomains; preload and submit your domain to hstspreload.org.",
+        "details": [
+            "HTTP Strict Transport Security (HSTS, RFC 6797) closes a small but important gap: the first plain-HTTP request from a user who types example.com instead of https://example.com. Without HSTS, that request goes out unencrypted; an attacker on the network path can intercept the redirect to HTTPS, strip it, and serve the site over HTTP indefinitely. HSTS tells the browser to remember a domain as HTTPS-only for a configurable period, so subsequent visits skip the plaintext step entirely.",
+            "Deployment has three components. max-age sets how long the browser remembers (in seconds; 63072000 = two years is the modern recommendation). includeSubDomains extends the policy to every subdomain — important, but only safe to enable if every subdomain genuinely supports HTTPS. preload requests inclusion in the HSTS Preload List, which ships with Chrome, Firefox, Safari, and Edge — meaning even the very first visit to your domain gets HSTS protection without ever having visited.",
+            "Preload is one-way: once your domain is on the list, removing it is slow (months) and reaching every browser version is impossible. Before submitting to hstspreload.org, make absolutely sure every subdomain works over HTTPS, your renewal process is solid, and you don't plan to ever revert. For most production domains this is fine; for development or experimental subdomains it can be a footgun.",
+            "A common HSTS configuration error is sending the header only after a redirect from http://. Browsers respect HSTS only when received over HTTPS — so the header on the post-redirect HTTPS response works, but if the user's plain-HTTP request hits a server that doesn't redirect (or that serves the header on the HTTP response and not the HTTPS response), the policy never lands. Verify with curl -I https://<domain> that the header appears on the HTTPS response itself.",
+        ],
     },
     "http_redirect": {
         "what": "Plain HTTP requests should redirect to HTTPS so users are never served content over an unencrypted channel.",
         "why":  "Without redirect, content served over HTTP can be read or modified by anyone on the network — including injected malicious scripts.",
         "fix":  "Configure your web server to 301-redirect all http:// URLs to their https:// equivalents.",
+        "details": [
+            "Every modern HTTPS deployment should redirect plain-HTTP requests to HTTPS. Without the redirect, anyone on the network path between the user and your server can read or alter the response — and in practice this means injecting tracking, ads, or hostile JavaScript into pages that should have been encrypted. Public WiFi, hotel networks, and (historically) some ISPs have all done this at scale.",
+            "The redirect should happen on the same hostname before any cross-host redirect. http://example.com should go to https://example.com, not directly to https://www.example.com. Why? Because HSTS is set on the host the browser landed on first — if you skip the same-host hop, the browser never sees an HSTS header for the apex domain and the next plain-HTTP request to example.com is again unprotected.",
+            "Use 301 (Moved Permanently) rather than 302 — browsers cache 301s aggressively, which means subsequent visits skip the plaintext request entirely even before HSTS kicks in. Some bot-mitigation layers and CDNs return non-redirect responses on port 80 (a 404 or a connection reset) which technically means there's no plain-HTTP exposure, but most automated audits flag it as a missed redirect because the standard expectation is a 301.",
+        ],
     },
     "http": {
         "what": "This section covers HTTP transport: HTTP/2 and HTTP/3 support, plain-HTTP→HTTPS redirect, and first-hop redirect hygiene.",
         "why":  "Modern protocols are faster and more reliable; missing HTTPS redirects let attackers serve content unencrypted; off-host first hops leak Referer and bypass HSTS.",
         "fix":  "Enable HTTP/2 and HTTP/3 in your server or CDN, ensure http://<domain> 301-redirects directly to https://<domain> on the same host.",
+        "details": [
+            "The HTTP transport layer has evolved significantly since HTTP/1.1 was standardised in 1997. HTTP/2 (RFC 9113, 2015) introduced multiplexing — many requests over a single TCP connection — which fixed head-of-line blocking and dramatically reduced page load times for resource-heavy sites. HTTP/3 (RFC 9114, 2022) replaced TCP with QUIC over UDP, fixing head-of-line blocking at the transport layer too and reducing handshake latency on lossy networks like mobile and satellite.",
+            "Enabling these is essentially free for most operators: nginx, Apache, Caddy, IIS and every major CDN support HTTP/2 with a one-line config change. HTTP/3 needs UDP allowed through your firewall but otherwise drops in the same way. There's no compatibility downside — clients fall back to HTTP/1.1 transparently if the newer versions aren't advertised.",
+            "First-hop redirect hygiene is the small but important detail of redirecting users to HTTPS on the same host before redirecting anywhere else. http://example.com should land on https://example.com, which can then redirect to https://www.example.com. Skipping that step (going straight to the www variant) means the apex domain never gets an HSTS header for the user's browser, leaving the next plain-HTTP visit to example.com unprotected.",
+        ],
     },
     "http_version": {
         "what": "HTTP/2 and HTTP/3 are modern transport protocols that are faster and more efficient than HTTP/1.1.",
         "why":  "HTTP/3 in particular improves performance on mobile networks and high-latency links; both fix head-of-line blocking from HTTP/1.1.",
         "fix":  "Enable HTTP/2 and HTTP/3 in your web server or CDN; most modern stacks support both with a single config flag.",
+        "details": [
+            "HTTP/2 (RFC 9113) and HTTP/3 (RFC 9114) are the modern HTTP transports. HTTP/2 multiplexes many requests over a single TCP connection, eliminating the connection-pool overhead of HTTP/1.1 and the artificial sharding workarounds (multiple subdomains, sprite sheets) sites used to need. HTTP/3 takes the same idea to UDP via QUIC, improving handshake latency and resilience to packet loss.",
+            "Vendor Audit detects HTTP/2 by the negotiated ALPN protocol on the TLS handshake, and HTTP/3 by the presence of an Alt-Svc header on the response advertising h3. Some servers support HTTP/3 but don't advertise it via Alt-Svc — in those cases the audit will report HTTP/3 as not advertised even though it works.",
+            "Enabling them in your server stack is usually trivial: nginx 1.25+ ships HTTP/3 behind a flag; Apache via mod_http2 and mod_http3; Caddy enables both by default; and every major CDN (Cloudflare, Fastly, Akamai, AWS CloudFront) supports both transparently. There's no compatibility risk: clients negotiate down to HTTP/1.1 if needed.",
+        ],
     },
     "server_disclosure": {
         "what": "The Server and X-Powered-By headers can reveal the exact software and version running on your server.",
         "why":  "Disclosure helps attackers match your server to known vulnerabilities and saves them time when targeting your stack specifically.",
         "fix":  "Configure your web server to suppress or genericise these headers (e.g. ServerTokens Prod in Apache, server_tokens off in Nginx).",
+        "details": [
+            "The Server response header was originally meant to identify the web server software for diagnostic purposes. In practice it's now a fingerprint that helps attackers narrow their tooling — a Server: Apache/2.4.41 (Ubuntu) header tells anyone scanning the internet exactly which CVE list applies and what default paths to probe. The OWASP information leakage guidance recommends suppressing or genericising it.",
+            "X-Powered-By is the same problem one layer up: a header advertising PHP/7.4.3 or ASP.NET/4.8 invites application-level attacks. Most application frameworks emit it by default and most operators forget to disable it. Removing it costs nothing and tells you nothing useful about your own deployment that isn't already in the logs.",
+            "A reasonable middle ground is to keep a generic Server: nginx without the version, or to suppress entirely. Some load balancers and CDNs override the header to identify themselves (Server: cloudflare); that's defensible because the CDN is the attack surface anyway and has its own hardening, but the origin should still suppress its own identification.",
+            "Vendor Audit also reports detected technology stacks (Drupal, WordPress, etc.) inferred from response headers and HTML markers. These detections aren't scored — they're informational, useful when correlating with known vulnerabilities or with the EOL library check.",
+        ],
     },
     "csp": {
         "what": "Content Security Policy is a header telling the browser which sources of scripts, styles, and other resources are allowed to load.",
-        "why":  "A strong CSP is the most effective defence against cross-site scripting (XSS) — without one, an injected script can do anything.",
+        "why":  "If any other vulnerability allows script injection on your site, a strong CSP is what limits the damage.",
         "fix":  "Start with Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'none' and tighten further; avoid 'unsafe-inline'.",
+        "details": [
+            "Content Security Policy (CSP, W3C standard) is a defence-in-depth layer for cross-site scripting (XSS). It doesn't prevent XSS bugs from existing in your code — that's input validation's job — but it constrains what an injected script can actually do. A well-configured CSP can downgrade a remote-code-execution XSS to a no-op because the browser refuses to load the attacker's payload.",
+            "The most important directives are script-src, object-src, base-uri, frame-ancestors, and form-action. script-src controls where JavaScript can come from — the strongest configurations use a per-request nonce or content hash with 'strict-dynamic'. object-src 'none' blocks legacy plugin content (Flash, Java applets) which has been a perennial source of CSP bypasses. base-uri restricts the <base> tag, which can otherwise rewrite all relative URLs in a page. frame-ancestors is the modern replacement for X-Frame-Options.",
+            "Common pitfalls: 'unsafe-inline' in script-src defeats most of CSP's value (it permits inline <script> blocks, which is exactly what most XSS injects). data: URLs in script-src or object-src likewise allow attacker-controlled inline payloads. Wildcard sources (*) or scheme-only sources (https:) are too permissive for production. The Google CSP Evaluator at https://csp-evaluator.withgoogle.com/ is excellent for catching these.",
+            "Roll out incrementally with Content-Security-Policy-Report-Only, which logs violations to a reporting endpoint without blocking. Watch the reports for a few weeks, identify legitimate sources you missed, refine the policy, then switch to enforcing Content-Security-Policy. Don't try to write a perfect policy on the first attempt — incremental is the only way that doesn't break the site.",
+        ],
     },
     "security_headers": {
         "what": "X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and Permissions-Policy harden the browser against common attack patterns.",
         "why":  "Each closes a specific class of vulnerability: clickjacking, MIME sniffing, referrer leakage, and unauthorised feature access.",
         "fix":  "Add all four headers in your web server config; sensible defaults are DENY, nosniff, strict-origin-when-cross-origin, and an empty Permissions-Policy.",
+        "details": [
+            "X-Frame-Options: DENY (or SAMEORIGIN) prevents your pages from being embedded in <frame>, <iframe>, <object>, or <embed> on other sites. This blocks clickjacking, where an attacker frames your login page transparently over their own UI and tricks the user into clicking on your form. CSP's frame-ancestors directive supersedes X-Frame-Options for modern browsers, but X-Frame-Options is still a defence for users on older browsers.",
+            "X-Content-Type-Options: nosniff disables MIME-type sniffing. Browsers historically tried to guess the content type of a response when the Content-Type header was missing or generic — useful for legacy sites, but exploitable when an attacker can upload a file that gets served with a permissive content type. nosniff turns the guessing off; the browser uses the declared Content-Type or refuses to interpret the file.",
+            "Referrer-Policy controls what's sent in the Referer header when a user clicks a link from your site. The default browser behaviour (strict-origin-when-cross-origin) sends only the origin to cross-origin destinations and the full URL to same-origin destinations. Stricter values like no-referrer or same-origin reduce information leakage further; weaker values like unsafe-url leak full URLs over HTTP and should never be used.",
+            "Permissions-Policy (formerly Feature-Policy) controls which browser APIs your site can use — camera, microphone, geolocation, payment, USB, etc. An empty allowlist for sensitive features (geolocation=(), camera=()) means even an XSS injection can't trigger a permission prompt. This is mostly useful as a defence in depth: most sites don't need most APIs, and turning them off costs nothing.",
+            "Two more headers worth setting: Cross-Origin-Opener-Policy: same-origin isolates your tab's browsing context from cross-origin pages, defending against tab-nabbing and Spectre-class attacks. Cross-Origin-Resource-Policy: same-origin (or same-site) prevents your resources from being loaded by cross-origin pages, blocking some categories of resource-timing side channels.",
+        ],
     },
     "cookies": {
         "what": "Cookies should be marked Secure, HttpOnly, and SameSite, and ideally use the __Host- or __Secure- prefix.",
         "why":  "Missing flags leak session cookies over HTTP, expose them to JavaScript-based theft, or allow cross-site request forgery (CSRF).",
         "fix":  "When setting cookies, always include Secure; HttpOnly; SameSite=Lax (or Strict) and use the __Host- prefix for session cookies.",
+        "details": [
+            "The cookie attribute set has expanded significantly over the past decade. Secure prevents the cookie from ever being sent over a plain-HTTP connection, closing the leakage path even if HSTS hasn't yet been seen by the browser. HttpOnly prevents JavaScript from reading the cookie via document.cookie, blocking the most common XSS-to-session-theft chain. SameSite controls cross-site request inclusion, mitigating CSRF.",
+            "SameSite has three values. Strict means the cookie is sent only on requests originating from the same site; this is the safest but breaks some cross-site flows like an OAuth callback. Lax sends the cookie on top-level cross-site GET navigations but not on POST or sub-resource requests; this is the modern default and balances security with usability. None requires the cookie to opt explicitly into cross-site contexts and forces Secure to be set.",
+            "The __Host- and __Secure- name prefixes are commitments enforced by the browser. A cookie named __Host-session must have Secure, no Domain attribute, and Path=/ — the browser refuses to set the cookie if any of those are violated. This protects against subtle attacks where an attacker sets a same-named cookie from a sibling subdomain and the browser sends both to your application. For session cookies specifically, __Host- is the modern best practice.",
+            "Vendor Audit observes only the cookies set on the homepage response. Cookies set after authentication or by JavaScript don't appear in this view. A clean homepage cookie audit doesn't guarantee all of your cookies are well-configured — but a flagged homepage cookie is a clear sign the application has at least one misconfigured cookie path.",
+        ],
     },
     "security_txt": {
         "what": "A security.txt file at /.well-known/security.txt tells researchers how to report vulnerabilities they find on your site (RFC 9116).",
         "why":  "Without one, well-meaning researchers struggle to find a contact and may give up — the issue stays unreported and unfixed.",
         "fix":  "Publish a security.txt file with at least Contact: and Expires: fields; see securitytxt.org for a generator.",
+        "details": [
+            "security.txt (RFC 9116) is a small text file at /.well-known/security.txt that tells security researchers who to contact and how. It's the equivalent of robots.txt for vulnerability reporting — machine- and human-readable, with a small set of standardised fields. Researchers who find a bug in your site or systems can find a contact in seconds rather than rummaging through your website hoping to spot a security@ link.",
+            "Required fields are Contact: (an email address, phone number, or URL — multiple are allowed) and Expires: (an ISO 8601 timestamp after which the file should not be trusted). Optional fields include Encryption: (a PGP key URL for encrypted reports), Policy: (a URL to your coordinated-disclosure policy), Acknowledgments: (a hall-of-fame URL), and Canonical: (the URL of the file itself, useful when redirected).",
+            "Best practice: keep Expires: less than a year out and rotate it on a recurring basis (so a stale file doesn't go unnoticed indefinitely). Sign the file with PGP (the signature is inline, just the file contents wrapped in a PGP signature block). Place it at /.well-known/security.txt — the legacy /security.txt path still works but is deprecated.",
+            "Generator at https://securitytxt.org/ produces a syntactically valid file with sensible defaults. The whole effort is typically 10 minutes of work, including PGP signing, and meaningfully shortens the time-to-fix for issues researchers report.",
+        ],
     },
     "eol_os": {
         "what": "An end-of-life operating system no longer receives security patches from its vendor.",
         "why":  "Newly-discovered vulnerabilities — including remote code execution and privilege escalation — will never be fixed on this system.",
         "fix":  "Upgrade to a supported OS version. If business constraints require staying on this version, isolate it heavily and document the risk.",
+        "details": [
+            "Operating systems have defined support lifecycles after which their vendors stop releasing security updates. Once an OS is end-of-life, every newly-discovered kernel, library, or service vulnerability is permanent — no patch will ever be issued, and any exploit becomes a zero-day for the lifetime of the deployment.",
+            "Vendor Audit infers the OS from the Server response header and matches against a hand-curated list of EOL versions: CentOS 6/7/8, RHEL 5/6/7 (without ELS), Ubuntu LTS releases past their support window, Debian past oldoldstable, FreeBSD older than the supported branches, and old IIS / Windows Server combinations. The library_eol.json and os_eol.json files in the repo carry the support floor for each, with citations.",
+            "Detection is best-effort. Sites behind Cloudflare, Akamai, or AWS CloudFront usually return the CDN's Server header, masking the origin entirely — the audit can't see what's running underneath. Some operators set the Server header to a custom string for the same reason. A clean EOL OS check on a CDN-fronted site means the audit couldn't determine the origin OS, not that the origin is supported.",
+            "If business or compliance reasons prevent immediate upgrade, the practical mitigation is to put the EOL system behind aggressive WAF rules, restrict its network exposure, and accelerate the migration plan. Extended Support Subscriptions (RHEL ELS, Ubuntu ESM) are a paid path to keep getting security updates for one or two years past the standard EOL — useful as a bridge while migrating, not as a permanent strategy.",
+        ],
     },
     "eol_libraries": {
         "what": "An end-of-life client-side library (jQuery, Bootstrap, Angular, etc.) no longer receives security or compatibility updates.",
         "why":  "Browser environments evolve constantly; an unmaintained library is increasingly likely to break or harbour known XSS vulnerabilities.",
         "fix":  "Upgrade to the current major version of the library, or migrate to a supported alternative.",
+        "details": [
+            "Client-side JavaScript libraries have their own support lifecycles — usually shorter than operating systems, often 18-36 months from a major release. jQuery, Bootstrap, Angular, Vue, Ember, the WordPress / Drupal / Joomla CMSes, and many smaller libraries publish a support policy that names which majors still receive security fixes.",
+            "Vendor Audit recognises about 185 client-side libraries via static HTML inspection — script src attributes, inline version markers, well-known global object signatures. Of those, 28 have curated EOL dates (jQuery 1.x and 2.x, Bootstrap 2.x and 3.x, AngularJS, Angular versions before the current LTS, etc.). The remaining ~150 are reported with their version but not flagged as EOL — version detection is reliable, but EOL judgments require maintenance and citation.",
+            "Upgrading client-side libraries is sometimes a small change (a single CDN URL update) and sometimes a months-long migration. AngularJS to Angular is the canonical hard case: different framework, complete rewrite. jQuery 1.x to 3.x is mostly mechanical but breaks in subtle ways with custom plugins. Regardless, an EOL library is a known-fragile dependency and the cost of replacement only goes up over time.",
+            "If immediate upgrade is impossible, the next-best step is to add Subresource Integrity (SRI) attributes to the library's <script> tag and pin the version — at least preventing a CDN compromise from substituting a malicious version. But SRI doesn't fix vulnerabilities in the library itself; it just keeps the library you have from being silently swapped out.",
+        ],
     },
     "rpki": {
         "what": "RPKI (Route Origin Authorization) lets you cryptographically declare which Autonomous Systems are allowed to announce your IP prefixes.",
         "why":  "Without ROAs, anyone can hijack your IP space via BGP — sending your traffic through their network and impersonating your services.",
         "fix":  "Ask your hosting provider or RIR (ARIN/RIPE/APNIC/etc) to create ROAs covering each prefix you announce.",
+        "details": [
+            "Resource Public Key Infrastructure (RPKI, RFC 6480 and follow-ons) is the routing-layer counterpart to DNSSEC. The Border Gateway Protocol (BGP) that connects the world's networks has historically been an honour system: any ISP can announce any prefix, and other ISPs simply trust the announcement. Misconfigurations and deliberate hijacks have repeatedly redirected major services to the wrong networks — sometimes for hours.",
+            "A Route Origin Authorization (ROA) is a cryptographically signed statement, published by the legitimate holder of a prefix, declaring which Autonomous System (AS) numbers are authorised to originate that prefix. Networks that do RPKI validation reject announcements that don't match a published ROA — closing off the hijack path for any prefix with a ROA in place.",
+            "Adoption has accelerated significantly. Most major transits (Cloudflare, Telia, NTT, Cogent, AT&T) drop RPKI-Invalid routes today, meaning a hijack of a properly-ROA'd prefix is rejected globally within seconds. Publishing ROAs is a quick conversation with whoever holds your IP allocation: AWS, GCP, and Azure publish ROAs for their customer prefixes by default; smaller hosters often need an explicit request to the RIR (ARIN, RIPE, APNIC, AFRINIC, LACNIC).",
+            "Vendor Audit checks the validation state via RIPEstat for each prefix the audit's IPs fall into. Valid means a ROA exists and matches the announcement. NotFound means no ROA covers the prefix — the announcement is technically still routed, but the prefix is unprotected against hijacks. Invalid means a ROA exists and doesn't match — usually a misconfiguration that should be fixed urgently.",
+        ],
     },
     "routing": {
         "what": "This section covers IP-level reachability and routing security: IPv6 connectivity and RPKI Route Origin Authorizations for both IP families.",
         "why":  "IPv6-only users can't reach IPv4-only sites, and prefixes without ROAs are vulnerable to BGP hijacks that redirect traffic to attackers.",
         "fix":  "Add AAAA records to enable IPv6, and ask your hosting provider or RIR to publish ROAs for every prefix your AS announces.",
+        "details": [
+            "Routing-layer security and reachability are usually invisible — until they aren't. The two checks in this section cover the cases where they aren't: a domain that's unreachable for users on IPv6-only networks, and a prefix that's vulnerable to BGP hijacking because no Route Origin Authorisation has been published.",
+            "Both checks rely on RIPEstat's public BGP and IRR data. The IRR / RIS check confirms the prefix appears in real-world routing tables — a sanity check that the announcement is actually visible from RIPE's collectors. The RPKI check pulls the validated ROA payloads and compares them to the observed origin AS.",
+        ],
     },
     "ipv6": {
         "what": "IPv6 connectivity makes your site reachable for the growing share of users on IPv6-only networks (mobile, enterprise, some ISPs).",
         "why":  "IPv4 address exhaustion means more networks are deploying IPv6-only access; IPv4-only domains are simply unreachable for those users.",
         "fix":  "Add AAAA records pointing to IPv6 addresses on your hosting; most CDNs and cloud providers offer this with a single config flag.",
+        "details": [
+            "IPv6 deployment crossed 40% of global traffic in 2023 and is still climbing — driven by mobile carriers (T-Mobile, Verizon, Vodafone are mostly IPv6 internally), large ISPs in India and China, and the simple fact that IPv4 addresses cost real money now. A growing fraction of users reach the internet via IPv6 first; for them, an IPv4-only domain looks slow at best (NAT64 translation in the path) and unreachable at worst (carrier-grade NAT failures).",
+            "Enabling IPv6 is usually trivial. Every major cloud provider (AWS, GCP, Azure, Cloudflare, Fastly, Akamai) offers IPv6 with a config-flag toggle. The DNS record is an AAAA pointing to the IPv6 address; that's the entire DNS-side change. Server-side, every modern web server (nginx, Apache, IIS) listens on IPv6 by default; if you're running them on a VPS, the provider has likely already assigned you a /64.",
+            "The check looks for an AAAA record on the apex domain. A common deployment mistake is to enable IPv6 on www but not on the apex (or vice versa) — both should resolve to IPv6 addresses. If the audit reports IPv6 not configured on a site you know has IPv6, double-check that AAAA exists for the exact hostname in the report (apex vs. www).",
+        ],
     },
     "page_analysis": {
         "what": "A passive read of the homepage HTML for Subresource Integrity, mixed content, third-party origins, and basic accessibility signals.",
         "why":  "Missing SRI on third-party scripts means a CDN compromise injects code into your site; mixed content allows tampering with HTTPS pages.",
         "fix":  "Add integrity= attributes to all <script> and <link> tags loading from third-party origins; never include http:// resources in HTTPS pages.",
+        "details": [
+            "Page analysis is a single GET of the homepage with the response body parsed for a small set of signals. It's gated behind --deep because it's slower (the body has to be fetched and parsed) and noisier (sites behind bot-mitigation challenges produce unreliable findings). The output is a parser inventory and a handful of derived findings.",
+            "Subresource Integrity (SRI, W3C standard) is a hash attribute on <script> and <link> tags that lets the browser verify the resource's bytes match an expected hash before executing it. Without SRI, a third-party CDN compromise injects code into every page that loads from it — the 2018 British Airways, Newegg, and Ticketmaster compromises all chained through the same Magecart pattern. With SRI on every external resource, the same compromise causes scripts to fail to load instead of executing attacker code.",
+            "Mixed content is HTTP resources loaded by an HTTPS page. Browsers block it by default for scripts and stylesheets (active mixed content) but allow it for images and audio with a console warning (passive mixed content). Either way, a network attacker can substitute the unencrypted resource — for a script that's RCE on every page view; for an image it's smaller but still a tracking and tampering vector.",
+            "The accessibility signals are not a substitute for a proper a11y audit: empty buttons, missing alt= attributes, missing form labels, missing <html lang=>. They're the kind of thing a quick visual scan catches that automated WAVE/Axe/pa11y tooling would catch in much more depth. A clean signal here means nothing structural is obviously broken; it doesn't mean the site is fully accessible.",
+        ],
     },
 }
 
@@ -1357,8 +1510,8 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
     out.append("")
 
     # ── MX ───────────────────────────────────────────────────────────────
-    out.append(_subheading(f"MX records — {domain_label} (RFC 5321, 7505)"))
-    out.append("")
+    out.extend(_subheading_with_explanation(
+        f"MX records — {domain_label} (RFC 5321, 7505)", "mx"))
     if mx:
         if mx.get("error"):
             out.append(_status("info",
