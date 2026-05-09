@@ -4202,6 +4202,23 @@ def score_results(results):
         e, p = _w(label, outcome)
         pts.append((label, e, p))
 
+    def _was_skipped(check_dict):
+        """True when a check was skipped by the audit-level wall-clock deadline.
+
+        The harness sets results[key] = {"error": "Skipped: audit deadline ..."}
+        when a check doesn't return within AUDIT_WALL_DEADLINE_S. That's
+        uncertainty, not failure — the host was dropping packets, the check
+        couldn't decide. Treating it as a hard failure (penalising every
+        TLS-dependent rubric row) is wrong: if the host comes back online
+        five minutes later and serves a perfectly fine TLS endpoint, the
+        score should reflect that. We surface skipped checks as info only,
+        not as fails.
+        """
+        if not check_dict:
+            return False
+        err = check_dict.get("error", "")
+        return isinstance(err, str) and err.startswith("Skipped:")
+
     spf    = results.get("spf",    {})
     dmarc  = results.get("dmarc",  {})
     mx     = results.get("mx",     {})
@@ -4317,17 +4334,28 @@ def score_results(results):
             elif hv_ver is not None:
                 _p("HTTP version", "http1")
     else:
-        # When TLS fails we still count TLS-dependent items in the denominator
-        # so a broken site can't score better by percentage than a working one.
-        # tls_cert_error=True → port 443 open, cert is self-signed/untrusted.
-        # tls_cert_error=False → no port 443 at all.
-        cert_err = tls.get("tls_cert_error", False)
-        _p("TLS connection",         "cert_error" if cert_err else "no_tls")
-        _p("TLS 1.3",                "older")
-        _p("Certificate lifetime",   "long_lived")
-        _p("Certificate name match", "cert_error" if cert_err else "no_match")
-        _p("HTTP/2",                 "not_supported")
-        _p("HTTP version",           "http1")
+        # TLS errored. Distinguish two cases:
+        #   1. Hard error (connection refused, cert mismatch, etc.) — the
+        #      site genuinely has a TLS problem. Apply the full rubric so
+        #      the broken TLS shows up in the denominator and a broken
+        #      site can't out-percentage a working one.
+        #   2. Audit-deadline skip (host dropping packets, check timed out
+        #      without deciding) — uncertainty, not failure. Skip the
+        #      rubric entirely and let the partial-audit notice at the top
+        #      of the report explain what happened. If the host comes back
+        #      and later serves clean TLS, this row not having scored is
+        #      the right answer; penalising it as 0/13 punishes a transient
+        #      reachability problem.
+        if not _was_skipped(tls):
+            # tls_cert_error=True → port 443 open, cert is self-signed/untrusted.
+            # tls_cert_error=False → no port 443 at all.
+            cert_err = tls.get("tls_cert_error", False)
+            _p("TLS connection",         "cert_error" if cert_err else "no_tls")
+            _p("TLS 1.3",                "older")
+            _p("Certificate lifetime",   "long_lived")
+            _p("Certificate name match", "cert_error" if cert_err else "no_match")
+            _p("HTTP/2",                 "not_supported")
+            _p("HTTP version",           "http1")
 
     # ── HTTP→HTTPS redirect ──────────────────────────────────────────────────
     hr = results.get("http_redirect", {})
@@ -4461,12 +4489,15 @@ def score_results(results):
         if grade in _W["SSL Labs grade"]:
             _p("SSL Labs grade", grade)
         # grade=None / unknown → excluded
-    else:
-        # --ssl was NOT used. If TLS is missing entirely (hard connection
-        # failure), add 0/10 so the missing TLS shows up in the denominator.
-        # If TLS works we simply haven't run the test — no points either way.
-        if tls.get("error") and not tls.get("tls_cert_error"):
-            _p("SSL Labs grade", "no_tls_at_all")
+
+    # When --ssl wasn't used we don't synthesize an SSL Labs row at all.
+    # The previous version emitted "SSL Labs grade: no_tls_at_all" (0/5)
+    # whenever the local TLS check errored — including audit-deadline
+    # skips on packet-dropping hosts, which had nothing to do with SSL
+    # Labs. The TLS rubric above already covers absence-of-TLS findings;
+    # a synthesized SSL Labs row was redundant at best and misleading
+    # ("SSL Labs grade indicates serious TLS issues" when SSL Labs never
+    # ran) at worst.
 
     # ─────────────────────────────────────────────────────────────────────────
     # 2.1.0 additions below this line
