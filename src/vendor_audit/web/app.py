@@ -46,7 +46,7 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter
@@ -624,7 +624,13 @@ async def form_page(request: Request):
 @app.get("/audit", include_in_schema=False)
 @app.get("/audit/", include_in_schema=False)
 @limiter.limit(LIMIT_FORM)
-async def audit_get(request: Request, domain: str = "", fresh: int = 0, deep: int = 0):
+async def audit_get(
+    request: Request,
+    domain: str = "",
+    fresh: int = 0,
+    deep: int = 0,
+    from_: str = Query("", alias="from"),
+):
     """GET entry point — bookmarkable / shareable URL.
 
     With no `?domain=` query param, redirects to the form page (303).
@@ -646,6 +652,16 @@ async def audit_get(request: Request, domain: str = "", fresh: int = 0, deep: in
     cache is 24h, so re-audit is a real 3-5s operation, not the
     sub-second cache hit it used to be when TTL was 60s).
 
+    `from` is an optional hidden field set by the inline audit-another-
+    domain form on the result page. It carries the domain currently
+    displayed in the report. When the submitted `domain` matches
+    `from` (case-insensitive, trimmed), we promote the request to
+    fresh=1 — the user is asking to re-audit the same domain and
+    expects a real re-audit, not a cache hit. Equivalent to clicking
+    a "Re-audit this domain" button without needing one. Without
+    this, typing the current domain and clicking Audit would just
+    return the same cached page.
+
     deep=1 enables --deep-mode checks (DANE, STARTTLS-MX, page parse).
     The form's optional checkbox sends this; it adds 3-5 seconds and
     is opt-in to keep the default audit fast. The flag is forwarded
@@ -665,6 +681,15 @@ async def audit_get(request: Request, domain: str = "", fresh: int = 0, deep: in
     """
     if not domain or not domain.strip():
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+    # Same-domain re-audit: when the form's `from` field matches the
+    # submitted `domain`, promote to fresh=1 so the cache is bypassed.
+    # The form on the result page sets `from` to the displayed domain;
+    # the home form does not set it. Comparison is case-insensitive
+    # and whitespace-trimmed, so 'Example.com' submitted against a
+    # report for 'example.com' still triggers the bypass.
+    if from_ and domain.strip().lower() == from_.strip().lower():
+        fresh = 1
 
     # Cheap pre-flight: catch obviously bad input here so the user
     # doesn't see a loading page that resolves to an error. The full

@@ -1071,8 +1071,16 @@ def _render_action_bar_html(data, domain):
     # same as the home form. The Deep checkbox defaults to the current
     # report's deep state — reading a deep-mode report and want
     # another deep audit? Already checked.
+    #
+    # The hidden `from` field carries the currently-displayed domain.
+    # The /audit handler compares it against the submitted `domain`
+    # and, if they match, promotes the request to fresh=1 so the
+    # cache is bypassed. Without this, typing the same domain that's
+    # already on screen and clicking Audit would just return the
+    # cached page.
     out.append('  <form class="inline-audit-form" method="get" action="/audit"'
                ' aria-label="Audit another domain">')
+    out.append(f'    <input type="hidden" name="from" value="{_h(domain)}">')
     out.append(
         '    <input type="text" name="domain" placeholder="example.com"'
         ' required autocomplete="off" autocapitalize="off" autocorrect="off"'
