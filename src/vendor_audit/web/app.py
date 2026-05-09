@@ -547,30 +547,64 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response: Response = await call_next(request)
 
         # Most pages are JS-free → script-src 'none' (the strictest setting,
-        # blocking even legitimate scripts on the page). The result page
-        # loads /static/result.js for the expand/collapse-all buttons, so
-        # for that path we allow script-src 'self' — own-origin scripts
-        # only, no inline, no 'unsafe-eval', no third-party.
+        # blocking even legitimate scripts on the page).
         #
-        # We match by URL path. The result page is served from
-        # /audit/result and from /audit/<domain>.txt's HTML twin (rendered
-        # by the same code path), but the .txt download is text/plain so
-        # CSP doesn't matter there. The /static/result.js path itself
-        # doesn't need script-src for its own response (it IS the script,
-        # not a page that loads scripts), but it doesn't hurt to keep
-        # consistent headers.
+        # The result page loads /static/result.js for the expand-all /
+        # collapse-all buttons and the inline-form blank-submit / same-
+        # domain bypass-cache helpers. Cloudflare also auto-injects its
+        # Web Analytics / Rocket Loader / Email Decoder scripts into
+        # responses behind its proxy — both as external loads from
+        # cloudflareinsights.com / ajax.cloudflare.com / cdn-cgi/, and
+        # as small inline bootstrap snippets. To let those Cloudflare
+        # injections run, the result-page CSP includes 'unsafe-inline'
+        # and the relevant Cloudflare hosts. This is a deliberate
+        # trade-off:
+        #
+        #   - Our /static/result.js is same-origin and would have run
+        #     under the stricter script-src 'self' too — the loosening
+        #     is purely for Cloudflare's injected code, not ours.
+        #   - 'unsafe-inline' weakens defence-in-depth: if there's
+        #     ever an XSS bug in our HTML rendering, the CSP no longer
+        #     blocks the injected payload. The mitigation is that
+        #     Jinja2 autoescaping is on for all templates and we
+        #     manually escape (_h) every user-supplied value into the
+        #     rendered HTML.
+        #   - Vendor Audit's own audit will flag this as a CSP weakness
+        #     when run against vendoraudit.org. That's accurate — and
+        #     fixable later by either disabling Cloudflare's injected
+        #     scripts (Web Analytics off, Rocket Loader off) or moving
+        #     to a nonce-per-request CSP that lets specific scripts
+        #     through without 'unsafe-inline'.
+        #
+        # The form, loading, and error pages stay at script-src 'none'.
+        # No JS lives there and the user input is short-lived; tighter
+        # is better.
         path = request.url.path
         is_result_page = (
             path == "/audit/result" or path == "/static/result.js"
         )
         if is_result_page:
-            script_src = "script-src 'self'"
+            script_src = (
+                "script-src 'self' 'unsafe-inline' "
+                "https://static.cloudflareinsights.com "
+                "https://ajax.cloudflare.com"
+            )
         else:
             script_src = "script-src 'none'"
+
+        # connect-src controls fetch/XHR/beacon destinations. Cloudflare
+        # Web Analytics POSTs page metrics to cloudflareinsights.com,
+        # which the default 'self' fallback would block. Same scope as
+        # script-src — only loosened for the result page.
+        if is_result_page:
+            connect_src = "connect-src 'self' https://cloudflareinsights.com"
+        else:
+            connect_src = "connect-src 'self'"
 
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             f"{script_src}; "
+            f"{connect_src}; "
             "style-src 'self' 'unsafe-inline'; "  # inline styles in templates
             "img-src 'self' data:; "
             "object-src 'none'; "
