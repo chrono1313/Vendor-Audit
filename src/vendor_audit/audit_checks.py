@@ -1277,6 +1277,12 @@ def check_ip_routing(domain):
     timeout = RIPESTAT_TIMEOUT
     RETRIES = 2
 
+    # Wall-clock anchor for the whole check — used to distinguish "sum of
+    # all RIPEstat call elapsed" (timings, below) from "actual wall-clock
+    # time the check spent waiting on RIPEstat" (which includes the
+    # parallelism savings). If wall ≪ sum, parallelism is working.
+    check_t0 = time.monotonic()
+
     # Per-call timing log. Each _ripe_get call appends a tuple of
     # (endpoint_short_name, total_elapsed_seconds, attempts, status).
     # status is "ok" / "error" / "retry-ok" (succeeded after retry).
@@ -1441,8 +1447,9 @@ def check_ip_routing(domain):
                 tag += "/error"
             parts.append(tag)
         total = sum(t[1] for t in timings)
-        log.info("ip_routing %s RIPEstat: %s (total=%.2fs)",
-                 domain, " ".join(parts), total)
+        wall = time.monotonic() - check_t0
+        log.info("ip_routing %s RIPEstat: %s (sum=%.2fs wall=%.2fs)",
+                 domain, " ".join(parts), total, wall)
 
     return result
 
