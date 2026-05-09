@@ -228,32 +228,14 @@ def render_result(envelope: dict) -> str:
     parts.append(_render_footer_html(data, domain))
 
     parts.append('</main>')
-    # Result-page JS — only on the result page. Wires up the expand-all
-    # / collapse-all buttons on the detail-controls toolbar and the
-    # inline-form blank-submit / same-domain-bypass-cache helpers.
-    # Loaded as an external <script src> rather than inline so the CSP
-    # can stay at script-src 'self' instead of needing 'unsafe-inline'
-    # or a per-payload SHA hash.
-    #
-    # No `defer` attribute. Earlier versions used <script ... defer>,
-    # which queues the script to run after HTML parsing but in document
-    # order with other deferred scripts on the page. Cloudflare's
-    # auto-injected analytics beacon — itself a deferred external
-    # script that Firefox's Enhanced Tracking Protection blocks at
-    # load time — was preceding ours in document order, and the
-    # failed-to-load defer script caused our defer script to never
-    # execute (Firefox quirk; the script loaded with status 200 but
-    # the IIFE never ran). Without `defer`, the script executes
-    # synchronously when the parser reaches it. We place this tag at
-    # the very end of <body> so the entire DOM (the form, the detail
-    # sections, etc.) is already parsed by the time the script runs;
-    # no DOMContentLoaded waiting needed.
-    #
-    # data-cfasync="false" tells Cloudflare Rocket Loader to leave this
-    # script alone. Rocket Loader rewrites <script> tags to load
-    # asynchronously through its own loader, which would defeat the
-    # point of placing the tag at the end of body.
-    parts.append('<script src="/static/result.js" data-cfasync="false"></script>')
+    # Result-page JS — small client-side helper for the expand-all /
+    # collapse-all controls on the Detail section. Loaded as an external
+    # <script src> from /static/result.js so the result-page CSP can
+    # stay at script-src 'self' — own-origin only, no inline, no eval,
+    # no third-party. The script is at the very end of <body> so the
+    # entire DOM is parsed before it runs; no DOMContentLoaded gating
+    # needed.
+    parts.append('<script src="/static/result.js"></script>')
     parts.append('</body></html>')
     return "\n".join(parts)
 
@@ -1063,20 +1045,10 @@ def _render_action_bar_html(data, domain):
     Two things in this row:
       1. Download as .txt
       2. Inline audit-another-domain form: a domain input, Deep
-         checkbox, and Audit button. The form has data attributes
-         that the result-page JS reads to enable two conveniences:
-         (a) submitting with the input empty audits the current
-         domain; (b) submitting with the same domain that's already
-         displayed automatically adds fresh=1 to bypass the cache,
-         since the user is asking for a re-audit not a stale view.
-         Without JS the form behaves as a plain inline-audit form
-         and the user types the domain manually for both cases.
-
-    A separate "Re-audit this domain" button used to live here. It
-    was removed once the inline form covered the same case (blank
-    input + Audit, with the JS shortcut making it a single click).
-    The footer still has an "Audit another domain" link as a
-    fallback.
+         checkbox, and Audit button. The user types the domain
+         they want; submission goes through the loading page just
+         like submitting from the home page. The Deep checkbox
+         defaults to whatever the current report ran with.
 
     The slowest-checks panel and version line stay in the footer.
     """
@@ -1095,20 +1067,15 @@ def _render_action_bar_html(data, domain):
     )
     out.append('  </div>')
 
-    # Inline audit-another-domain form. The data-current-domain attribute
-    # carries the currently-displayed domain so the result-page JS can
-    # (a) fill the input on blank submit, and (b) add fresh=1 when the
-    # submitted domain matches. The placeholder shows the current domain
-    # so users see what blank-submit will audit.
-    placeholder = f"Audit a domain (default: {domain})"
+    # Inline audit form. Submits to /audit (the loading-page entry),
+    # same as the home form. The Deep checkbox defaults to the current
+    # report's deep state — reading a deep-mode report and want
+    # another deep audit? Already checked.
+    out.append('  <form class="inline-audit-form" method="get" action="/audit"'
+               ' aria-label="Audit another domain">')
     out.append(
-        f'  <form class="inline-audit-form" method="get" action="/audit"'
-        f' aria-label="Audit another domain"'
-        f' data-current-domain="{_h(domain)}">'
-    )
-    out.append(
-        f'    <input type="text" name="domain" placeholder="{_h(placeholder)}"'
-        ' autocomplete="off" autocapitalize="off" autocorrect="off"'
+        '    <input type="text" name="domain" placeholder="example.com"'
+        ' required autocomplete="off" autocapitalize="off" autocorrect="off"'
         ' spellcheck="false" data-1p-ignore data-lpignore="true"'
         ' data-form-type="other">'
     )
@@ -1199,6 +1166,63 @@ def _render_unexpected(envelope: dict) -> str:
 
 
 # ── Document head + embedded CSS ─────────────────────────────────────────────
+
+# Result-page JS — small client-side helper that powers the expand-all /
+# collapse-all controls and the inline-form blank-submit / same-domain
+# bypass-cache shortcuts. Inlined directly into the page response (see
+# render_result) rather than loaded from an external <script src>; see
+# the comment there for the reasoning. Also exposed at /static/result.js
+# in app.py for any client that wants to fetch the source directly.
+_RESULT_JS = """\
+(function () {
+  'use strict';
+
+  // ── Expand-all / collapse-all controls ────────────────────────────
+  function setAll(open) {
+    var nodes = document.querySelectorAll(
+      'details.detail-section, details.subsection'
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      if (open) {
+        nodes[i].setAttribute('open', '');
+      } else {
+        nodes[i].removeAttribute('open');
+      }
+    }
+  }
+
+  function initExpandCollapse() {
+    var buttons = document.querySelectorAll('.detail-controls .detail-btn');
+    for (var i = 0; i < buttons.length; i++) {
+      (function (btn) {
+        btn.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          var action = btn.getAttribute('data-action');
+          if (action === 'expand-all') {
+            setAll(true);
+          } else if (action === 'collapse-all') {
+            setAll(false);
+          }
+        });
+      })(buttons[i]);
+    }
+  }
+
+  function init() {
+    initExpandCollapse();
+  }
+
+  // Script tag is at the end of <body> so the DOM is already parsed
+  // when this runs. The readyState check guards the case where someone
+  // loads the script earlier (e.g. via fetch+eval).
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+"""
+
 
 _DOC_HEAD = """<!doctype html>
 <html lang="en">
