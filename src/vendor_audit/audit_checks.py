@@ -1256,15 +1256,25 @@ def check_ip_routing(domain):
         we have to parse, just to check if our specific prefix is in
         the originating list. With the narrowing it's typically
         kilobytes.
-      - Per-call timeout is bounded by _http_timeout (default 5s).
-        Two attempts per call: RIPEstat is reliable when healthy, but
+      - Per-call timeout is 8s (RIPESTAT_TIMEOUT below), higher than the
+        global _http_timeout default of 5s. RIPEstat's read-replica
+        latency varies — most calls return in ~500ms, but on degraded
+        days a single call can take 5-7s before the data arrives. With
+        the 5s global timeout the first attempt timed out and the
+        retry took another 6s, doubling wall time for no benefit. 8s
+        absorbs the slow-but-recovering cases without forcing retries.
+        Other checks (TLS, HTTP, security.txt) keep the 5s ceiling
+        because they talk to the audited domain, where 5s of silence
+        legitimately means "too slow."
+      - Two attempts per call: RIPEstat is reliable when healthy, but
         occasional transient slowness and 5xx errors do happen, and a
         single retry recovers most of them. Worst-case wall time per
         call is ~2× timeout.
     """
     RIPESTAT = "https://stat.ripe.net/data"
+    RIPESTAT_TIMEOUT = 8     # higher than the global _http_timeout — see docstring
     SOURCEAPP = "vendor-audit"
-    timeout = _http_timeout
+    timeout = RIPESTAT_TIMEOUT
     RETRIES = 2
 
     # Per-call timing log. Each _ripe_get call appends a tuple of
