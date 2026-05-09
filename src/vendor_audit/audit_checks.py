@@ -2086,11 +2086,31 @@ def check_security_txt(domain):
 #    body and blowing the per-check latency budget.
 #  - If the path returns 200 (SPA shell that catches all routes), we report
 #    'spa_or_2xx' and the rubric leaves it 0/0 — we have no signal either way.
-#  - HTTPS only. Falling back to HTTP for this would mostly catch sites that
-#    don't even run HTTPS, which is already a much louder finding upstream.
+#  - HTTPS first, HTTP fallback. The original implementation was HTTPS-only
+#    on the rationale that "HTTP-only is already a louder finding upstream."
+#    That misses exactly the population we most want to flag: an old Apache
+#    2.2 / IIS 6 / nginx 0.x stack leaking its version on port 80, where
+#    HTTPS may not be configured at all, may have a broken cert, or may
+#    proxy to a different vhost than HTTP. We now probe HTTPS first
+#    (canonical production view); if HTTPS gives no usable signal (errored,
+#    2xx SPA shell, 3xx redirect), we fall back to HTTP. The probe_url
+#    field in the result records which scheme actually produced the
+#    finding so the report is transparent about where the disclosure was
+#    observed.
 
 def check_error_page(domain):
     """Probe for default error page disclosure.
+
+    Probes a deliberately-non-existent path and inspects the body for
+    fingerprints of default error pages. The probe is HTTPS-first; if
+    the HTTPS attempt doesn't yield a 4xx/5xx body to inspect (HTTPS
+    isn't running, redirects to a different page, returns 200 from a
+    SPA shell), we fall back to an HTTP probe. Older servers that
+    leak their version most distinctively (Apache 2.x, nginx 1.0-1.4,
+    IIS 6/7) are also the population most likely to be HTTP-only or
+    to have broken HTTPS — skipping those is exactly the wrong call.
+    The final probe_url field reports which protocol's response we
+    inspected.
 
     Returns:
       outcome:    'custom_404' | 'default_no_version' | 'default_with_version'
@@ -2105,74 +2125,104 @@ def check_error_page(domain):
     # ("vendor-audit-probe-…") so operators reading their access log can tell
     # what hit them. UUID guarantees the path doesn't accidentally exist.
     probe_path = f"/vendor-audit-probe-{uuid.uuid4().hex}"
-    probe_url  = f"https://{domain}{probe_path}"
 
-    result = {
-        "outcome":   "error",
-        "detected":  None,
-        "version":   None,
-        "status":    None,
-        "probe_url": probe_url,
-        "error":     None,
-    }
+    def _attempt(scheme):
+        """Run one probe at the given scheme. Returns a partial result dict.
+        outcome is one of 'default_with_version' | 'default_no_version' |
+        'custom_404' | 'spa_or_2xx' | 'error'.
+        """
+        url = f"{scheme}://{domain}{probe_path}"
+        out = {
+            "outcome":   "error",
+            "detected":  None,
+            "version":   None,
+            "status":    None,
+            "probe_url": url,
+            "error":     None,
+        }
+        body = ""
+        status = None
+        try:
+            with _http_stream(url, follow_redirects=False) as resp:
+                status = resp.status_code
+                chunks = []
+                total = 0
+                CAP = 16 * 1024
+                for chunk in resp.iter_bytes(chunk_size=4096):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= CAP:
+                        break
+                body = b"".join(chunks).decode("utf-8", errors="replace")
+        except Exception as e:
+            out["error"] = str(e)
+            return out
 
-    body = ""
-    status = None
-    try:
-        # _http_stream gives us a body cap without buffering the whole response.
-        # Same pattern check_redirect uses for its 200 OK content sniff.
-        with _http_stream(probe_url, follow_redirects=False) as resp:
-            status = resp.status_code
-            chunks = []
-            total = 0
-            CAP = 16 * 1024
-            for chunk in resp.iter_bytes(chunk_size=4096):
-                chunks.append(chunk)
-                total += len(chunk)
-                if total >= CAP:
-                    break
-            body = b"".join(chunks).decode("utf-8", errors="replace")
-    except Exception as e:
-        result["error"] = str(e)
-        return result
+        out["status"] = status
 
-    result["status"] = status
+        # 2xx on a UUID path → SPA shell catching everything, or a wildcard
+        # route. No 404 to inspect, no signal.
+        if status is not None and 200 <= status < 300:
+            out["outcome"] = "spa_or_2xx"
+            return out
 
-    # 2xx on a UUID path → SPA shell catching everything, or a wildcard route.
-    # No 404 to inspect, no signal. Rubric scores this as 0/0.
-    if status is not None and 200 <= status < 300:
-        result["outcome"] = "spa_or_2xx"
-        result["error"]   = None
-        return result
+        # 3xx — follow_redirects=False, so we have no body to inspect. No
+        # signal. (A real 404 from Apache/nginx/IIS doesn't redirect.)
+        if status is not None and 300 <= status < 400:
+            out["outcome"] = "spa_or_2xx"
+            return out
 
-    # 3xx redirected somewhere — we set follow_redirects=False, so this is rare,
-    # but if it happens we have no body to inspect. Treat as no-signal.
-    if status is not None and 300 <= status < 400:
-        result["outcome"] = "spa_or_2xx"
-        return result
+        # 4xx/5xx (or any other status with a body) — match against
+        # fingerprints.
+        for fp in _ERROR_FINGERPRINTS:
+            for pat in fp["body_patterns"]:
+                if pat.search(body):
+                    out["detected"] = fp["name"]
+                    ver_re = fp["version_pattern"]
+                    if ver_re is not None:
+                        m = ver_re.search(body)
+                        if m:
+                            out["version"] = m.group("version")
+                    if out["version"]:
+                        out["outcome"] = "default_with_version"
+                    else:
+                        out["outcome"] = "default_no_version"
+                    return out
 
-    # 4xx/5xx (or any other status with a body) — match against fingerprints.
-    for fp in _ERROR_FINGERPRINTS:
-        for pat in fp["body_patterns"]:
-            if pat.search(body):
-                result["detected"] = fp["name"]
-                ver_re = fp["version_pattern"]
-                if ver_re is not None:
-                    m = ver_re.search(body)
-                    if m:
-                        result["version"] = m.group("version")
-                if result["version"]:
-                    result["outcome"] = "default_with_version"
-                else:
-                    result["outcome"] = "default_no_version"
-                result["error"] = None
-                return result
+        # Body present, status non-2xx/3xx, no fingerprint matched → operator
+        # has a custom error page.
+        out["outcome"] = "custom_404"
+        return out
 
-    # Body present, status non-2xx, no fingerprint matched → operator has a
-    # custom error page. Pass.
-    result["outcome"] = "custom_404"
-    result["error"]   = None
-    return result
+    # ── HTTPS first ──────────────────────────────────────────────────────────
+    https_result = _attempt("https")
+
+    # If HTTPS gave us a definitive answer (default error page detected, or a
+    # custom 404 we could read), return that. The HTTPS view is the canonical
+    # production view when both work.
+    if https_result["outcome"] in ("default_with_version", "default_no_version", "custom_404"):
+        return https_result
+
+    # ── Fallback: HTTP ───────────────────────────────────────────────────────
+    # Reached when HTTPS errored (no listener, cert failure, timeout) or
+    # returned 2xx/3xx (SPA shell or redirect, no body to inspect). We now
+    # probe port 80. This is where Apache 2.2 / IIS 6 / nginx 0.x default
+    # pages typically still live — exactly the population we most want to
+    # flag.
+    http_result = _attempt("http")
+
+    # If the HTTP probe found something definitive, return it. The probe_url
+    # field already reflects http:// so the report is transparent about
+    # where the disclosure was actually found.
+    if http_result["outcome"] in ("default_with_version", "default_no_version", "custom_404"):
+        return http_result
+
+    # Neither probe yielded a definitive answer. Prefer the HTTPS result
+    # because it preserves the original behaviour for SPA / no-HTTPS sites
+    # (spa_or_2xx / error), and the HTTPS-side error message is usually
+    # more informative (cert problems, connection refused, etc.) than the
+    # HTTP-side equivalent.
+    return https_result
 
 
 # ── CORS configuration ────────────────────────────────────────────────────────
