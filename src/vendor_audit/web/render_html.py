@@ -1039,20 +1039,31 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
 # ── Footer ───────────────────────────────────────────────────────────────────
 
 def _render_action_bar_html(data, domain):
-    """Render the same actions+info as the footer, but as a top-of-report
-    element. Lets a reader download the .txt or audit another domain
-    without scrolling all the way down past the detail sections.
+    """Render the top-of-report action bar.
 
-    Same DOM as the footer (so existing CSS reuses), but with a
-    .top-action-bar marker class for any positioning tweaks. The slowest-
-    checks panel is omitted up here — that's diagnostic info that belongs
-    after the report, not before it. The version line is also omitted up
-    top; one footer is enough for that.
+    Three things in this row:
+      1. Download as .txt
+      2. Re-audit this domain (form, preserves deep flag)
+      3. Audit another domain — an inline form with a domain input,
+         Audit button, and Deep checkbox. Lets the reader pivot to
+         a different domain without going back to the home page.
+
+    The third element is a real <form> submitting to /audit (not a
+    link), so the loading page kicks in just like submitting from
+    the home page. The Deep checkbox defaults to whatever the
+    current report ran with — if you're reading a deep-mode report,
+    you probably want deep mode for the next domain too.
+
+    The slowest-checks panel and version line stay in the footer.
     """
     deep = bool(data.results.get("_scan", {}).get("deep", False))
     txt_href = f"/audit/{_h(domain)}.txt"
     if deep:
         txt_href += "?deep=1"
+
+    deep_input_reaudit = ('<input type="hidden" name="deep" value="1">'
+                          if deep else "")
+    deep_checkbox_attrs = ' checked' if deep else ''
 
     out = ['<aside class="top-action-bar">']
     out.append('  <div class="footer-actions">')
@@ -1065,20 +1076,36 @@ def _render_action_bar_html(data, domain):
     # loading page during the 3-5s re-audit. /audit forwards the fresh
     # flag through to /audit/result, which bypasses the cache and runs
     # a fresh audit. The deep flag is preserved so a re-audit of a
-    # deep result stays a deep result; without this the user would
-    # silently switch to a faster, shallower audit on re-audit.
-    deep_input = ('<input type="hidden" name="deep" value="1">'
-                  if deep else "")
+    # deep result stays a deep result.
     out.append(
         f'    <form class="reaudit-form" method="get" action="/audit">'
         f'<input type="hidden" name="domain" value="{_h(domain)}">'
         f'<input type="hidden" name="fresh" value="1">'
-        f'{deep_input}'
+        f'{deep_input_reaudit}'
         f'<button type="submit" class="as-link">Re-audit this domain</button>'
         f'</form>'
     )
-    out.append('    <a href="/">Audit another domain</a>')
     out.append('  </div>')
+
+    # Inline audit-another-domain form. Submits to /audit (the loading-
+    # page entry), same as the home form. The deep checkbox defaults to
+    # the current report's deep state. Autocomplete-suppression
+    # attributes match the home page's input so password managers and
+    # form-fill tools stay out of the way.
+    out.append('  <form class="inline-audit-form" method="get" action="/audit"'
+               ' aria-label="Audit another domain">')
+    out.append(
+        '    <input type="text" name="domain" placeholder="Audit another domain..."'
+        ' required autocomplete="off" autocapitalize="off" autocorrect="off"'
+        ' spellcheck="false" data-1p-ignore data-lpignore="true"'
+        ' data-form-type="other">'
+    )
+    out.append('    <label class="inline-deep">'
+               f'<input type="checkbox" name="deep" value="1"{deep_checkbox_attrs}>'
+               '<span>Deep</span></label>')
+    out.append('    <button type="submit">Audit</button>')
+    out.append('  </form>')
+
     out.append('</aside>')
     return "\n".join(out)
 
@@ -1719,7 +1746,76 @@ a:hover { color: var(--accent-hover); }
   border-bottom: 1px solid var(--border-soft);
   font-size: 0.88rem;
 }
-.top-action-bar .footer-actions { margin-bottom: 0; }
+.top-action-bar .footer-actions {
+  margin-bottom: 0.7rem;
+}
+
+/* Inline audit-another-domain form, sitting under the action links in
+   the top action bar. Compact: input + Deep checkbox + Audit button on
+   one row. The input takes flex:1 so it expands to fill available
+   width, while the checkbox and button stay at their natural sizes. */
+.top-action-bar .inline-audit-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  flex-wrap: wrap;
+}
+.top-action-bar .inline-audit-form input[type="text"] {
+  flex: 1;
+  min-width: 0;  /* allow the input to shrink below its default min */
+  font: inherit;
+  font-size: 0.92rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--fg);
+}
+.top-action-bar .inline-audit-form input[type="text"]::placeholder {
+  color: var(--muted-soft);
+}
+.top-action-bar .inline-audit-form input[type="text"]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+.top-action-bar .inline-audit-form .inline-deep {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  user-select: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+}
+.top-action-bar .inline-audit-form .inline-deep input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.top-action-bar .inline-audit-form .inline-deep:hover {
+  color: var(--fg);
+}
+.top-action-bar .inline-audit-form button[type="submit"] {
+  font: inherit;
+  font-size: 0.92rem;
+  padding: 0.45rem 1rem;
+  background: var(--accent);
+  color: rgb(20, 22, 28);
+  font-weight: 600;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+.top-action-bar .inline-audit-form button[type="submit"]:hover {
+  background: var(--accent-hover);
+}
+
 .footer-actions { margin-bottom: 0.6rem; }
 .footer-actions a {
   margin-right: 1.2rem;
