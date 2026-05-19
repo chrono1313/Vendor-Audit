@@ -1,5 +1,5 @@
 {
-    "rubric_version": "1.0",
+    "rubric_version": "1.1",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
@@ -72,7 +72,8 @@
         "HTTP": [
             "HTTP version",
             "HTTP\u2192HTTPS redirect",
-            "Redirect first-hop hygiene"
+            "Redirect first-hop hygiene",
+            "www and apex unified"
         ],
         "Website": [
             "Server header",
@@ -659,6 +660,25 @@
                 "possible": 0
             }
         },
+        "_comment_www_apex_unified": "Mozilla deployment guidance: pick one canonical web hostname (apex OR www) and redirect the other variant to it, so a user typing either form lands at the same page. We don't score the CHOICE of canonical form — apex-canonical and www-canonical both pass — only the unification. 'split' (both serve content but neither redirects) and 'half_missing' (one variant has no A/AAAA, so users typing it get DNS errors) both score 0/1. 'unified' is full credit. 'not_scored' (both unreachable / DNS errors) is 0/0 — no signal.",
+        "www and apex unified": {
+            "unified": {
+                "earned": 1,
+                "possible": 1
+            },
+            "split": {
+                "earned": 0,
+                "possible": 1
+            },
+            "half_missing": {
+                "earned": 0,
+                "possible": 1
+            },
+            "not_scored": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
         "_comment_website": "Website - origin-side hygiene: server header disclosure, security headers, cookies, security.txt, clock, page-level deep checks.",
         "Server header": {
             "absent_or_proxy": {
@@ -1141,6 +1161,7 @@
         "HSTS max-age strength": "HSTS max-age \u2265 180 days",
         "Cookie name prefixes": "Cookies use __Host-/__Secure- prefixes correctly",
         "Redirect first-hop hygiene": "First redirect hop goes to HTTPS on same host",
+        "www and apex unified": "Apex and www variants unified (one redirects to the other)",
         "Server clock accuracy": "Server clock in sync with UTC",
         "Cert covers www variant": "Certificate covers www / apex variant",
         "Subresource Integrity": "External scripts use Subresource Integrity",
@@ -1197,6 +1218,14 @@
             "default_with_version": "Default error page detected with version disclosure",
             "spa_or_2xx":           "Default error page check did not run (probe returned 2xx/3xx \u2014 SPA shell, wildcard route, or WAF redirect)",
             "error":                "Default error page check could not run (probe failed)"
+        },
+        "www and apex unified": {
+            "_comment": "Multi-tier outcome \u2014 'half_missing' carries a missing_side ('apex' or 'www') that the renderer substitutes into a 'half_missing_apex' / 'half_missing_www' key. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
+            "_default":     "Apex and www variants are not unified",
+            "split":        "Apex and www both serve content but neither redirects to the other (split-brain site)",
+            "half_missing": "Only one of apex / www has DNS records \u2014 users typing the other form get a DNS error",
+            "half_missing_apex": "Apex has no A/AAAA records \u2014 users typing the bare domain get a DNS error",
+            "half_missing_www":  "www variant has no A/AAAA records \u2014 users typing www get a DNS error"
         }
     },
     "_comment_scoring_policy_eol": "Per-library 0/1 scoring for detected EOL libraries, per-OS 0/3 scoring for detected EOL operating systems. Both implementations work the same way: score_results() in audit_checks.py iterates the relevant list (results['versioned_libs']['libraries'] for libs, results['os_eol']['os_findings'] for OSes) after all other checks and appends per-finding tuples with hardcoded weights (libraries are 0/1, OSes are 0/3). The rubric does NOT contain weight entries for these labels — they're appended directly. Category resolution falls through to 'Website' (the catch-all), which is the correct destination.",

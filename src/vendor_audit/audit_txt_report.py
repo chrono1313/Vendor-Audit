@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -246,6 +246,7 @@ _CRITICALITY_RANK_TABLE = {
     # ── Tier 3: defence-in-depth / hardening ────────────────────────────
     "TLS 1.3":                      55,
     "HTTP→HTTPS redirect":          56,
+    "www and apex unified":         57,
     "CSP":                          58,
     "CSP script-src safety":        59,
     "CSP object-src":               60,
@@ -466,13 +467,14 @@ EXPLANATIONS = {
         ],
     },
     "http": {
-        "what": "This section covers HTTP transport: HTTP/2 and HTTP/3 support, plain-HTTP→HTTPS redirect, and first-hop redirect hygiene.",
-        "why":  "Modern protocols are faster and more reliable; missing HTTPS redirects let attackers serve content unencrypted; off-host first hops leak Referer and bypass HSTS.",
-        "fix":  "Enable HTTP/2 and HTTP/3 in your server or CDN, ensure http://<domain> 301-redirects directly to https://<domain> on the same host.",
+        "what": "This section covers HTTP transport: HTTP/2 and HTTP/3 support, plain-HTTP→HTTPS redirect, first-hop redirect hygiene, and apex/www unification.",
+        "why":  "Modern protocols are faster and more reliable; missing HTTPS redirects let attackers serve content unencrypted; off-host first hops leak Referer and bypass HSTS; split apex/www forms leave users with DNS errors or split-brain sites.",
+        "fix":  "Enable HTTP/2 and HTTP/3 in your server or CDN; ensure http://<domain> 301-redirects directly to https://<domain> on the same host; publish A/AAAA records for both the apex and www and 301-redirect one form to the other.",
         "details": [
             "The HTTP transport layer has evolved significantly since HTTP/1.1 was standardised in 1997. HTTP/2 (RFC 7540 in 2015, updated by RFC 9113 in 2022) introduced multiplexing — many requests over a single TCP connection — which fixed head-of-line blocking and dramatically reduced page load times for resource-heavy sites. HTTP/3 (RFC 9114, 2022) replaced TCP with QUIC over UDP, fixing head-of-line blocking at the transport layer too and reducing handshake latency on lossy networks like mobile and satellite.",
             "Enabling these is essentially free for most operators: nginx, Apache, Caddy, IIS and every major CDN support HTTP/2 with a one-line config change. HTTP/3 needs UDP allowed through your firewall but otherwise drops in the same way. There's no compatibility downside — clients fall back to HTTP/1.1 transparently if the newer versions aren't advertised.",
             "First-hop redirect hygiene is the small but important detail of redirecting users to HTTPS on the same host before redirecting anywhere else. http://example.com should land on https://example.com, which can then redirect to https://www.example.com. Skipping that step (going straight to the www variant) means the apex domain never gets an HSTS header for the user's browser, leaving the next plain-HTTP visit to example.com unprotected.",
+            "The apex (example.com) and www (www.example.com) forms of your domain should resolve to one canonical site. Mozilla's web-deployment guidance is that a domain picks one canonical hostname (either form is fine) and the other variant redirects to it. When the two forms aren't unified, users who type the variant you didn't plan for get either a DNS error (if one form has no A/AAAA records) or a separate split-brain site (if both serve content but neither redirects). If your registrar doesn't support apex-level aliasing (ALIAS / ANAME / CNAME-flattening), a free static redirector pointing the apex at the www site is the usual fix.",
         ],
     },
     "http_version": {
@@ -1107,6 +1109,12 @@ class _ReportData:
             "Mixed content (in-page)": "Mixed content detected on HTTPS page",
             "Cookie name prefixes":    "Cookies use __Host-/__Secure- prefix incorrectly",
             "Redirect first-hop hygiene":  "First redirect hop is off-host or HTTP",
+            "www and apex unified":    {
+                "_default":     "Apex and www variants are not unified",
+                "split":        "Apex and www both serve content but neither redirects to the other (Mozilla deployment guidance: one canonical host)",
+                "half_missing_apex": "Apex has no A/AAAA records \u2014 users typing the bare domain get a DNS error",
+                "half_missing_www":  "www variant has no A/AAAA records \u2014 users typing www get a DNS error"
+            },
             "Cert covers www variant": "TLS certificate doesn't cover www / apex variant",
             "Server clock accuracy":   "Server clock is significantly skewed from UTC",
             "SSL Labs grade":          "SSL Labs grade indicates serious TLS issues",
@@ -1221,6 +1229,25 @@ class _ReportData:
                 cors = self.results.get("cors") or {}
                 outcome = cors.get("outcome")
                 if outcome and outcome in entry:
+                    return entry[outcome]
+            # www/apex unification: outcome can be 'unified', 'split',
+            # 'half_missing', or 'not_scored'. For half_missing we
+            # synthesize a key like 'half_missing_apex' or
+            # 'half_missing_www' from results['www_apex_unified'].missing_side
+            # so the finding text can name the missing variant. Falls
+            # back to _default if missing_side isn't set or the key
+            # isn't present in the entry.
+            if label == "www and apex unified":
+                wau = self.results.get("www_apex_unified") or {}
+                outcome = wau.get("outcome")
+                if outcome == "half_missing":
+                    side = wau.get("missing_side")
+                    key = f"half_missing_{side}" if side else "half_missing"
+                    if key in entry:
+                        return entry[key]
+                    if "half_missing" in entry:
+                        return entry["half_missing"]
+                elif outcome and outcome in entry:
                     return entry[outcome]
             # Future multi-tier checks would add their lookups here.
             return entry.get("_default")
@@ -2116,6 +2143,36 @@ def _render_http_section(data):
             else:
                 parts.append(_status("warn",
                     f"First redirect hop is off-host ({first_hop}) — leaks Referer and prevents HSTS for the apex"))
+
+    # ── www and apex unified (1.1) ───────────────────────────────────────────
+    wau = r.get("www_apex_unified", {}) or {}
+    wau_outcome = wau.get("outcome")
+    if wau_outcome == "unified":
+        apex_h = wau.get("apex_host", "")
+        www_h  = wau.get("www_host", "")
+        parts.append(_status("pass",
+            f"Apex and www unified ({apex_h} \u2194 {www_h})"))
+    elif wau_outcome == "split":
+        apex_h = wau.get("apex_host", "")
+        www_h  = wau.get("www_host", "")
+        parts.append(_status("fail",
+            f"Apex and www serve separate pages \u2014 neither {apex_h} nor {www_h} "
+            f"redirects to the other"))
+    elif wau_outcome == "half_missing":
+        missing = wau.get("missing_side")
+        if missing == "apex":
+            apex_h = wau.get("apex_host", "")
+            www_h  = wau.get("www_host", "")
+            parts.append(_status("fail",
+                f"Apex {apex_h} has no A/AAAA records \u2014 users typing the bare "
+                f"domain get a DNS error (web/TLS audited at {www_h} via fallback)"))
+        else:  # "www"
+            apex_h = wau.get("apex_host", "")
+            www_h  = wau.get("www_host", "")
+            parts.append(_status("fail",
+                f"www variant {www_h} has no A/AAAA records \u2014 users typing the "
+                f"www form get a DNS error"))
+    # wau_outcome == "not_scored" or missing: no row emitted
 
     http3       = server.get("http3_advertised")
     alt_svc_val = server.get("alt_svc")

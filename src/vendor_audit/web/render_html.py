@@ -250,6 +250,11 @@ def render_result(envelope: dict) -> str:
 
 def _render_header_html(data, domain, audit_domain, timestamp, duration_ms):
     redirected = (audit_domain and audit_domain != domain)
+    # www-fallback (1.1): apex has no A/AAAA, web/TLS checks were routed
+    # at www. This is NOT an HTTP-layer redirect — the apex simply has
+    # no addresses to redirect FROM — so the language differs.
+    redirect_envelope = data.results.get("redirect", {}) or {}
+    www_fallback = bool(redirect_envelope.get("www_fallback"))
     deep = data.results.get("_scan", {}).get("deep", False)
     ts_human = _format_timestamp(timestamp)
 
@@ -259,7 +264,16 @@ def _render_header_html(data, domain, audit_domain, timestamp, duration_ms):
     out.append('    <div class="brand">Vendor Audit</div>')
     out.append('  </a>')
     out.append(f'  <h1 class="domain">{_h(domain)}</h1>')
-    if redirected:
+    if www_fallback:
+        fb_host = redirect_envelope.get("www_fallback_host") or audit_domain
+        out.append(
+            f'  <p class="redirect-notice">'
+            f'Apex <strong>{_h(domain)}</strong> has no DNS records \u2014 '
+            f'web and TLS audited against <strong>{_h(fb_host)}</strong>; '
+            f'email still audited against the apex.'
+            f'</p>'
+        )
+    elif redirected:
         out.append(
             f'  <p class="redirect-notice">'
             f'Redirects to <strong>{_h(audit_domain)}</strong> — '

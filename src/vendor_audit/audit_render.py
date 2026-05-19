@@ -32,7 +32,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 import sys
 from collections import defaultdict
@@ -614,10 +614,19 @@ def render(original_domain, audit_domain, r, dns_server):
 
     redirect = r.get("redirect", {})
     redirected = redirect.get("redirected", False)
+    www_fallback = redirect.get("www_fallback", False)
 
     print(f"\n{c(BOLD+CYAN, '━'*56)}")
     print(f"{c(BOLD+CYAN, f'  Security Health Check — {original_domain}')}")
-    if redirected:
+    if www_fallback:
+        # The user typed the apex but the apex has no A/AAAA, so web/TLS
+        # checks were routed at www. This is NOT a real HTTP redirect —
+        # there's nothing to redirect FROM at the apex. Communicate that
+        # accurately so the report doesn't read as "apex redirects to www".
+        fb_host = redirect.get("www_fallback_host", audit_domain)
+        print(f"{c(YELLOW, f'  Apex {original_domain} has no DNS records \u2014 auditing {fb_host} for web/TLS')}")
+        print(f"{c(YELLOW, f'  Email still audited against {original_domain}')}")
+    elif redirected:
         print(f"{c(YELLOW, f'  Website redirects to: {audit_domain}')}")
         print(f"{c(YELLOW, f'  Email audited for both: {original_domain} and {audit_domain}')}")
         print(f"{c(YELLOW, f'  Web/TLS checks against: {audit_domain}')}")
@@ -944,6 +953,43 @@ def render(original_domain, audit_domain, r, dns_server):
         print(c(GREY, f"  verify with: curl -v http://{audit_domain}"))
     elif hr_status == "unreachable":
         print(f"  {c(GREY, '–')} HTTP port 80 not reachable{hr_detail}")
+
+    # ── www and apex unified (1.1) ───────────────────────────────────────────
+    wau = r.get("www_apex_unified", {}) or {}
+    wau_outcome = wau.get("outcome")
+    if wau_outcome == "unified":
+        # No finding emitted — passing row appears in the breakdown.
+        apex_h = wau.get("apex_host", "")
+        www_h  = wau.get("www_host", "")
+        print(ok(f"Apex and www unified ({apex_h} \u2194 {www_h})"))
+    elif wau_outcome == "split":
+        apex_h = wau.get("apex_host", "")
+        www_h  = wau.get("www_host", "")
+        print(bad(
+            f"Apex and www serve separate pages \u2014 neither {apex_h} nor {www_h} "
+            f"redirects to the other (Mozilla deployment guidance)",
+            "HTTP \u2014 apex and www are split (no redirect between them)",
+            "www and apex unified",
+        ))
+    elif wau_outcome == "half_missing":
+        missing = wau.get("missing_side")
+        if missing == "apex":
+            apex_h = wau.get("apex_host", "")
+            print(bad(
+                f"Apex {apex_h} has no A/AAAA records \u2014 users typing the bare "
+                f"domain get a DNS error",
+                f"HTTP \u2014 apex ({apex_h}) has no DNS records",
+                "www and apex unified",
+            ))
+        else:  # "www"
+            www_h = wau.get("www_host", "")
+            print(bad(
+                f"www variant {www_h} has no A/AAAA records \u2014 users typing the "
+                f"www form get a DNS error",
+                f"HTTP \u2014 www ({www_h}) has no DNS records",
+                "www and apex unified",
+            ))
+    # wau_outcome == "not_scored" or missing: no row, no finding.
 
     # ── HSTS ─────────────────────────────────────────────────────────────────
     hsts = r["hsts"]
@@ -2365,7 +2411,7 @@ def render(original_domain, audit_domain, r, dns_server):
 # guard in vendor_audit.py refuses to append rows from a different schema to
 # an existing CSV; users see a clear error asking them to start a fresh file.
 
-_SCHEMA_VERSION = "1.0"
+_SCHEMA_VERSION = "1.1"
 
 
 def _yn(v):
@@ -2465,6 +2511,7 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
     starttls = results.get("starttls_mx", {}) or {}
     error_page = results.get("error_page", {}) or {}
     cors      = results.get("cors", {}) or {}
+    wau     = results.get("www_apex_unified", {}) or {}
 
     # ── Email rollup statuses ─────────────────────────────────────────────────
     if mx.get("error"):
@@ -2737,6 +2784,9 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
         "http_first_hop_status":       first_hop_status,
         "http_first_hop_url":          redir.get("first_hop_url") or "",
         "http_response_elapsed_ms":    _str_or_blank(redir.get("elapsed_ms")),
+        "http_www_apex_outcome":       wau.get("outcome") or "",
+        "http_www_apex_missing_side":  wau.get("missing_side") or "",
+        "http_www_fallback":           _yn(redir.get("www_fallback") or False),
 
         # ── Website — server / headers / cookies / clock / page signals ───────
         "web_server_header_kind":      server_kind if not srv.get("error") else "unreachable",
@@ -2957,6 +3007,8 @@ CSV_FIELDS = [
     "http_redirect_status", "http_redirect_detail",
     "http_first_hop_status", "http_first_hop_url",
     "http_response_elapsed_ms",
+    "http_www_apex_outcome", "http_www_apex_missing_side",
+    "http_www_fallback",
 
     # Website — server / headers / cookies / security.txt / clock / page (deep)
     "web_server_header_kind", "web_server_header", "web_x_powered_by",

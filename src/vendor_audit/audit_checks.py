@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 import os
 import re
@@ -1910,7 +1910,17 @@ def check_redirect(domain, body_cap=None):
             final = final.split(":")[0]
             if final.startswith("www."):
                 final = final[4:]
-            redirected = final != domain.lower().rstrip(".")
+            # Strip www. from the input side too. Without this, auditing the
+            # www form of a domain (because the apex has no A/AAAA — see the
+            # www-fallback path in audit.py) would look like a phantom
+            # redirect: domain="www.X", final="X" after strip, redirected=True
+            # even though nothing actually redirected. Symmetric stripping
+            # makes www and apex equivalent for the "did we end up somewhere
+            # else?" question, which is what this flag is for.
+            domain_compare = domain.lower().rstrip(".")
+            if domain_compare.startswith("www."):
+                domain_compare = domain_compare[4:]
+            redirected = final != domain_compare
             return {
                 "redirected":             redirected,
                 "original":               domain,
@@ -1979,6 +1989,188 @@ def check_http_redirect(domain):
     except Exception as e:
         result["status"] = "unreachable"
         result["detail"] = f"HTTP port 80 error: {e}"
+
+    return result
+
+
+# ── www / apex unification ────────────────────────────────────────────────────
+
+def _has_a_or_aaaa(host, *, lifetime=2.0):
+    """True if `host` has at least one A or AAAA record.
+
+    Treats DNS errors (timeout, SERVFAIL) as "unknown" by returning None.
+    NXDOMAIN / NoAnswer return False. The caller distinguishes True (resolves),
+    False (definitely no record), and None (couldn't tell).
+    """
+    a    = resolve(host, "A",    lifetime=lifetime)
+    aaaa = resolve(host, "AAAA", lifetime=lifetime)
+    a_err    = resolve_error(a)
+    aaaa_err = resolve_error(aaaa)
+    if a_err and aaaa_err:
+        return None
+    return bool(a or aaaa) and not (a_err and aaaa_err)
+
+
+def _probe_final_host(url, *, timeout=3.0):
+    """Send one HTTPS GET and return the final hostname after redirects.
+
+    Returns (final_host: str | None, error: str | None). Uses streaming so
+    the body isn't downloaded — we only need the final URL. Tight per-call
+    timeout because this runs once per variant and we don't want the
+    www/apex unification check to dominate the audit budget.
+
+    Only HTTPS is probed. If a server is HTTPS-broken (cert expired, port
+    443 closed) on one variant but the other works, that's still useful
+    signal: it tells us the two forms aren't unified at the HTTPS layer
+    that users actually visit. Falling back to http:// would muddy that.
+    """
+    try:
+        with _http_stream(url, follow_redirects=True, timeout=timeout) as resp:
+            final = urlparse(str(resp.url)).netloc.lower().rstrip(".")
+            final = final.split(":")[0]
+            return final, None
+    except Exception as e:
+        return None, str(e) or e.__class__.__name__
+
+
+def check_www_apex_unification(domain):
+    """Check whether the apex and www forms resolve to one canonical entry.
+
+    Mozilla's web-deployment guidance is that a domain should pick one
+    canonical hostname (apex OR www) and unify the other via redirect, so
+    a user typing either form lands at the same place. This check doesn't
+    care which form is canonical — both are fine — only that the OTHER
+    form isn't a dead end or a split-brain second site.
+
+    Outcomes:
+      - "unified":      both forms resolve and the final hosts (after
+                        redirect-following) agree, OR one form has no A/AAAA
+                        and the other redirects there from a higher-level
+                        unification we can't see (rare).
+      - "split":        both forms resolve and serve content, but each
+                        stays at itself — two separate sites.
+      - "half_missing": only one form has A/AAAA records. A user who types
+                        the missing form gets a DNS error. Carries
+                        `missing_side` ('apex' or 'www') for finding text.
+      - "not_scored":   couldn't determine (both unreachable, DNS errors).
+
+    Both probes run sequentially inside this function but the function
+    itself is invoked from audit.py's parallel check pool, so it runs
+    concurrently with all the other checks. Wall-clock cost is bounded by
+    two 3-second HTTPS probes plus four DNS queries.
+    """
+    # Normalize: figure out the apex form and the www form.
+    d = (domain or "").lower().rstrip(".")
+    if d.startswith("www."):
+        apex_host = d[4:]
+        www_host  = d
+    else:
+        apex_host = d
+        www_host  = "www." + d
+
+    result = {
+        "apex_host":     apex_host,
+        "www_host":      www_host,
+        "apex_resolves": None,
+        "www_resolves":  None,
+        "apex_final":    None,
+        "www_final":     None,
+        "apex_error":    None,
+        "www_error":     None,
+        "missing_side":  None,
+        "outcome":       None,
+    }
+
+    apex_resolves = _has_a_or_aaaa(apex_host)
+    www_resolves  = _has_a_or_aaaa(www_host)
+    result["apex_resolves"] = apex_resolves
+    result["www_resolves"]  = www_resolves
+
+    # Two probes in parallel. Bounded ~3s wall-clock total (the slower of
+    # the two), versus ~6s sequential. Each variant is only probed if its
+    # DNS at least *might* resolve (True or None).
+    probes: dict = {}
+
+    def _do_probe(key, host):
+        probes[key] = _probe_final_host(f"https://{host}")
+
+    threads = []
+    if apex_resolves is not False:
+        t = threading.Thread(target=_do_probe, args=("apex", apex_host), daemon=True)
+        t.start()
+        threads.append(t)
+    if www_resolves is not False:
+        t = threading.Thread(target=_do_probe, args=("www", www_host), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout=5.0)  # belt-and-braces; per-probe timeout is 3s
+
+    apex_final, apex_err = probes.get("apex", (None, None))
+    www_final,  www_err  = probes.get("www",  (None, None))
+    result["apex_final"] = apex_final
+    result["www_final"]  = www_final
+    result["apex_error"] = apex_err
+    result["www_error"]  = www_err
+
+    # Strip leading www. from both final hosts for the comparison: a final
+    # of "www.example.com" and "example.com" are the same canonical site.
+    def _strip_www(h):
+        if not h:
+            return None
+        return h[4:] if h.startswith("www.") else h
+
+    apex_canon = _strip_www(apex_final)
+    www_canon  = _strip_www(www_final)
+
+    # Decide the outcome. Order matters: most-specific cases first.
+
+    # Both DNS sides definitively resolve.
+    if apex_resolves is True and www_resolves is True:
+        if apex_final and www_final:
+            # Both probes returned a final hostname. Compare canonically.
+            if apex_canon == www_canon:
+                result["outcome"] = "unified"
+            else:
+                result["outcome"] = "split"
+        elif apex_final and not www_final:
+            # www has DNS but didn't respond to HTTPS. Apex's final host
+            # is what we have — if it points at the www variant, that's
+            # unification from the apex side. If not, treat as split
+            # because users who type www get an error.
+            if apex_canon == _strip_www(www_host):
+                result["outcome"] = "unified"
+            else:
+                result["outcome"] = "split"
+        elif www_final and not apex_final:
+            if www_canon == _strip_www(apex_host):
+                result["outcome"] = "unified"
+            else:
+                result["outcome"] = "split"
+        else:
+            # Both have A/AAAA but neither responded to HTTPS at all.
+            # Not enough signal to decide.
+            result["outcome"] = "not_scored"
+
+    # Exactly one side has A/AAAA. This is the sutherlinoregon.gov case
+    # (apex_resolves False, www_resolves True) and the inverse.
+    elif apex_resolves is True and www_resolves is False:
+        result["outcome"] = "half_missing"
+        result["missing_side"] = "www"
+    elif www_resolves is True and apex_resolves is False:
+        result["outcome"] = "half_missing"
+        result["missing_side"] = "apex"
+
+    # Mixed True/None — one resolves, the other had a DNS error. Treat the
+    # DNS-error side as unknown; don't penalise on uncertain data.
+    elif apex_resolves is True and www_resolves is None:
+        result["outcome"] = "not_scored"
+    elif www_resolves is True and apex_resolves is None:
+        result["outcome"] = "not_scored"
+
+    # Neither side resolves (False/False, False/None, None/False, None/None).
+    else:
+        result["outcome"] = "not_scored"
 
     return result
 
@@ -4736,6 +4928,17 @@ def score_results(results):
             _p("Redirect first-hop hygiene", "https_same_host")
         else:
             _p("Redirect first-hop hygiene", "off_host_first")
+
+    # ── www and apex unified (1.1) ────────────────────────────────────────────
+    # Mozilla deployment guidance: a domain should have one canonical web
+    # entry, and the other variant should redirect there. We don't care
+    # which variant is canonical — only that the OTHER form isn't a dead
+    # end (NXDOMAIN) or a second, separate site. See check_www_apex_unification.
+    wau = results.get("www_apex_unified", {})
+    wau_outcome = wau.get("outcome")
+    if wau_outcome in ("unified", "split", "half_missing"):
+        _p("www and apex unified", wau_outcome)
+    # "not_scored" (or absent) → 0/0, no rubric row emitted.
 
     # ── Cert covers redirect variant ──────────────────────────────────────────
     cert_var = results.get("cert_variant", {})

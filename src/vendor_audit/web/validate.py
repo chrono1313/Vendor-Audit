@@ -239,6 +239,21 @@ def validate_domain_input(raw: str, *, dns_check: bool = True) -> ValidatedDomai
         )
 
     addresses = _resolve_all(normalized)
+
+    # www-fallback (1.1): some domains (notably gov sites whose registrars
+    # can't ALIAS the apex to a CDN — see sutherlinoregon.gov) publish A
+    # records only on the www variant. The apex still hosts MX/SPF/DMARC
+    # records, so it IS a real, auditable domain — just not for the web
+    # checks at the apex itself. Accept the apex as the canonical domain
+    # if www.<apex> resolves to a public address; the audit orchestrator
+    # routes web checks at www in that case and the www-and-apex-unification
+    # check flags the missing apex record as a finding.
+    if not addresses and not normalized.startswith("www."):
+        www_candidate = "www." + normalized
+        www_addresses = _resolve_all(www_candidate)
+        if www_addresses:
+            addresses = www_addresses
+
     if not addresses:
         raise ValidationError(
             f"{normalized} did not resolve to any address.",

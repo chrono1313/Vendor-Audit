@@ -91,9 +91,10 @@ from .audit_checks import (
     check_tls,
     check_tls_rpt,
     check_versioned_libraries,
+    check_www_apex_unification,
 )
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 log = logging.getLogger(__name__)
 
@@ -206,6 +207,33 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
     check_timings: dict = {}
     scan_t0 = time.monotonic()
 
+    # ── Pre-flight: www fallback for apex-less domains (1.1) ─────────────
+    # If the apex has no A/AAAA but www.<apex> does, route the web/TLS
+    # checks at www instead of apex. Email/DNS checks still hit the apex
+    # because that's where MX/SPF/DMARC/etc. live. This handles sites
+    # like sutherlinoregon.gov where the registrar can't ALIAS the apex
+    # to a CDN, so the operator publishes A records on www only.
+    #
+    # The new www-and-apex-unification check runs separately and will
+    # flag this as a half_missing finding — so we route around the
+    # missing apex to produce a complete report AND surface the issue
+    # to the vendor.
+    web_host = domain
+    www_fallback = False
+    if not domain.startswith("www."):
+        apex_has_addr = audit_checks._has_a_or_aaaa(domain)
+        if apex_has_addr is False:
+            www_candidate = "www." + domain
+            www_has_addr  = audit_checks._has_a_or_aaaa(www_candidate)
+            if www_has_addr is True:
+                web_host = www_candidate
+                www_fallback = True
+                log.warning(
+                    "%s has no A/AAAA \u2014 routing web/TLS checks at %s "
+                    "(email checks still target %s)",
+                    domain, web_host, domain,
+                )
+
     # ── Redirect check first — determines which domain web checks run
     # against. In --deep mode we ask for a 5MB body cap (vs 256KB default)
     # so the page parser, which only runs under --deep, can see large
@@ -227,22 +255,22 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
     REDIRECT_HARD_TIMEOUT_S = 6
     try:
         redirect = audit_checks._run_with_hard_timeout(
-            lambda: check_redirect(domain, body_cap=body_cap),
+            lambda: check_redirect(web_host, body_cap=body_cap),
             timeout=REDIRECT_HARD_TIMEOUT_S,
         )
     except TimeoutError:
         # Synthesize a "no usable response" envelope so downstream code
         # behaves the same as if the host returned no body. The audit
-        # continues against `domain` (no redirect resolution possible);
+        # continues against `web_host` (no redirect resolution possible);
         # checks that need a body will hit their own per-call timeouts.
         log.warning(
             "redirect-check hard timeout (%ds) for %s — proceeding without "
             "redirect/body data",
-            REDIRECT_HARD_TIMEOUT_S, domain,
+            REDIRECT_HARD_TIMEOUT_S, web_host,
         )
         redirect = {
             "redirected":             False,
-            "final":                  domain,
+            "final":                  web_host,
             "first_hop_url":          None,
             "first_hop_https":        None,
             "first_hop_same_host":    None,
@@ -256,13 +284,23 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
             ),
         }
     check_timings["redirect"] = round(time.monotonic() - t, 3)
-    audit_domain = redirect["final"] if redirect["redirected"] else domain
+
+    # Annotate the redirect envelope with the www-fallback flag so the
+    # renderers can explain WHY web checks targeted www when the user
+    # typed the apex. This is distinct from a real redirect (apex →
+    # www at the HTTP layer): there's no redirect at all, the apex
+    # simply has no A/AAAA.
+    if www_fallback:
+        redirect["www_fallback"] = True
+        redirect["www_fallback_host"] = web_host
+
+    audit_domain = redirect["final"] if redirect["redirected"] else web_host
 
     if redirect["redirected"]:
         log.warning(
             "%s redirects to %s — email audited for both domains, "
             "web/TLS checks against redirect target",
-            domain, audit_domain,
+            web_host, audit_domain,
         )
 
     # Pop the cached response before storing redirect (live Response is not
@@ -290,18 +328,26 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
     ]
 
     web_checks = [
-        ("ip_routing",    lambda d: check_ip_routing(d)),
-        ("dnssec",        lambda d: check_dnssec(d)),
-        ("tls",           lambda d: check_tls(d)),
-        ("http_version",  lambda d: check_http_version(d)),
-        ("hsts",          lambda d: check_hsts(d, _cached_response=cached_resp)),
-        ("http_redirect", lambda d: check_http_redirect(d)),
-        ("server_header", lambda d: check_server_header(d, _cached_response=cached_resp)),
-        ("security_txt",  lambda d: check_security_txt(d)),
-        ("error_page",    lambda d: check_error_page(d)),
-        ("cors",          lambda d: check_cors(d)),
-        ("caa",           lambda d: check_caa(d)),
-        ("ns_soa",        lambda d: check_ns_soa(d)),
+        ("ip_routing",       lambda d: check_ip_routing(d)),
+        ("dnssec",           lambda d: check_dnssec(d)),
+        ("tls",              lambda d: check_tls(d)),
+        ("http_version",     lambda d: check_http_version(d)),
+        ("hsts",             lambda d: check_hsts(d, _cached_response=cached_resp)),
+        ("http_redirect",    lambda d: check_http_redirect(d)),
+        ("server_header",    lambda d: check_server_header(d, _cached_response=cached_resp)),
+        ("security_txt",     lambda d: check_security_txt(d)),
+        ("error_page",       lambda d: check_error_page(d)),
+        ("cors",             lambda d: check_cors(d)),
+        ("caa",              lambda d: check_caa(d)),
+        ("ns_soa",           lambda d: check_ns_soa(d)),
+        # The www/apex-unification probe is keyed off the ORIGINAL input
+        # domain, not audit_domain — we want to ask "do the apex and www
+        # forms of what the user typed unify?" Routing this through
+        # audit_domain would mean a redirect-target audit asks the
+        # question about the redirect target instead of the source, which
+        # would silently drop the half_missing finding when the source
+        # apex itself is the unresolvable one.
+        ("www_apex_unified", lambda _d: check_www_apex_unification(domain)),
     ]
 
     redirect_email_checks: list = []
