@@ -8,7 +8,7 @@ so `import vendor_audit` stays cheap.
 # Mirrors cli.__version__. The cross-module version sanity check inside cli.py
 # is the source of truth; this constant is just a convenience for tooling that
 # inspects vendor_audit.__version__.
-__version__ = "1.2"
+__version__ = "1.2.1"
 
 
 def main():

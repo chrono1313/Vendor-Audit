@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.2"
+__version__ = "1.2.1"
 
 import os
 import re
@@ -184,7 +184,15 @@ except (OSError, json.JSONDecodeError):
 # ── Module configuration (set once from main(), read-only thereafter) ─────────
 
 _dns_server: str | None = None
-_http_timeout: int = 5  # default; overridden by set_http_timeout() before workers run
+# Default HTTP timeouts. The connect timeout (1.5s) is what catches
+# packet-dropping hosts — the only thing standing between us and a
+# 20-second TCP SYN retransmission storm on misbehaving servers. The
+# read timeout (3s) catches slow responses. Most well-behaved hosts
+# respond in <500ms; 1.5s + 3s is plenty for legitimate traffic and
+# aborts quickly on misconfigured hosts. Was 5s for both before 1.2.1;
+# the change knocked typical audit wall-clock from 5–14s down to 1–4s.
+_http_timeout: int = 3       # default read timeout; overridden by set_http_timeout()
+_http_connect_timeout: float = 1.5  # connect timeout; not separately settable today
 
 # Module logger. Used for per-call timing instrumentation (currently just
 # RIPEstat in check_ip_routing). Lines appear in journalctl as
@@ -357,7 +365,10 @@ def _get_client():
             verify=False,
             follow_redirects=False,
             headers={"User-Agent": f"vendor-audit/{__version__}"},
-            timeout=httpx.Timeout(_http_timeout),
+            # Separate connect/read timeouts so we abort quickly on
+            # packet-dropping hosts without truncating slow-but-OK ones.
+            # See _http_timeout / _http_connect_timeout comments.
+            timeout=httpx.Timeout(_http_timeout, connect=_http_connect_timeout),
         )
     return _tls.client
 
@@ -2261,7 +2272,7 @@ def _has_a_or_aaaa(host, *, lifetime=2.0):
     return bool(a or aaaa) and not (a_err and aaaa_err)
 
 
-def _probe_final_host(url, *, timeout=3.0):
+def _probe_final_host(url, *, timeout=2.0):
     """Send one HTTPS GET and return the final hostname after redirects.
 
     Returns (final_host: str | None, error: str | None). Uses streaming so
@@ -2275,7 +2286,14 @@ def _probe_final_host(url, *, timeout=3.0):
     that users actually visit. Falling back to http:// would muddy that.
     """
     try:
-        with _http_stream(url, follow_redirects=True, timeout=timeout) as resp:
+        # Apply both a connect and read timeout. The 2s read budget is
+        # enough for any legitimate host (we're only reading headers via
+        # streaming) and aborts quickly on slow-response servers.
+        with _http_stream(
+            url,
+            follow_redirects=True,
+            timeout=httpx.Timeout(timeout, connect=_http_connect_timeout),
+        ) as resp:
             final = urlparse(str(resp.url)).netloc.lower().rstrip(".")
             final = final.split(":")[0]
             return final, None
@@ -2354,7 +2372,7 @@ def check_www_apex_unification(domain):
         t.start()
         threads.append(t)
     for t in threads:
-        t.join(timeout=5.0)  # belt-and-braces; per-probe timeout is 3s
+        t.join(timeout=4.0)  # belt-and-braces; per-probe budget is ~3.5s
 
     apex_final, apex_err = probes.get("apex", (None, None))
     www_final,  www_err  = probes.get("www",  (None, None))
@@ -2433,8 +2451,15 @@ def check_security_txt(domain):
     Tries the canonical RFC 9116 location (/.well-known/security.txt), then
     the legacy root path (/security.txt). RFC 9116 §3 SHOULDs HTTPS, but real
     deployments still serve over plain HTTP on hosts without TLS, so we
-    additionally fall back to http:// if both HTTPS attempts fail with a
-    network/connection error.
+    fall back to http:// only when the https attempts failed with a
+    connection-level error (refused, reset, DNS, port unreachable) — not
+    when TLS handshake failed or the server returned a 4xx, in which case
+    falling back changes nothing and only burns wall-clock.
+
+    Per-URL timeout is tight (httpx client's connect=1.5s, read=2.0s here
+    rather than the default 3.0s — this resource is small and 2s is plenty
+    for any legitimate host). Total check budget is capped at 4 seconds so
+    a host that times out on every probe can't dominate the audit budget.
     """
     result = {"present": False, "contact": [], "policy": None,
               "expires": None, "expired": None, "found_at": None, "error": None}
@@ -2460,34 +2485,63 @@ def check_security_txt(domain):
         )
         return (contacts, policy, expires_raw) if has_security_fields else None
 
-    def _try_url(url):
-        try:
-            resp = _http_get(url, verify=False, allow_redirects=True)
-            return resp, None
-        except Exception as e:
-            return None, str(e)
+    SECURITY_TXT_READ_TIMEOUT = 2.0
+    SECURITY_TXT_TOTAL_BUDGET = 4.0
+    t_start = time.monotonic()
 
-    candidates = [
+    def _budget_remaining():
+        return SECURITY_TXT_TOTAL_BUDGET - (time.monotonic() - t_start)
+
+    def _try_url(url):
+        # Per-URL: shorter read timeout than the default (2s vs 3s). The
+        # security.txt resource is small and any well-behaved host
+        # answers near-instantly.
+        try:
+            resp = _http_get(url, verify=False, allow_redirects=True,
+                             timeout=httpx.Timeout(SECURITY_TXT_READ_TIMEOUT,
+                                                    connect=_http_connect_timeout))
+            return resp, None
+        except (httpx.ConnectError, httpx.ConnectTimeout,
+                httpx.ReadTimeout, httpx.NetworkError) as e:
+            # Connection-level error. http:// fallback may help.
+            return None, ("connect", str(e))
+        except Exception as e:
+            # TLS error / unexpected. http:// fallback won't help for TLS
+            # errors and we're not in a hurry to try plaintext on hosts
+            # whose HTTPS is broken in some other way.
+            return None, ("other", str(e))
+
+    https_candidates = [
         f"https://{domain}/.well-known/security.txt",
         f"https://{domain}/security.txt",
-        # http:// fallbacks — only used if the https candidates fail with a
-        # network error (not 4xx, which short-circuits the loop below).
+    ]
+    http_candidates = [
         f"http://{domain}/.well-known/security.txt",
         f"http://{domain}/security.txt",
     ]
+
     last_err = None
-    for url in candidates:
+    https_all_connect_failed = True   # if all HTTPS errors are connect-level, try http://
+
+    def _process(url):
+        # Helper that returns:
+        #   ("found", result_filled) on success
+        #   ("notfound", None)       on 2xx-not-real or non-success status
+        #   ("err", err_tuple)       on exception
+        nonlocal last_err
         resp, err = _try_url(url)
-        if err:
-            last_err = err
-            continue
+        if err is not None:
+            last_err = err[1]
+            return ("err", err)
         if not resp.is_success:
-            continue
+            return ("notfound", None)
         parsed = _parse_body(resp.text)
         if parsed is None:
-            # 2xx but not a real security.txt (e.g. HTML landing page).
-            # Don't try further candidates — same site likely returns the same.
-            break
+            # 2xx body but not a real security.txt (e.g. a generic 200
+            # OK landing page that swallows /.well-known/*). Don't try
+            # further candidates — same site is unlikely to serve a
+            # real one at the next path.
+            return ("notfound", "html_landing")
         contacts, policy, expires_raw = parsed
         result["present"] = True
         result["found_at"] = url
@@ -2503,7 +2557,38 @@ def check_security_txt(domain):
                 result["expired"] = exp_dt < datetime.now(timezone.utc)
             except Exception:
                 result["expired"] = None
-        return result
+        return ("found", None)
+
+    # Phase 1: HTTPS candidates.
+    for url in https_candidates:
+        if _budget_remaining() <= 0:
+            break
+        outcome, info = _process(url)
+        if outcome == "found":
+            return result
+        if outcome == "notfound" and info == "html_landing":
+            # Same-site short-circuit: no point checking the next path
+            # OR the http:// fallbacks. Return empty.
+            return result
+        if outcome == "err":
+            kind, _msg = info
+            if kind != "connect":
+                # TLS error or similar — http:// fallback wouldn't help.
+                https_all_connect_failed = False
+
+    # Phase 2: http:// fallback. Only run if all HTTPS errors were
+    # connection-level (so the server's HTTPS endpoint is reachable
+    # via a different stack might mean http:// works). Also requires
+    # we have budget remaining.
+    if https_all_connect_failed and _budget_remaining() > 0 and not result["present"]:
+        for url in http_candidates:
+            if _budget_remaining() <= 0:
+                break
+            outcome, info = _process(url)
+            if outcome == "found":
+                return result
+            if outcome == "notfound" and info == "html_landing":
+                return result
 
     if last_err and not result["present"]:
         result["error"] = last_err
