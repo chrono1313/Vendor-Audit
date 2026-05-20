@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -428,13 +428,14 @@ EXPLANATIONS = {
         ],
     },
     "nameservers": {
-        "what": "RFC 1034 requires every domain to have at least two authoritative nameservers for redundancy.",
-        "why":  "A single nameserver is a single point of failure — if it goes down, your domain effectively disappears from the internet.",
-        "fix":  "Configure at least two nameservers, ideally on different networks; most DNS providers do this automatically.",
+        "what": "Authoritative nameservers should answer authoritatively, should not also serve recursion, and there should be more than one of them.",
+        "why":  "DNS is the gate to every other service — a single nameserver is a single point of failure for the whole domain, a lame nameserver returns errors for some users, and an open recursive nameserver is abusable for DNS amplification DDoS.",
+        "fix":  "Use a managed DNS provider, or run authoritative-only nameserver software (refuse recursion from clients outside your network). Have at least two nameservers.",
         "details": [
-            "Two-or-more nameservers is one of the oldest requirements in DNS — RFC 1034 specified it in 1987. The reason hasn't changed: DNS resolution is the gate to every other service, and a single point of failure for DNS is a single point of failure for the entire domain. Mail, web, APIs all stop working if name resolution fails.",
-            "For redundancy to actually help, the nameservers should be diverse. Two nameservers at the same hosting provider in the same datacentre give you resilience against process crashes but not against network outages or BGP issues at that provider. Many TLDs and registries actively encourage anycast deployment (where each nameserver name resolves to multiple IPs around the world) and require nameservers to be on different IPv4 prefixes.",
-            "Modern managed DNS services (Cloudflare, Route 53, Google Cloud DNS, NS1) handle this automatically — assigning four or more anycast nameservers across global infrastructure. If you're running your own nameservers, RFC 2182 has specific guidance on diversity and security; in particular, secondaries should be at a different physical location and ideally a different ISP.",
+            "RFC 1034 (1987) requires every domain to have more than one authoritative nameserver. The reason hasn't changed: a single point of failure for DNS is a single point of failure for the whole domain — mail, web, APIs all stop working if name resolution fails.",
+            "Each nameserver listed at the parent registry must actually answer authoritatively for the zone (RFC 1034 §4.2). A nameserver that's listed in delegation but doesn't serve the zone is \"lame\" — a common artefact of moving DNS providers and forgetting to update the registrar's NS records. Users routed to a lame nameserver (which one depends on their resolver) get SERVFAIL or NODATA instead of the real answer.",
+            "Authoritative nameservers should not also serve recursion to arbitrary clients (RFC 5358 / BCP 140). An authoritative-recursive nameserver is usable as a reflector in DNS amplification DDoS attacks — the attacker spoofs the victim's source IP, sends a small query, and the nameserver sends a much larger response to the victim. Authoritative-only software (or recursion restricted to internal clients) closes the reflector.",
+            "While not checked by Vendor Audit, nameserver diversity matters for the redundancy requirement to actually deliver redundancy. Two nameservers in the same datacentre or same AS give resilience against process crashes but not against network outages at that provider; RFC 2182 has specific guidance on geographic, network, and ISP diversity for self-hosted secondaries. Modern managed DNS services (Cloudflare, Route 53, Google Cloud DNS, NS1) handle this automatically with anycast across global infrastructure.",
         ],
     },
     "tls": {
