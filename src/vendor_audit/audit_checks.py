@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 
 import os
 import re
@@ -1531,7 +1531,12 @@ def check_ip_routing(domain):
     """
     RIPESTAT = "https://stat.ripe.net/data"
     RIPESTAT_TIMEOUT = 8     # higher than the global _http_timeout — see docstring
-    SOURCEAPP = "vendor-audit"
+    # sourceapp identifier per RIPEstat's polite-usage convention. Format
+    # rules: alphanumeric, hyphens, underscores only — no dots — so we use
+    # the hyphenated form of the public deployment hostname rather than
+    # 'vendoraudit.org' verbatim. See
+    # https://stat.ripe.net/docs/data-api/ripestat-data-api/#regular-usage
+    SOURCEAPP = "vendoraudit-org"
     timeout = RIPESTAT_TIMEOUT
     RETRIES = 2
 

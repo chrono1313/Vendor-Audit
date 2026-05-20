@@ -32,7 +32,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 
 import sys
 from collections import defaultdict
