@@ -1,5 +1,5 @@
 {
-    "rubric_version": "1.1",
+    "rubric_version": "1.2",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
@@ -35,6 +35,7 @@
             "DMARC sp",
             "DMARC rua reporting",
             "MX records",
+            "MX target hygiene",
             "MTA-STS",
             "TLS-RPT",
             "DANE TLSA on MX",
@@ -47,7 +48,9 @@
             "DNSSEC DNSKEY",
             "DNSSEC AD flag",
             "CAA records",
-            "Nameserver count"
+            "Nameserver count",
+            "Authoritative delegation",
+            "NS not open resolver"
         ],
         "Routing": [
             "IPv6",
@@ -219,6 +222,29 @@
             "present": {
                 "earned": 1,
                 "possible": 1
+            }
+        },
+        "_comment_mx_target_hygiene": "RFC 2181 §10.3 and RFC 5321 §5.1: MX RDATA must be a domain name (not an IP literal) AND that name must resolve directly to A/AAAA records (not via a CNAME). Real sending MTAs vary in how they handle violations — Postfix warns; some receivers bounce. Worst-of: ANY MX with a CNAME target OR ANY MX as IP literal scores 0/1. clean = 1/1. no_mx = 0/0 (the MX-records check above already covered absence).",
+        "MX target hygiene": {
+            "clean": {
+                "earned": 1,
+                "possible": 1
+            },
+            "cname_target": {
+                "earned": 0,
+                "possible": 1
+            },
+            "ip_literal": {
+                "earned": 0,
+                "possible": 1
+            },
+            "cname_and_ip": {
+                "earned": 0,
+                "possible": 1
+            },
+            "no_mx": {
+                "earned": 0,
+                "possible": 0
             }
         },
         "_comment_email_transport": "Mail transport hardening - only scored when MX exists.",
@@ -440,6 +466,36 @@
                 "possible": 1
             }
         },
+        "_comment_authoritative_delegation": "RFC 1034 §4.2: an NS listed at the parent registry MUST set the AA (Authoritative Answer) flag when queried for its own zone. An NS that doesn't is 'lame' — listed in delegation but not actually serving the zone. Worst-of: ANY lame NS scores 0/1, since users routed to that NS (luck of the resolver) get NODATA or SERVFAIL. unprobed = 0/0 (we couldn't reach any NS to test, no signal).",
+        "Authoritative delegation": {
+            "all_authoritative": {
+                "earned": 1,
+                "possible": 1
+            },
+            "some_lame": {
+                "earned": 0,
+                "possible": 1
+            },
+            "unprobed": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
+        "_comment_open_resolver": "RFC 5358 / BCP 140: an authoritative NS should not also serve recursion to arbitrary clients. An open resolver is usable as a DNS amplification reflector in DDoS attacks. Worst-of: ANY NS that returned a recursive answer for our third-party probe (cloudflare.com) scores 0/1. unprobed = 0/0.",
+        "NS not open resolver": {
+            "all_closed": {
+                "earned": 1,
+                "possible": 1
+            },
+            "some_open": {
+                "earned": 0,
+                "possible": 1
+            },
+            "unprobed": {
+                "earned": 0,
+                "possible": 0
+            }
+        },
         "_comment_tls": "TLS / certificate / HSTS - together describe the transport-security posture.",
         "TLS connection": {
             "ok": {
@@ -542,9 +598,14 @@
                 "possible": 1
             }
         },
+        "_comment_hsts_preloaded": "Four outcomes. 'preloaded' = on the live HSTS preload list, full credit. 'pending' = submitted to hstspreload.org AND accepted, waiting for the next Chromium release rollup (typically 2-3 months from submission). 'preload_directive' = header has the preload directive but the domain isn't on the list and hasn't been accepted to pending — operator may have set the directive without submitting. 'pending' and 'preload_directive' both score 0.5/1: deliberate operator action toward preloading, but not yet shipped to users. The renderer distinguishes the two so vendors who already submitted aren't told to submit again.",
         "HSTS preloaded": {
             "preloaded": {
                 "earned": 1,
+                "possible": 1
+            },
+            "pending": {
+                "earned": 0.5,
                 "possible": 1
             },
             "preload_directive": {
@@ -1150,6 +1211,9 @@
         "Reporting endpoints": "Operator collects violation reports (Report-To / Reporting-Endpoints / NEL)",
         "CAA records": "CAA records restrict certificate issuance",
         "Nameserver count": "Two or more authoritative nameservers (RFC 1034)",
+        "Authoritative delegation": "All authoritative nameservers respond authoritatively (RFC 1034)",
+        "NS not open resolver": "Authoritative nameservers do not also serve open recursion (RFC 5358 / BCP 140)",
+        "MX target hygiene": "MX targets are hostnames (not IP literals) and resolve directly to A/AAAA (no CNAME) (RFC 2181 \u00a710.3)",
         "CSP script-src safety": "CSP script-src is strict (nonce/hash, strict-dynamic, or 'none')",
         "CSP object-src": "CSP object-src restricted",
         "CSP base-uri": "CSP base-uri restricted (prevents <base> hijack)",
@@ -1178,7 +1242,12 @@
         "IPv4 RPKI": "IPv4 RPKI not-found - no ROA published, prefix unprotected",
         "IPv6 RPKI": "IPv6 RPKI not-found - no ROA published, prefix unprotected",
         "HTTP\u2192HTTPS redirect": "Port 80 open but not redirecting to HTTPS",
-        "HSTS preloaded": "HSTS preload directive present but not on preload list yet",
+        "HSTS preloaded": {
+            "_comment": "Multi-tier outcome \u2014 'pending' (submitted to hstspreload.org, accepted, waiting for next Chrome rollup) and 'preload_directive' (header has preload, never submitted) both score 0.5/1 but get different finding text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
+            "_default":          "HSTS preload directive present but not on preload list yet",
+            "pending":           "HSTS preload submission pending \u2014 accepted by hstspreload.org, waiting for the next Chrome release rollup (typically 2\u20133 months)",
+            "preload_directive": "HSTS preload directive present but the domain has not been submitted to hstspreload.org"
+        },
         "Server header": "Server header discloses software name (no version)",
         "Referrer-Policy": "Referrer-Policy present but using a weak value",
         "CSP": "CSP present but permissive (wildcard src detected)",
@@ -1226,6 +1295,15 @@
             "half_missing": "Only one of apex / www has DNS records \u2014 users typing the other form get a DNS error",
             "half_missing_apex": "Apex has no A/AAAA records \u2014 users typing the bare domain get a DNS error",
             "half_missing_www":  "www variant has no A/AAAA records \u2014 users typing www get a DNS error"
+        },
+        "Authoritative delegation": "At least one nameserver listed at the parent registry is lame \u2014 it does not answer authoritatively for this zone",
+        "NS not open resolver": "At least one authoritative nameserver also serves open recursion \u2014 abusable for DNS amplification attacks (RFC 5358)",
+        "MX target hygiene": {
+            "_comment": "Multi-tier outcome \u2014 separate keys for CNAME-only, IP-only, and both, so the finding can name what's wrong. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
+            "_default":      "MX target hygiene problem (RFC 2181 \u00a710.3)",
+            "cname_target":  "At least one MX target is a CNAME, not a direct A/AAAA (RFC 2181 \u00a710.3 violation)",
+            "ip_literal":    "At least one MX target is an IP literal, not a hostname (RFC 2181 \u00a710.3 / RFC 5321 \u00a75.1 violation)",
+            "cname_and_ip":  "MX targets include both an IP literal and a CNAME target (RFC 2181 \u00a710.3 / RFC 5321 \u00a75.1 violations)"
         }
     },
     "_comment_scoring_policy_eol": "Per-library 0/1 scoring for detected EOL libraries, per-OS 0/3 scoring for detected EOL operating systems. Both implementations work the same way: score_results() in audit_checks.py iterates the relevant list (results['versioned_libs']['libraries'] for libs, results['os_eol']['os_findings'] for OSes) after all other checks and appends per-finding tuples with hardcoded weights (libraries are 0/1, OSes are 0/3). The rubric does NOT contain weight entries for these labels — they're appended directly. Category resolution falls through to 'Website' (the catch-all), which is the correct destination.",

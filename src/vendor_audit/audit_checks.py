@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.1"
+__version__ = "1.2"
 
 import os
 import re
@@ -48,6 +48,7 @@ import base64
 import socket
 import logging
 import smtplib
+import ipaddress
 import threading
 import urllib.parse
 from html.parser import HTMLParser
@@ -60,6 +61,7 @@ import dns.message
 import dns.query
 import dns.rdatatype
 import dns.flags
+import dns.rcode
 import dns.exception
 
 import httpx
@@ -770,16 +772,35 @@ def check_mx(domain):
 
     Detects RFC 7505 null MX ('0 .') and sets 'null_mx': True in the result.
     A null MX is an explicit declaration that the domain sends and receives no mail.
+
+    Also flags two RFC 2181 §10.3 violations that occasionally trip up real
+    deployments:
+
+      - mx_is_ip: an MX target that's an IP literal (e.g. '10 192.0.2.1').
+        RFC strictly prohibits IP literals in the MX RDATA: the field is a
+        domain name, not an address. Some sending MTAs refuse such targets
+        outright; others accept them but skip MX-related TLS/SPF logic
+        because there's no hostname to authenticate.
+
+      - mx_is_cname: an MX target that's itself a CNAME (e.g. mx.example.com
+        is CNAMEd to mail.provider.net). RFC 2181 §10.3 forbids CNAMEs at
+        names referenced by other DNS records (NS, MX, etc.). Postfix and
+        Exim warn; some receivers may bounce.
+
+    Both are detected via an extra A/AAAA-then-CNAME lookup per MX target,
+    parallelised. Cost: ~2 DNS queries per MX, ~100ms typical.
     """
     records = resolve(domain, "MX")
     err = resolve_error(records)
     if err:
-        return {"error": err, "entries": [], "null_mx": False}
+        return {"error": err, "entries": [], "null_mx": False,
+                "mx_targets_ip": [], "mx_targets_cname": []}
 
     for record in records:
         parts = record.split()
         if len(parts) == 2 and parts[0] == "0" and parts[1] in (".", ""):
-            return {"entries": [], "null_mx": True}
+            return {"entries": [], "null_mx": True,
+                    "mx_targets_ip": [], "mx_targets_cname": []}
 
     parsed = []
     for record in records:
@@ -792,9 +813,55 @@ def check_mx(domain):
             continue
         host = parts[1].rstrip(".")
         parsed.append({"priority": priority, "host": host})
+    parsed.sort(key=lambda x: x["priority"])
+
+    # RFC 2181 §10.3 / RFC 5321 §5.1: MX RDATA must be a domain name, not
+    # a literal IP. Some operators try to put an IP in there; sending
+    # MTAs behave unpredictably (Postfix refuses; some accept but skip
+    # the hostname-keyed checks).
+    mx_targets_ip = []
+    for entry in parsed:
+        host = entry["host"]
+        try:
+            ipaddress.ip_address(host)
+            mx_targets_ip.append(host)
+        except (ValueError, TypeError):
+            pass
+
+    # RFC 2181 §10.3: a name referenced by an MX MUST resolve to A/AAAA
+    # records directly, NOT via a CNAME. Detect by querying for CNAME on
+    # each MX target; a non-empty CNAME RRset is the violation.
+    # We run these in parallel — for a domain with many MX, sequential
+    # CNAME queries would dominate the audit budget.
+    mx_targets_cname: list[str] = []
+    cname_lock = threading.Lock()
+
+    def _probe_cname(host):
+        # Skip IP-literal targets; they can't be CNAMEs.
+        try:
+            ipaddress.ip_address(host)
+            return
+        except (ValueError, TypeError):
+            pass
+        recs = resolve(host, "CNAME", lifetime=2.0)
+        if recs and not resolve_error(recs):
+            with cname_lock:
+                mx_targets_cname.append(host)
+
+    threads = []
+    for entry in parsed:
+        t = threading.Thread(target=_probe_cname, args=(entry["host"],),
+                             daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout=3.0)
+
     return {
-        "entries": sorted(parsed, key=lambda x: x["priority"]),
-        "null_mx": False,
+        "entries":          parsed,
+        "null_mx":          False,
+        "mx_targets_ip":    sorted(set(mx_targets_ip)),
+        "mx_targets_cname": sorted(set(mx_targets_cname)),
     }
 
 
@@ -1233,6 +1300,186 @@ def check_ns_soa(domain):
         "ns_error":      ns_err,
         "soa":           soa,
         "soa_error":     soa_err,
+    }
+
+
+# ── NS health: lame delegation + open recursive resolver ─────────────────────
+
+def check_ns_health(domain, *, ns_list=None, timeout=2.5):
+    """For each authoritative NS of `domain`, check two things:
+
+    1. Lame delegation (RFC 1034 §4.2): the NS, when queried directly for
+       NS records of this zone, MUST set the AA (Authoritative Answer) flag
+       in its response. An NS that doesn't is "lame" — it's listed at the
+       parent but doesn't actually serve this zone. Common cause: an old
+       NS left in the registrar's delegation after a DNS provider move.
+
+    2. Open recursive resolver (RFC 5358 / BCP 140): an authoritative-only
+       NS should NOT recursively resolve queries for unrelated zones from
+       arbitrary clients. An NS that does is usable for DNS amplification
+       attacks. We probe by querying for a well-known third-party zone
+       (cloudflare.com A) with the RD (Recursion Desired) bit set, and
+       checking whether the response has the RA (Recursion Available) flag
+       AND actually contains an answer for the third-party zone.
+
+    Both probes are direct UDP queries to the NS (one each), parallelised
+    across NS. Each NS hostname is resolved to an IP first via the system
+    resolver; if resolution fails the NS is skipped with an error.
+
+    Returns:
+      lame_ns:        list of NS hostnames that didn't set AA on the
+                      NS-for-own-zone query
+      open_resolver_ns: list of NS hostnames that recursively answered
+                      the cloudflare.com probe
+      probed:         total NS that were successfully probed
+      unprobed:       list of (ns_hostname, reason) for NS we couldn't
+                      reach (DNS resolution failed, UDP timeout, etc.)
+      ns_list:        the NS list we tested (echo back for renderers)
+      error:          set only if we couldn't get the NS list at all
+    """
+    # Get the NS list to probe. Caller can pre-supply (saves a DNS query
+    # when check_ns_soa already ran in this audit) or we fetch it ourselves.
+    if ns_list is None:
+        ns_records = resolve(domain, "NS")
+        ns_err     = resolve_error(ns_records)
+        if ns_err:
+            return {
+                "error":       ns_err,
+                "lame_ns":     [],
+                "open_resolver_ns": [],
+                "probed":      0,
+                "unprobed":    [],
+                "ns_list":     [],
+            }
+        ns_list = sorted(set(r.rstrip(".").lower() for r in ns_records))
+
+    if not ns_list:
+        return {
+            "error":       "no_nameservers",
+            "lame_ns":     [],
+            "open_resolver_ns": [],
+            "probed":      0,
+            "unprobed":    [],
+            "ns_list":     [],
+        }
+
+    # Probe target for the open-recursor test. cloudflare.com is a stable,
+    # high-availability zone that any open resolver can answer — and one
+    # that no authoritative NS for `domain` should answer for (cloudflare.com
+    # is not their zone). Using a third-party zone rather than something
+    # like "." or "google.com" specifically: we want a zone the NS is
+    # unlikely to be authoritative for AND a zone whose answer is small
+    # enough not to push us into TCP fallback territory.
+    RECURSION_PROBE_ZONE = "cloudflare.com"
+
+    lame:        list[str]                 = []
+    open_recur:  list[str]                 = []
+    unprobed:    list[tuple[str, str]]     = []
+    results_lock = threading.Lock()
+
+    def _probe_one(ns_host):
+        # Step 1: resolve NS hostname to an IP we can query.
+        a    = resolve(ns_host, "A",    lifetime=2.0)
+        aaaa = resolve(ns_host, "AAAA", lifetime=2.0)
+        addrs = []
+        for r in a + aaaa:
+            if not r.startswith("ERROR:"):
+                addrs.append(r)
+        if not addrs:
+            with results_lock:
+                unprobed.append((ns_host, "ns_unreachable"))
+            return
+        ns_ip = addrs[0]
+
+        # Step 2: lame-delegation probe — NS for own zone, expect AA flag.
+        # Critical: dns.message.make_query sets RD by default, and some
+        # nameservers (Cloudflare, others) interpret an RD-set query as
+        # a recursive request and serve from cache without setting AA.
+        # We're asking the NS to answer authoritatively, so RD must be
+        # cleared. We also don't want want_dnssec=True confusing things.
+        try:
+            q1 = dns.message.make_query(domain, "NS")
+            q1.flags &= ~dns.flags.RD  # clear RD — authoritative answer wanted
+            r1 = dns.query.udp(q1, ns_ip, timeout=timeout)
+            aa_set = bool(r1.flags & dns.flags.AA)
+            if not aa_set:
+                with results_lock:
+                    lame.append(ns_host)
+        except (dns.exception.DNSException, OSError):
+            with results_lock:
+                unprobed.append((ns_host, "lame_probe_failed"))
+            return
+
+        # Step 3: open-recursor probe — query for a third-party zone with
+        # RD set; flag as open if the response has RA + answer + NOERROR
+        # AND the answer is non-authoritative (AA flag clear). An NS that
+        # happens to also be authoritative for the probe target zone is
+        # NOT an open resolver — it just answered authoritatively from
+        # its own data. The AA-clear check filters that out.
+        try:
+            q2 = dns.message.make_query(RECURSION_PROBE_ZONE, "A")
+            q2.flags |= dns.flags.RD
+            r2 = dns.query.udp(q2, ns_ip, timeout=timeout)
+            ra_set     = bool(r2.flags & dns.flags.RA)
+            aa_set     = bool(r2.flags & dns.flags.AA)
+            has_answer = len(r2.answer) > 0
+            # RFC 5358 / BCP 140: an open resolver is one that recursively
+            # serves arbitrary clients. RA + non-empty answer + NOERROR
+            # AND not-authoritative = it actually recursed for us. If AA
+            # is set the NS was authoritative for the probe target, which
+            # is benign.
+            if (ra_set and has_answer
+                    and r2.rcode() == dns.rcode.NOERROR
+                    and not aa_set):
+                with results_lock:
+                    open_recur.append(ns_host)
+        except (dns.exception.DNSException, OSError):
+            # Open-resolver probe failing isn't a finding either way:
+            # it just means we couldn't conclude. We still scored the
+            # lame check (which succeeded above).
+            pass
+
+    threads = []
+    for ns in ns_list:
+        t = threading.Thread(target=_probe_one, args=(ns,), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout=timeout + 1.5)  # belt-and-braces
+
+    probed = len(ns_list) - len(unprobed)
+
+    # Defensive: if EVERY probed NS appears both lame AND open-resolver,
+    # we're almost certainly running on a network that intercepts
+    # outbound port-53 traffic and proxies it through a recursive
+    # resolver. The proxy answers our authoritative-style queries
+    # without setting AA (because it's recursive, not authoritative)
+    # AND happily answers third-party queries with RA set (because it
+    # actually IS recursive). The real-world false-positive rate for
+    # "every NS of every provider is simultaneously broken in both
+    # ways" is essentially zero. Sandbox/CI environments often have
+    # this kind of interception (egress firewall + transparent DNS
+    # proxy). Demote to unprobed so we don't dump a wall of bogus
+    # findings on the audit report.
+    if (probed > 0
+            and len(lame) == probed
+            and len(open_recur) == probed):
+        return {
+            "lame_ns":          [],
+            "open_resolver_ns": [],
+            "probed":           0,
+            "unprobed":         [(ns, "intercepted_dns") for ns in ns_list],
+            "ns_list":          ns_list,
+            "error":            "dns_intercepted",
+        }
+
+    return {
+        "lame_ns":          sorted(lame),
+        "open_resolver_ns": sorted(open_recur),
+        "probed":           probed,
+        "unprobed":         unprobed,
+        "ns_list":          ns_list,
+        "error":            None,
     }
 
 
@@ -1734,7 +1981,9 @@ def check_hsts(domain, _cached_response=None):
     """
     result = {"present": False, "max_age": None, "includes_subdomains": False,
               "preload_directive": False,
-              "preloaded": None, "preloaded_via": None, "preload_error": None}
+              "preloaded": None, "preloaded_via": None,
+              "preload_status": None,  # raw API status: 'preloaded', 'pending', 'unknown', etc.
+              "preload_error": None}
 
     def _parse_hsts_header(resp):
         out = {}
@@ -1774,9 +2023,10 @@ def check_hsts(domain, _cached_response=None):
                 f"https://hstspreload.org/api/v2/status?domain={domain}",
             )
             data = pr.json()
-            status = data.get("status", "")
-            out["preloaded"]     = (status == "preloaded")
-            out["preloaded_via"] = domain if out["preloaded"] else None
+            status = data.get("status", "") or ""
+            out["preload_status"] = status  # raw value for renderers
+            out["preloaded"]      = (status == "preloaded")
+            out["preloaded_via"]  = domain if out["preloaded"] else None
         except Exception as e:
             out["preload_error"] = str(e)
         return out
@@ -4379,6 +4629,20 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
 
     if not mx.get("error") and mx.get("entries"):
         _p("MX records", "present")
+        # MX target hygiene (1.2). Two RFC 2181 §10.3 / RFC 5321 §5.1
+        # violations: MX targets that are IP literals, and MX targets that
+        # are CNAMEs. Either is a finding; both is a worst-of outcome with
+        # its own label. Only scored when MX entries exist (no_mx is 0/0).
+        has_cname = bool(mx.get("mx_targets_cname"))
+        has_ip    = bool(mx.get("mx_targets_ip"))
+        if has_cname and has_ip:
+            _p("MX target hygiene", "cname_and_ip")
+        elif has_cname:
+            _p("MX target hygiene", "cname_target")
+        elif has_ip:
+            _p("MX target hygiene", "ip_literal")
+        else:
+            _p("MX target hygiene", "clean")
 
 
 def score_results(results):
@@ -4564,6 +4828,13 @@ def score_results(results):
         if not hsts.get("preload_error"):
             if hsts.get("preloaded"):
                 _p("HSTS preloaded", "preloaded")
+            elif hsts.get("preload_status") == "pending":
+                # Submitted to hstspreload.org AND accepted, waiting for the
+                # next Chromium release rollup. Same score as preload_directive
+                # (deliberate operator action, not yet shipped) but reported
+                # differently — telling a vendor who already submitted to
+                # "submit your site" would be useless.
+                _p("HSTS preloaded", "pending")
             elif hsts.get("preload_directive"):
                 _p("HSTS preloaded", "preload_directive")
             else:
@@ -4709,6 +4980,23 @@ def score_results(results):
     if not ns_soa.get("ns_error"):
         min_ns = _THRESH.get("min_nameservers", 2)
         _p("Nameserver count", "two_or_more" if ns_count >= min_ns else "single")
+
+    # ── NS health: lame delegation + open recursive resolver (1.2) ───────────
+    # Both scored worst-of across NS. Lame: RFC 1034 §4.2 — any NS listed
+    # at the parent that doesn't set AA on a query for its own zone is
+    # lame. Open resolver: RFC 5358 / BCP 140 — any authoritative NS that
+    # recursively answers for a third-party zone is abusable for DNS
+    # amplification. unprobed (couldn't reach any NS at all) → 0/0.
+    ns_health = results.get("ns_health", {})
+    if not ns_health.get("error"):
+        if ns_health.get("probed", 0) > 0:
+            _p("Authoritative delegation",
+               "some_lame" if ns_health.get("lame_ns") else "all_authoritative")
+            _p("NS not open resolver",
+               "some_open" if ns_health.get("open_resolver_ns") else "all_closed")
+        else:
+            _p("Authoritative delegation", "unprobed")
+            _p("NS not open resolver",     "unprobed")
 
     # ── MTA-STS / TLS-RPT / DANE — only score when MX exists ─────────────────
     has_mx = bool(mx.get("entries")) and not mx.get("null_mx")

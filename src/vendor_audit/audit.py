@@ -81,6 +81,7 @@ from .audit_checks import (
     check_mta_sts_policy,
     check_mx,
     check_ns_soa,
+    check_ns_health,
     check_os_eol,
     check_page_security_signals,
     check_redirect,
@@ -94,7 +95,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "1.1"
+__version__ = "1.2"
 
 log = logging.getLogger(__name__)
 
@@ -340,6 +341,13 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
         ("cors",             lambda d: check_cors(d)),
         ("caa",              lambda d: check_caa(d)),
         ("ns_soa",           lambda d: check_ns_soa(d)),
+        # ns_health probes each authoritative NS directly for lame
+        # delegation (RFC 1034) and open recursion (RFC 5358 / BCP 140).
+        # Keyed off the ORIGINAL input domain — DNS delegation belongs
+        # to the source zone, not the redirect target. (Same reasoning
+        # as www/apex unification below: a redirect-target audit
+        # shouldn't ask "is your customer's NS lame?")
+        ("ns_health",        lambda _d: check_ns_health(domain)),
         # The www/apex-unification probe is keyed off the ORIGINAL input
         # domain, not audit_domain — we want to ask "do the apex and www
         # forms of what the user typed unify?" Routing this through

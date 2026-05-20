@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "1.1"
+__version__ = "1.2"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -242,6 +242,9 @@ _CRITICALITY_RANK_TABLE = {
     "Cert covers www variant":      46,
     "Certificate lifetime":         47,
     "DKIM key strength":            48,
+    "Authoritative delegation":     49,   # lame NS = some users get NODATA/SERVFAIL
+    "NS not open resolver":         50,   # DDoS-amp risk; not a takeover but real
+    "MX target hygiene":            51,   # RFC 2181 violation; sending MTAs vary
 
     # ── Tier 3: defence-in-depth / hardening ────────────────────────────
     "TLS 1.3":                      55,
@@ -1070,6 +1073,14 @@ class _ReportData:
             "DNSSEC DNSKEY":           "DNSKEY missing on this zone",
             "DNSSEC AD flag":          "DNSSEC validation chain not authenticated (AD flag unset)",
             "Nameserver count":        "Fewer than two authoritative nameservers (RFC 1034)",
+            "Authoritative delegation":  "At least one nameserver listed at the parent registry is lame \u2014 it does not answer authoritatively for this zone (RFC 1034)",
+            "NS not open resolver":      "At least one authoritative nameserver also serves open recursion \u2014 abusable for DNS amplification attacks (RFC 5358 / BCP 140)",
+            "MX target hygiene":         {
+                "_default":     "MX target hygiene problem (RFC 2181 \u00a710.3)",
+                "cname_target": "At least one MX target is a CNAME (RFC 2181 \u00a710.3 violation \u2014 some receivers may bounce)",
+                "ip_literal":   "At least one MX target is an IP literal (RFC 5321 \u00a75.1 violation \u2014 MX RDATA must be a hostname)",
+                "cname_and_ip": "MX targets include both an IP literal and a CNAME target (RFC 2181 \u00a710.3 / RFC 5321 \u00a75.1 violations)"
+            },
             "IPv6":                    "IPv6 not configured",
             "IPv4 RPKI":               "IPv4 (legacy IP) prefix has no Route Origin Authorization (RPKI)",
             "IPv6 RPKI":               "IPv6 prefix has no Route Origin Authorization (RPKI)",
@@ -1248,6 +1259,40 @@ class _ReportData:
                     if "half_missing" in entry:
                         return entry["half_missing"]
                 elif outcome and outcome in entry:
+                    return entry[outcome]
+            # HSTS preloaded: two partial outcomes ('pending' and
+            # 'preload_directive') need different finding text. The
+            # scoring code maps preload_status=='pending' to outcome
+            # 'pending' and (header has preload, no API confirmation)
+            # to outcome 'preload_directive'. We re-derive the same
+            # mapping here from the hsts result so the partial-label
+            # text agrees with the score row.
+            if label == "HSTS preloaded":
+                hsts = self.results.get("hsts") or {}
+                if hsts.get("preload_status") == "pending":
+                    outcome = "pending"
+                elif hsts.get("preload_directive"):
+                    outcome = "preload_directive"
+                else:
+                    outcome = None
+                if outcome and outcome in entry:
+                    return entry[outcome]
+            # MX target hygiene: outcome derived from which of
+            # mx_targets_ip / mx_targets_cname is non-empty. Mirrors
+            # the scoring code in _score_email_block.
+            if label == "MX target hygiene":
+                mx = self.results.get("mx") or {}
+                has_cname = bool(mx.get("mx_targets_cname"))
+                has_ip    = bool(mx.get("mx_targets_ip"))
+                if has_cname and has_ip:
+                    outcome = "cname_and_ip"
+                elif has_cname:
+                    outcome = "cname_target"
+                elif has_ip:
+                    outcome = "ip_literal"
+                else:
+                    outcome = None
+                if outcome and outcome in entry:
                     return entry[outcome]
             # Future multi-tier checks would add their lookups here.
             return entry.get("_default")
@@ -1619,6 +1664,20 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 out.append(f"    {pri:>5}      {host}")
             out.append("")
             out.append("    (lower priority value = preferred)")
+
+            # MX target hygiene findings (RFC 2181 §10.3 / RFC 5321 §5.1)
+            mx_targets_ip    = mx.get("mx_targets_ip") or []
+            mx_targets_cname = mx.get("mx_targets_cname") or []
+            if mx_targets_ip or mx_targets_cname:
+                out.append("")
+            for tgt in mx_targets_ip:
+                out.append(_status("fail",
+                    f"MX target is an IP literal: {tgt} \u2014 violates RFC 5321 \u00a75.1; "
+                    f"sending MTAs may refuse or skip hostname-keyed checks"))
+            for tgt in mx_targets_cname:
+                out.append(_status("fail",
+                    f"MX target is a CNAME: {tgt} \u2014 violates RFC 2181 \u00a710.3; "
+                    f"some receivers may bounce"))
     else:
         out.append("    No MX data collected.")
 
@@ -1869,6 +1928,46 @@ def _render_dns_section(data):
                 ("SOA primary", soa.get("primary", "")),
                 ("SOA serial",  soa.get("serial",  "")),
             ]))
+
+        # ── NS health: lame delegation + open recursive resolver (1.2) ──
+        ns_health = r.get("ns_health", {}) or {}
+        if ns_health and not ns_health.get("error") and ns_health.get("ns_list"):
+            parts.append("")
+            if ns_health.get("probed", 0) > 0:
+                lame = ns_health.get("lame_ns") or []
+                if lame:
+                    if len(lame) == 1:
+                        parts.append(_status("fail",
+                            f"Lame nameserver: {lame[0]} \u2014 listed in delegation but "
+                            f"does not answer authoritatively for this zone (RFC 1034)"))
+                    else:
+                        parts.append(_status("fail",
+                            f"{len(lame)} lame nameservers: {', '.join(lame)} \u2014 "
+                            f"listed in delegation but do not answer authoritatively (RFC 1034)"))
+                else:
+                    parts.append(_status("pass",
+                        "All authoritative nameservers respond authoritatively"))
+
+                opens = ns_health.get("open_resolver_ns") or []
+                if opens:
+                    if len(opens) == 1:
+                        parts.append(_status("fail",
+                            f"Open recursive resolver: {opens[0]} \u2014 answers "
+                            f"recursion for arbitrary clients; abusable for DNS "
+                            f"amplification attacks (RFC 5358 / BCP 140)"))
+                    else:
+                        parts.append(_status("fail",
+                            f"{len(opens)} open recursive resolvers: {', '.join(opens)} \u2014 "
+                            f"abusable for DNS amplification attacks (RFC 5358 / BCP 140)"))
+                else:
+                    parts.append(_status("pass",
+                        "Nameservers do not serve open recursion"))
+
+                unprobed = ns_health.get("unprobed") or []
+                for ns_host, reason in unprobed:
+                    parts.append(_status("info",
+                        f"Could not probe {ns_host}: {reason}"))
+
         parts.append("")
         parts.append("")
 
@@ -2279,9 +2378,16 @@ def _render_hsts_section(data):
             f"Preload list check failed: {hsts['preload_error']}"))
     elif hsts.get("preloaded"):
         parts.append(_status("pass", "Domain is on the HSTS preload list"))
+    elif hsts.get("preload_status") == "pending":
+        # Submitted to hstspreload.org AND accepted, waiting for next Chrome
+        # rollup. Distinct from the bare preload-directive case below.
+        parts.append(_status("warn",
+            "HSTS preload submission pending \u2014 accepted by hstspreload.org, "
+            "waiting for the next Chrome release rollup (typically 2\u20133 months)"))
     elif hsts.get("present") and hsts.get("preload_directive"):
         parts.append(_status("warn",
-            "preload directive present but domain not yet in preload list"))
+            "preload directive present in header but domain not submitted to "
+            "hstspreload.org"))
     elif hsts.get("present") and hsts.get("preloaded") is False:
         parts.append(_status("warn", "Not in HSTS preload list"))
 

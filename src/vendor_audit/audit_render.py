@@ -32,7 +32,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.1"
+__version__ = "1.2"
 
 import sys
 from collections import defaultdict
@@ -353,6 +353,30 @@ def _render_email_section(domain_label, spf, dmarc, mx, warn, bad, err, ok):
         pri = f"{entry['priority']:>4}"
         print(f"  {c(GREEN,'✔')} {c(GREY, pri)}  {entry['host']}")
 
+    # ── MX target hygiene (1.2): RFC 2181 §10.3 / RFC 5321 §5.1 ─────────────
+    # IP literals and CNAME targets in MX RDATA are both real violations
+    # that cause downstream mail problems. The findings are separately
+    # phrased so the operator knows which target needs attention.
+    mx_targets_ip    = mx.get("mx_targets_ip") or []
+    mx_targets_cname = mx.get("mx_targets_cname") or []
+    if mx.get("entries"):
+        if mx_targets_ip:
+            for tgt in mx_targets_ip:
+                print(bad(
+                    f"MX target is an IP literal: {tgt} \u2014 violates RFC 5321 \u00a75.1; "
+                    f"sending MTAs may refuse or skip hostname-keyed checks",
+                    f"MX target — IP literal ({tgt})",
+                    "MX target hygiene",
+                ))
+        if mx_targets_cname:
+            for tgt in mx_targets_cname:
+                print(bad(
+                    f"MX target is a CNAME: {tgt} \u2014 violates RFC 2181 \u00a710.3; "
+                    f"some receivers may bounce",
+                    f"MX target — CNAME ({tgt})",
+                    "MX target hygiene",
+                ))
+
 
 def _render_mail_transport(domain_label, results, warn, bad, err, ok, prefix=""):
     """Render MTA-STS / TLS-RPT / DANE / DKIM. Only meaningful when MX present.
@@ -552,6 +576,57 @@ def _render_dns_hygiene(results, warn, bad, err, ok):
         if soa:
             serial_str = f"{soa['serial']:>10}"
             print(f"  {c(GREY, '·')} SOA primary: {c(GREY, soa['primary'])}, serial {c(GREY, serial_str)}")
+
+    # ── NS health: lame delegation + open recursive resolver (1.2) ──────────
+    ns_health = results.get("ns_health", {}) or {}
+    if ns_health and not ns_health.get("error") and ns_health.get("ns_list"):
+        if ns_health.get("probed", 0) > 0:
+            lame = ns_health.get("lame_ns") or []
+            if lame:
+                if len(lame) == 1:
+                    print(bad(
+                        f"Lame nameserver: {lame[0]} \u2014 listed in delegation but "
+                        f"does not answer authoritatively (RFC 1034)",
+                        f"DNS \u2014 lame nameserver ({lame[0]})",
+                        "Authoritative delegation",
+                    ))
+                else:
+                    print(bad(
+                        f"{len(lame)} lame nameservers: {', '.join(lame)} \u2014 "
+                        f"listed in delegation but do not answer authoritatively (RFC 1034)",
+                        f"DNS \u2014 {len(lame)} lame nameservers",
+                        "Authoritative delegation",
+                    ))
+            else:
+                print(ok("All authoritative nameservers respond authoritatively"))
+
+            opens = ns_health.get("open_resolver_ns") or []
+            if opens:
+                if len(opens) == 1:
+                    print(bad(
+                        f"Open recursive resolver: {opens[0]} \u2014 answers "
+                        f"recursion for arbitrary clients; abusable for DNS "
+                        f"amplification attacks (RFC 5358 / BCP 140)",
+                        f"DNS \u2014 open recursive resolver ({opens[0]})",
+                        "NS not open resolver",
+                    ))
+                else:
+                    print(bad(
+                        f"{len(opens)} open recursive resolvers: {', '.join(opens)} \u2014 "
+                        f"abusable for DNS amplification attacks (RFC 5358 / BCP 140)",
+                        f"DNS \u2014 {len(opens)} open recursive resolvers",
+                        "NS not open resolver",
+                    ))
+            else:
+                print(ok("Nameservers do not serve open recursion"))
+
+            unprobed = ns_health.get("unprobed") or []
+            if unprobed:
+                # Not a finding, just an informational line.
+                for ns_host, reason in unprobed:
+                    print(f"  {c(GREY, '·')} could not probe {ns_host}: {reason}")
+        else:
+            print(f"  {c(GREY, '–')} NS health probe could not reach any nameserver")
 
     # ── CAA records ─────────────────────────────────────────────────────────
     if caa:
@@ -1028,9 +1103,23 @@ def render(original_domain, audit_domain, r, dns_server):
                   "HSTS — preload check error"))
     elif hsts.get("preloaded"):
         print(ok("Domain is on the HSTS preload list"))
+    elif hsts.get("preload_status") == "pending":
+        # API says submitted-and-accepted, just queued for next Chrome
+        # rollup. Distinct from the bare preload-directive case below
+        # because the operator has already done the submission step.
+        print(warn(
+            "HSTS preload submission pending — accepted by hstspreload.org, "
+            "waiting for the next Chrome release rollup (typically 2–3 months)",
+            "HSTS — preload submission pending",
+            "HSTS preloaded",
+        ))
     elif hsts.get("present") and hsts.get("preload_directive"):
-        print(warn("preload directive present but domain not yet in preload list",
-                   "HSTS — preload pending", "HSTS preloaded"))
+        print(warn(
+            "preload directive present in header but domain not submitted to "
+            "hstspreload.org",
+            "HSTS — preload directive set but not submitted",
+            "HSTS preloaded",
+        ))
     elif hsts.get("present") and hsts.get("preloaded") is False:
         # Only report "not preloaded" when HSTS IS present — if it's missing
         # entirely, that finding already covers it; double-reporting is noise.
@@ -2411,7 +2500,7 @@ def render(original_domain, audit_domain, r, dns_server):
 # guard in vendor_audit.py refuses to append rows from a different schema to
 # an existing CSV; users see a clear error asking them to start a fresh file.
 
-_SCHEMA_VERSION = "1.1"
+_SCHEMA_VERSION = "1.2"
 
 
 def _yn(v):
@@ -2495,6 +2584,7 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
 
     caa     = results.get("caa", {}) or {}
     ns_soa  = results.get("ns_soa", {}) or {}
+    ns_health = results.get("ns_health", {}) or {}
     mta_sts = results.get("mta_sts", {}) or {}
     mta_sts_policy = results.get("mta_sts_policy", {}) or {}
     tls_rpt = results.get("tls_rpt", {}) or {}
@@ -2689,6 +2779,8 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
         "email_mx_is_null_mx":         _yn(mx.get("null_mx")),
         "email_mx_hosts":              "; ".join(e["host"] for e in mx.get("entries", []))
                                        if not mx.get("error") else "",
+        "email_mx_targets_ip":         "; ".join(mx.get("mx_targets_ip") or []),
+        "email_mx_targets_cname":      "; ".join(mx.get("mx_targets_cname") or []),
 
         # ── Email — Mail transport hardening (source domain) ──────────────────
         "email_mta_sts_present":       _yn(mta_sts.get("present")),
@@ -2737,6 +2829,9 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
         "dns_nameservers":             "; ".join(ns_soa.get("nameservers") or []),
         "dns_soa_serial":              _str_or_blank((ns_soa.get("soa") or {}).get("serial")),
         "dns_soa_primary":             (ns_soa.get("soa") or {}).get("primary", ""),
+        "dns_lame_ns":                 "; ".join(ns_health.get("lame_ns") or []),
+        "dns_open_resolver_ns":        "; ".join(ns_health.get("open_resolver_ns") or []),
+        "dns_ns_health_probed":        _str_or_blank(ns_health.get("probed")),
 
         # ── Routing — IPv4 / IPv6 / RPKI / IRR ────────────────────────────────
         "routing_ipv4_address":        v4.get("address") or "",
@@ -2772,6 +2867,7 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
         "tls_hsts_includes_subdomains":_yn(hsts.get("includes_subdomains")),
         "tls_hsts_preload_directive":  _yn(hsts.get("preload_directive")),
         "tls_hsts_preloaded":          _yn(hsts.get("preloaded")),
+        "tls_hsts_preload_status":     hsts.get("preload_status") or "",
         "tls_ssl_labs_grade":          sslr.get("worst_grade") or "",
         "tls_ssl_labs_assessed_utc":   ssl_assessed_utc,
 
@@ -2958,6 +3054,7 @@ CSV_FIELDS = [
     "email_dmarc_inherited_from", "email_dmarc_record",
     # Email — MX
     "email_mx_status", "email_mx_is_null_mx", "email_mx_hosts",
+    "email_mx_targets_ip", "email_mx_targets_cname",
     # Email — Mail transport hardening
     "email_mta_sts_present", "email_mta_sts_mode", "email_mta_sts_id",
     "email_tls_rpt_present", "email_tls_rpt_rua",
@@ -2983,6 +3080,7 @@ CSV_FIELDS = [
     "dns_caa_iodef_contacts", "dns_caa_inherited_from",
     "dns_nameserver_count", "dns_nameservers",
     "dns_soa_serial", "dns_soa_primary",
+    "dns_lame_ns", "dns_open_resolver_ns", "dns_ns_health_probed",
 
     # Routing
     "routing_ipv4_address", "routing_ipv4_asn", "routing_ipv4_asn_name",
@@ -3000,6 +3098,7 @@ CSV_FIELDS = [
     "tls_chain_status", "tls_chain_sent_count", "tls_chain_verified_count",
     "tls_hsts_status", "tls_hsts_max_age_seconds",
     "tls_hsts_includes_subdomains", "tls_hsts_preload_directive", "tls_hsts_preloaded",
+    "tls_hsts_preload_status",
     "tls_ssl_labs_grade", "tls_ssl_labs_assessed_utc",
 
     # HTTP
