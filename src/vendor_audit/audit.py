@@ -97,7 +97,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "1.5.4"
+__version__ = "1.5.5"
 
 log = logging.getLogger(__name__)
 
