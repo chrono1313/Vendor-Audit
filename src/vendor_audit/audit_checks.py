@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.5.7"
+__version__ = "1.5.8"
 
 import os
 import re
@@ -532,7 +532,16 @@ def resolve_error(records):
 
 
 def udp_query(qname, rtype, nameserver, timeout=None):
-    """Send a raw UDP DNS query to a specific nameserver. Returns response or None.
+    """Send a DNS query to a specific nameserver. Returns response or None.
+
+    Sends over UDP first; if the response comes back truncated (TC flag set),
+    retries over TCP as required by the DNS spec (RFC 1035 §4.2.1). This
+    matters for DNSSEC queries in particular: a DNSKEY response with its
+    RRSIGs (want_dnssec=True) is frequently larger than fits in a UDP packet,
+    so the server truncates it and sets TC. Without the TCP retry, the answer
+    section comes back empty and the caller wrongly concludes the zone is
+    unsigned — e.g. reporting that .org (which has been DNSSEC-signed since
+    2009) is not signed.
 
     timeout defaults to the configured http timeout so all network operations
     honour the same per-operation deadline.
@@ -542,7 +551,15 @@ def udp_query(qname, rtype, nameserver, timeout=None):
     try:
         q = dns.message.make_query(qname, rtype, want_dnssec=True)
         q.flags |= dns.flags.AD
-        return dns.query.udp(q, nameserver, timeout=timeout)
+        # udp_with_fallback sends over UDP and automatically retries over TCP
+        # if the response is truncated (TC flag), per RFC 1035. Returns
+        # (response, used_tcp). This is essential for DNSSEC queries: a DNSKEY
+        # response with its RRSIGs is often larger than a UDP packet, so it
+        # comes back truncated — without the TCP retry the answer section is
+        # empty and the caller wrongly concludes the zone is unsigned (e.g.
+        # reporting .org, signed since 2009, as unsigned).
+        resp, _used_tcp = dns.query.udp_with_fallback(q, nameserver, timeout=timeout)
+        return resp
     except (dns.exception.DNSException, OSError):
         return None
 
