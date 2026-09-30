@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.2.4"
+__version__ = "1.3.0"
 
 import os
 import re
@@ -5642,7 +5642,7 @@ def score_results(results):
         for lib in vlibs:
             if lib.get("eol_status") == "eol":
                 label = f"EOL library: {lib.get('library', '?')} {lib.get('version', '?')}"
-                pts.append((label, 0, 1))
+                pts.append((label, 0, 6))
 
     # ── EOL operating system (2.9.0) ──────────────────────────────────────────
     # Big penalty: each detected EOL OS contributes 0/3 to the score. This
@@ -5669,16 +5669,18 @@ def score_results(results):
                     label = f"EOL OS: {os_name}"
                 else:
                     label = f"EOL OS: {os_name} {ver}"
-                pts.append((label, 0, 3))
+                pts.append((label, 0, 10))
 
     # ── EOL server-side tech (PHP / ASP.NET) ──────────────────────────────────
-    # Each disclosed EOL runtime/framework version is its own 0/2 penalty.
-    # Weighted between EOL library (0/1) and EOL OS (0/3): an unsupported
+    # Each disclosed EOL runtime/framework version is its own 0/8 penalty.
+    # Weighted between EOL library (0/6) and EOL OS (0/10): an unsupported
     # PHP is more serious than a stale front-end library (it's the whole
     # server-side runtime, and PHP CVEs are actively exploited) but less
     # sweeping than an EOL operating system (which implies the kernel and
-    # every system package is unpatched too). Same 'ok'/'unknown' → not
-    # scored convention as the other two EOL checks.
+    # every system package is unpatched too). These are the heaviest
+    # penalties in the whole rubric — running unsupported software is the
+    # worst best-practice failure a vendor can have. Same 'ok'/'unknown'
+    # → not scored convention as the other two EOL checks.
     #
     # Label prefix "EOL tech:" gets top-tier criticality via _criticality_rank
     # (same treatment as EOL OS / EOL library) so these lead the Possible
@@ -5690,7 +5692,7 @@ def score_results(results):
                 tech_name = t.get("tech", "?")
                 ver       = t.get("version") or ""
                 label = f"EOL tech: {tech_name} {ver}".rstrip()
-                pts.append((label, 0, 2))
+                pts.append((label, 0, 8))
 
     earned   = sum(e for _, e, _ in pts)
     possible = sum(p for _, _, p in pts)

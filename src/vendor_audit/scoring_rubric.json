@@ -1,5 +1,5 @@
 {
-    "rubric_version": "1.2.4",
+    "rubric_version": "1.3.0",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
@@ -112,174 +112,174 @@
         "_comment_email": "Email - SPF/DMARC are the highest-impact controls a domain can publish; weighted accordingly.",
         "SPF policy": {
             "null_sender": {
-                "earned": 2,
-                "possible": 2
+                "earned": 9.0,
+                "possible": 9
             },
             "hardfail": {
-                "earned": 2,
-                "possible": 2
+                "earned": 9.0,
+                "possible": 9
             },
             "softfail": {
-                "earned": 1,
-                "possible": 2
+                "earned": 2,
+                "possible": 9
             },
             "neutral": {
                 "earned": 1,
-                "possible": 2
+                "possible": 9
             },
             "no_all_mechanism": {
                 "earned": 1,
-                "possible": 2
+                "possible": 9
             },
             "redirect_no_all": {
                 "earned": 1,
-                "possible": 2
+                "possible": 9
             },
             "redirect_target_no_spf": {
                 "earned": 1,
-                "possible": 2
+                "possible": 9
             },
             "pass_all_DANGEROUS": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 9
             },
             "missing": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 9
             }
         },
         "SPF lookup count": {
             "within_limit": {
-                "earned": 1,
-                "possible": 1
+                "earned": 4.0,
+                "possible": 4
             },
             "exceeds_limit": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 4
             }
         },
         "SPF redirect": {
             "resolves": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             }
         },
         "DMARC present": {
             "present": {
-                "earned": 1,
-                "possible": 1
+                "earned": 7.0,
+                "possible": 7
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 7
             }
         },
         "DMARC policy": {
             "reject": {
-                "earned": 2,
-                "possible": 2
+                "earned": 9.0,
+                "possible": 9
             },
             "quarantine": {
-                "earned": 1,
-                "possible": 2
+                "earned": 3,
+                "possible": 9
             },
             "none": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 9
             }
         },
         "DMARC pct": {
             "full": {
-                "earned": 1,
-                "possible": 1
+                "earned": 4.0,
+                "possible": 4
             },
             "partial": {
-                "earned": 0,
-                "possible": 1
+                "earned": 1,
+                "possible": 4
             }
         },
         "DMARC sp": {
             "enforced": {
-                "earned": 1,
-                "possible": 1
+                "earned": 4.0,
+                "possible": 4
             },
             "none": {
                 "earned": 0,
-                "possible": 1
+                "possible": 4
             }
         },
         "_comment_dmarc_rua": "Without rua=, operators can't see who's spoofing them or whether legit mail is being rejected, so a deployment is operating blind.",
         "DMARC rua reporting": {
             "present": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "MX records": {
             "present": {
-                "earned": 1,
-                "possible": 1
+                "earned": 5.0,
+                "possible": 5
             }
         },
-        "_comment_mx_target_hygiene": "RFC 2181 §10.3 and RFC 5321 §5.1: MX RDATA must be a domain name (not an IP literal) AND that name must resolve directly to A/AAAA records (not via a CNAME). Real sending MTAs vary in how they handle violations — Postfix warns; some receivers bounce. Worst-of: ANY MX with a CNAME target OR ANY MX as IP literal scores 0/1. clean = 1/1. no_mx = 0/0 (the MX-records check above already covered absence).",
+        "_comment_mx_target_hygiene": "RFC 2181 \u00a710.3 and RFC 5321 \u00a75.1: MX RDATA must be a domain name (not an IP literal) AND that name must resolve directly to A/AAAA records (not via a CNAME). Real sending MTAs vary in how they handle violations \u2014 Postfix warns; some receivers bounce. Worst-of: ANY MX with a CNAME target OR ANY MX as IP literal scores 0/1. clean = 1/1. no_mx = 0/0 (the MX-records check above already covered absence).",
         "MX target hygiene": {
             "clean": {
-                "earned": 1,
-                "possible": 1
+                "earned": 4.0,
+                "possible": 4
             },
             "cname_target": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 4
             },
             "ip_literal": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 4
             },
             "cname_and_ip": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 4
             },
             "no_mx": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 4
             }
         },
         "_comment_email_transport": "Mail transport hardening - only scored when MX exists.",
         "MTA-STS": {
             "enforce": {
-                "earned": 2,
-                "possible": 2
+                "earned": 5.0,
+                "possible": 5
             },
             "testing": {
                 "earned": 1,
-                "possible": 2
+                "possible": 5
             },
             "none": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 5
             },
             "missing": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 5
             }
         },
         "TLS-RPT": {
             "present": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "BIMI": {
             "present": {
-                "earned": 1,
+                "earned": 1.0,
                 "possible": 1
             },
             "dmarc_weak": {
@@ -287,796 +287,796 @@
                 "possible": 1
             },
             "malformed": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 1
             },
             "missing": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 1
             }
         },
         "DANE TLSA on MX": {
             "all_mx": {
-                "earned": 2,
-                "possible": 2
+                "earned": 4.0,
+                "possible": 4
             },
             "some_mx": {
-                "earned": 1,
-                "possible": 2
+                "earned": 2.0,
+                "possible": 4
             },
             "no_mx": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 4
             }
         },
-        "_comment_starttls_mx": "STARTTLS-MX probe (--deep). For each MX host we open TCP/25, EHLO, STARTTLS, and inspect the negotiated TLS version. Worst-of aggregation across hosts: an attacker can MITM the lowest-preference MX, so the weakest host defines the actual exposure. tls_1_3 → 2/2 (full credit, modern TLS); tls_1_2 → 1.5/2 (acceptable but TLS 1.3 is now widely supported and a half-point penalty rewards operators who upgrade); tls_legacy → 1/2 (TLS 1.0/1.1 negotiated; encrypted but vulnerable); no_starttls → 0/2 (server didn't advertise STARTTLS at EHLO, mail is plaintext on the wire); unprobed → 0/0 (port 25 blocked egress, connection timeout, or other network error — we couldn't conclude anything). The unprobed row is intentionally still emitted into the breakdown (rather than silently dropped) so the operator sees the check was attempted and the reason it produced no signal — silent disappearance would let an operator wrongly conclude STARTTLS is fine when it was just unprobed.",
+        "_comment_starttls_mx": "STARTTLS-MX probe (--deep). For each MX host we open TCP/25, EHLO, STARTTLS, and inspect the negotiated TLS version. Worst-of aggregation across hosts: an attacker can MITM the lowest-preference MX, so the weakest host defines the actual exposure. tls_1_3 \u2192 2/2 (full credit, modern TLS); tls_1_2 \u2192 1.5/2 (acceptable but TLS 1.3 is now widely supported and a half-point penalty rewards operators who upgrade); tls_legacy \u2192 1/2 (TLS 1.0/1.1 negotiated; encrypted but vulnerable); no_starttls \u2192 0/2 (server didn't advertise STARTTLS at EHLO, mail is plaintext on the wire); unprobed \u2192 0/0 (port 25 blocked egress, connection timeout, or other network error \u2014 we couldn't conclude anything). The unprobed row is intentionally still emitted into the breakdown (rather than silently dropped) so the operator sees the check was attempted and the reason it produced no signal \u2014 silent disappearance would let an operator wrongly conclude STARTTLS is fine when it was just unprobed.",
         "STARTTLS-MX": {
             "tls_1_3": {
-                "earned": 2,
-                "possible": 2
+                "earned": 5.0,
+                "possible": 5
             },
             "tls_1_2": {
-                "earned": 1.5,
-                "possible": 2
+                "earned": 4.0,
+                "possible": 5
             },
             "tls_legacy": {
-                "earned": 1,
-                "possible": 2
+                "earned": 2.5,
+                "possible": 5
             },
             "no_starttls": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 5
             },
             "unprobed": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 5
             }
         },
         "_comment_dkim": "DKIM common-selector probe is a partial check - selectors are operator-chosen and arbitrary, so absence at our six common names proves nothing. Score 'found' as 1/1 (positive evidence). Score 'not_found' as 0/0 (no evidence either way - drops out of the denominator entirely so we don't penalise domains using uncommon selector names).",
         "DKIM (common selectors)": {
             "found": {
-                "earned": 1,
-                "possible": 1
+                "earned": 5.0,
+                "possible": 5
             },
             "not_found": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 5
             }
         },
-        "_comment_dkim_strength": "DKIM key strength scores the WORST observed key across all found selectors. Only scored when at least one selector was found (not_found drops out, same logic as DKIM common-selector probe). Ed25519 and RSA-2048+ score full credit; RSA-1024 (deprecated by RFC 8301) scores partial; RSA <1024 (broken) scores zero. 'unparseable' (we found a record but couldn't read the key) scores 0/0 — no signal either way. 'revoked' (operator explicitly disabled the selector via empty p=) scores 0/0 — deliberate operator action, not a finding.",
+        "_comment_dkim_strength": "DKIM key strength scores the WORST observed key across all found selectors. Only scored when at least one selector was found (not_found drops out, same logic as DKIM common-selector probe). Ed25519 and RSA-2048+ score full credit; RSA-1024 (deprecated by RFC 8301) scores partial; RSA <1024 (broken) scores zero. 'unparseable' (we found a record but couldn't read the key) scores 0/0 \u2014 no signal either way. 'revoked' (operator explicitly disabled the selector via empty p=) scores 0/0 \u2014 deliberate operator action, not a finding.",
         "DKIM key strength": {
             "good": {
-                "earned": 1,
-                "possible": 1
+                "earned": 5.0,
+                "possible": 5
             },
             "weak": {
-                "earned": 0.5,
-                "possible": 1
+                "earned": 2.5,
+                "possible": 5
             },
             "broken": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 5
             },
             "unparseable": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 5
             },
             "revoked": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 5
             },
             "not_found": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 5
             }
         },
         "_comment_routing": "Routing - IPv6 reachability + RPKI/IRR per address family.",
         "IPv6": {
             "present": {
-                "earned": 2,
-                "possible": 2
+                "earned": 4.0,
+                "possible": 4
             },
             "missing": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 4
             }
         },
         "IPv4 RPKI": {
             "valid": {
-                "earned": 2,
-                "possible": 2
+                "earned": 3.0,
+                "possible": 3
             },
             "not-found": {
-                "earned": 1,
-                "possible": 2
+                "earned": 1.5,
+                "possible": 3
             },
             "invalid": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "IPv4 IRR/RIS": {
             "in_ris": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "not_in_ris": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "IPv6 RPKI": {
             "valid": {
-                "earned": 2,
-                "possible": 2
+                "earned": 3.0,
+                "possible": 3
             },
             "not-found": {
-                "earned": 1,
-                "possible": 2
+                "earned": 1.5,
+                "possible": 3
             },
             "invalid": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "IPv6 IRR/RIS": {
             "in_ris": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "not_in_ris": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "_comment_dnssec": "DNSSEC weighting rationale: the TLD being signed is not the operator's choice (most are signed by default), so it's worth 1 not 3. The AD flag is the only check that proves the validation chain actually works end-to-end - that's worth 3.",
         "DNSSEC TLD signed": {
             "signed": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             },
             "unsigned": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "DNSSEC DNSKEY": {
             "present": {
-                "earned": 2,
-                "possible": 2
+                "earned": 4.0,
+                "possible": 4
             },
             "missing": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 4
             }
         },
         "DNSSEC AD flag": {
             "set": {
-                "earned": 3,
-                "possible": 3
+                "earned": 5.0,
+                "possible": 5
             },
             "unset": {
-                "earned": 0,
-                "possible": 3
+                "earned": 0.0,
+                "possible": 5
             }
         },
         "_comment_dns_hygiene": "DNS hygiene - CAA + nameserver count.",
         "CAA records": {
             "with_iodef": {
-                "earned": 2,
-                "possible": 2
+                "earned": 4.0,
+                "possible": 4
             },
             "present": {
-                "earned": 1,
-                "possible": 2
+                "earned": 2.0,
+                "possible": 4
             },
             "missing": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 4
             }
         },
         "Nameserver count": {
             "two_or_more": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             },
             "single": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 3
             }
         },
-        "_comment_authoritative_delegation": "RFC 1034 §4.2: an NS listed at the parent registry MUST set the AA (Authoritative Answer) flag when queried for its own zone. An NS that doesn't is 'lame' — listed in delegation but not actually serving the zone. Worst-of: ANY lame NS scores 0/1, since users routed to that NS (luck of the resolver) get NODATA or SERVFAIL. unprobed = 0/0 (we couldn't reach any NS to test, no signal).",
+        "_comment_authoritative_delegation": "RFC 1034 \u00a74.2: an NS listed at the parent registry MUST set the AA (Authoritative Answer) flag when queried for its own zone. An NS that doesn't is 'lame' \u2014 listed in delegation but not actually serving the zone. Worst-of: ANY lame NS scores 0/1, since users routed to that NS (luck of the resolver) get NODATA or SERVFAIL. unprobed = 0/0 (we couldn't reach any NS to test, no signal).",
         "Authoritative delegation": {
             "all_authoritative": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             },
             "some_lame": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 3
             },
             "unprobed": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "_comment_open_resolver": "RFC 5358 / BCP 140: an authoritative NS should not also serve recursion to arbitrary clients. An open resolver is usable as a DNS amplification reflector in DDoS attacks. Worst-of: ANY NS that returned a recursive answer for our third-party probe (cloudflare.com) scores 0/1. unprobed = 0/0.",
         "NS not open resolver": {
             "all_closed": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             },
             "some_open": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 3
             },
             "unprobed": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "_comment_tls": "TLS / certificate / HSTS - together describe the transport-security posture.",
         "TLS connection": {
             "ok": {
-                "earned": 2,
-                "possible": 2
+                "earned": 7.0,
+                "possible": 7
             },
             "cert_error": {
-                "earned": 1,
-                "possible": 2
+                "earned": 3.5,
+                "possible": 7
             },
             "no_tls": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 7
             }
         },
         "TLS 1.3": {
             "negotiated": {
-                "earned": 2,
-                "possible": 2
+                "earned": 5.0,
+                "possible": 5
             },
             "tls_1_2": {
-                "earned": 1,
-                "possible": 2
+                "earned": 2.5,
+                "possible": 5
             },
             "older": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 5
             }
         },
         "Certificate lifetime": {
             "short_lived": {
-                "earned": 2,
-                "possible": 2
+                "earned": 5.0,
+                "possible": 5
             },
             "long_lived": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 5
             }
         },
         "Certificate name match": {
             "match": {
-                "earned": 2,
-                "possible": 2
+                "earned": 6.0,
+                "possible": 6
             },
             "cert_error": {
-                "earned": 1,
-                "possible": 2
+                "earned": 3.0,
+                "possible": 6
             },
             "no_match": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 6
             }
         },
         "Cert covers www variant": {
             "covers": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "missing_variant": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             },
             "no_redirect": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 2
             }
         },
-        "_comment_chain_completeness": "Server-side chain completeness — server SHOULD send leaf + every needed intermediate so clients don't fall back to AIA fetching. Compares OpenSSL's verified chain length against what the server actually sent. 'unsupported' covers Python <3.13 (the API was added in 3.13); scored 0/0 to keep results stable across Python versions.",
+        "_comment_chain_completeness": "Server-side chain completeness \u2014 server SHOULD send leaf + every needed intermediate so clients don't fall back to AIA fetching. Compares OpenSSL's verified chain length against what the server actually sent. 'unsupported' covers Python <3.13 (the API was added in 3.13); scored 0/0 to keep results stable across Python versions.",
         "Cert chain completeness": {
             "complete": {
-                "earned": 1,
-                "possible": 1
+                "earned": 4.0,
+                "possible": 4
             },
             "incomplete": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 4
             },
             "unsupported": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 4
             }
         },
         "HSTS present": {
             "present": {
-                "earned": 2,
-                "possible": 2
+                "earned": 5.0,
+                "possible": 5
             },
             "missing": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 5
             }
         },
         "HSTS includeSubDomains": {
             "set": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "unset": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
-        "_comment_hsts_preloaded": "Four outcomes. 'preloaded' = on the live HSTS preload list, full credit. 'pending' = submitted to hstspreload.org AND accepted, waiting for the next Chromium release rollup (typically 2-3 months from submission). 'preload_directive' = header has the preload directive but the domain isn't on the list and hasn't been accepted to pending — operator may have set the directive without submitting. 'pending' and 'preload_directive' both score 0.5/1: deliberate operator action toward preloading, but not yet shipped to users. The renderer distinguishes the two so vendors who already submitted aren't told to submit again.",
+        "_comment_hsts_preloaded": "Four outcomes. 'preloaded' = on the live HSTS preload list, full credit. 'pending' = submitted to hstspreload.org AND accepted, waiting for the next Chromium release rollup (typically 2-3 months from submission). 'preload_directive' = header has the preload directive but the domain isn't on the list and hasn't been accepted to pending \u2014 operator may have set the directive without submitting. 'pending' and 'preload_directive' both score 0.5/1: deliberate operator action toward preloading, but not yet shipped to users. The renderer distinguishes the two so vendors who already submitted aren't told to submit again.",
         "HSTS preloaded": {
             "preloaded": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "pending": {
                 "earned": 0.5,
-                "possible": 1
+                "possible": 2
             },
             "preload_directive": {
                 "earned": 0.5,
-                "possible": 1
+                "possible": 2
             },
             "not_preloaded": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "HSTS max-age strength": {
             "six_months_plus": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "less_than_six": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "_comment_ssl_labs": "SSL Labs is weighted at 5 points. A higher weight would make it the single largest contributor and overlap substantially with the locally-checked TLS items above. Five points is enough to materially reward A+/A grades and penalise F/T/M, while leaving the locally-checked TLS posture (TLS 1.3, cert lifetime, name match, HSTS) as the dominant signal in this category.",
         "SSL Labs grade": {
             "A+": {
-                "earned": 5,
-                "possible": 5
+                "earned": 7.0,
+                "possible": 7
             },
             "A": {
-                "earned": 4.5,
-                "possible": 5
+                "earned": 6.5,
+                "possible": 7
             },
             "A-": {
-                "earned": 4,
-                "possible": 5
+                "earned": 5.5,
+                "possible": 7
             },
             "B": {
-                "earned": 3,
-                "possible": 5
+                "earned": 4.0,
+                "possible": 7
             },
             "C": {
-                "earned": 2,
-                "possible": 5
+                "earned": 3.0,
+                "possible": 7
             },
             "D": {
-                "earned": 1,
-                "possible": 5
+                "earned": 1.5,
+                "possible": 7
             },
             "E": {
                 "earned": 0.5,
-                "possible": 5
+                "possible": 7
             },
             "F": {
-                "earned": 0,
-                "possible": 5
+                "earned": 0.0,
+                "possible": 7
             },
             "M": {
-                "earned": 1.5,
-                "possible": 5
+                "earned": 2.0,
+                "possible": 7
             },
             "T": {
-                "earned": 1,
-                "possible": 5
+                "earned": 1.5,
+                "possible": 7
             },
             "no_tls_at_all": {
-                "earned": 0,
-                "possible": 5
+                "earned": 0.0,
+                "possible": 7
             }
         },
-        "_comment_http": "HTTP - version + redirect hygiene. 'HTTP version' uses three tiers: http3=2/2 (modern, full credit), http2=1/2 (legacy but still encrypted, half credit), http1=0/2 (no HTTP/2 support — server should be retired).",
+        "_comment_http": "HTTP - version + redirect hygiene. 'HTTP version' uses three tiers: http3=2/2 (modern, full credit), http2=1/2 (legacy but still encrypted, half credit), http1=0/2 (no HTTP/2 support \u2014 server should be retired).",
         "HTTP version": {
             "http3": {
-                "earned": 2,
-                "possible": 2
+                "earned": 3.0,
+                "possible": 3
             },
             "http2": {
-                "earned": 1,
-                "possible": 2
+                "earned": 1.5,
+                "possible": 3
             },
             "http1": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "HTTP\u2192HTTPS redirect": {
             "https_only": {
-                "earned": 2,
-                "possible": 2
+                "earned": 6.0,
+                "possible": 6
             },
             "http_error": {
-                "earned": 2,
-                "possible": 2
+                "earned": 6.0,
+                "possible": 6
             },
             "http_available": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 6
             }
         },
         "Redirect first-hop hygiene": {
             "https_same_host": {
-                "earned": 1,
+                "earned": 1.0,
                 "possible": 1
             },
             "off_host_first": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 1
             },
             "no_redirect": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 1
             }
         },
-        "_comment_www_apex_unified": "Mozilla deployment guidance: pick one canonical web hostname (apex OR www) and redirect the other variant to it, so a user typing either form lands at the same page. We don't score the CHOICE of canonical form — apex-canonical and www-canonical both pass — only the unification. 'split' (both serve content but neither redirects) and 'half_missing' (one variant has no A/AAAA, so users typing it get DNS errors) both score 0/1. 'unified' is full credit. 'not_scored' (both unreachable / DNS errors) is 0/0 — no signal.",
+        "_comment_www_apex_unified": "Mozilla deployment guidance: pick one canonical web hostname (apex OR www) and redirect the other variant to it, so a user typing either form lands at the same page. We don't score the CHOICE of canonical form \u2014 apex-canonical and www-canonical both pass \u2014 only the unification. 'split' (both serve content but neither redirects) and 'half_missing' (one variant has no A/AAAA, so users typing it get DNS errors) both score 0/1. 'unified' is full credit. 'not_scored' (both unreachable / DNS errors) is 0/0 \u2014 no signal.",
         "www and apex unified": {
             "unified": {
-                "earned": 1,
+                "earned": 1.0,
                 "possible": 1
             },
             "split": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 1
             },
             "half_missing": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 1
             },
             "not_scored": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 1
             }
         },
         "_comment_website": "Website - origin-side hygiene: server header disclosure, security headers, cookies, security.txt, clock, page-level deep checks.",
         "Server header": {
             "absent_or_proxy": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "origin_no_version": {
-                "earned": 0.5,
-                "possible": 1
+                "earned": 1.0,
+                "possible": 2
             },
             "origin_with_version": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "X-Powered-By absent": {
             "absent": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "present": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "CSP": {
             "present": {
-                "earned": 2,
-                "possible": 2
+                "earned": 5.0,
+                "possible": 5
             },
             "permissive": {
-                "earned": 1,
-                "possible": 2
+                "earned": 2.5,
+                "possible": 5
             },
             "missing": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 5
             }
         },
         "X-Frame-Options": {
             "set": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             },
             "unset": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "X-Content-Type-Options": {
             "nosniff": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "Referrer-Policy": {
             "strong": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "weak": {
-                "earned": 0.5,
-                "possible": 1
+                "earned": 1.0,
+                "possible": 2
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "Permissions-Policy": {
             "set": {
-                "earned": 1,
+                "earned": 1.0,
                 "possible": 1
             },
             "missing": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 1
             }
         },
         "Cookie Secure": {
             "all_secure": {
-                "earned": 1,
-                "possible": 1
+                "earned": 4.0,
+                "possible": 4
             },
             "some_insecure": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 4
             }
         },
         "Cookie HttpOnly": {
             "all_httponly": {
-                "earned": 1,
-                "possible": 1
+                "earned": 4.0,
+                "possible": 4
             },
             "some_not": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 4
             }
         },
         "Cookie SameSite": {
             "strict_or_lax": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             },
             "none_with_secure": {
-                "earned": 0.5,
-                "possible": 1
+                "earned": 1.5,
+                "possible": 3
             },
             "missing_or_bad": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "Cookie name prefixes": {
             "valid": {
-                "earned": 1,
+                "earned": 1.0,
                 "possible": 1
             },
             "invalid_prefix": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 1
             },
             "no_prefixed": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 1
             }
         },
         "security.txt": {
             "present_with_expiry": {
-                "earned": 2,
+                "earned": 2.0,
                 "possible": 2
             },
             "present_no_expiry": {
-                "earned": 1,
+                "earned": 1.0,
                 "possible": 2
             },
             "missing": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 2
             }
         },
-        "_comment_error_page": "Default error-page disclosure — operators who care about disclosure customise/strip default 404 pages. Detection uses fingerprints in error_page_fingerprints.json (layout-specific patterns to keep FPs low). 'spa_or_2xx' (no 404 to inspect) and 'error' (probe failed) score 0/0 — no signal.",
+        "_comment_error_page": "Default error-page disclosure \u2014 operators who care about disclosure customise/strip default 404 pages. Detection uses fingerprints in error_page_fingerprints.json (layout-specific patterns to keep FPs low). 'spa_or_2xx' (no 404 to inspect) and 'error' (probe failed) score 0/0 \u2014 no signal.",
         "Default error page": {
             "custom_404": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "default_no_version": {
-                "earned": 0.5,
-                "possible": 1
+                "earned": 1.0,
+                "possible": 2
             },
             "default_with_version": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             },
             "spa_or_2xx": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 2
             },
             "error": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 2
             }
         },
-        "_comment_cors": "CORS configuration — only scored when broken. Absence of CORS is the SECURE DEFAULT (browsers refuse cross-origin reads without ACAO) and not a finding. Three failure modes are detected: ACAO=* combined with credentials=true (spec-forbidden pairing), ACAO=null (trusts sandboxed origins), and reflective ACAO (server echoes whatever Origin: the client sent — any origin trusted). 'no_cors' (passing default) scores 0/0; weak configurations score 0/1.",
+        "_comment_cors": "CORS configuration \u2014 only scored when broken. Absence of CORS is the SECURE DEFAULT (browsers refuse cross-origin reads without ACAO) and not a finding. Three failure modes are detected: ACAO=* combined with credentials=true (spec-forbidden pairing), ACAO=null (trusts sandboxed origins), and reflective ACAO (server echoes whatever Origin: the client sent \u2014 any origin trusted). 'no_cors' (passing default) scores 0/0; weak configurations score 0/1.",
         "CORS configuration": {
             "no_cors": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 2
             },
             "weak_wildcard_with_credentials": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             },
             "weak_null_origin": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             },
             "weak_reflective": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             },
             "error": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 2
             }
         },
-        "_comment_reporting_endpoints": "Reporting endpoints — combined check across Report-To (legacy), Reporting-Endpoints (modern), and NEL. Operator opt-in for collecting CSP/network/feature-policy violation reports. Presence of any of the three is a maturity signal (1/1). Absence is NOT a finding (most sites don't bother) — scored 0/0 so it doesn't dilute the denominator for sites that haven't opted in.",
+        "_comment_reporting_endpoints": "Reporting endpoints \u2014 combined check across Report-To (legacy), Reporting-Endpoints (modern), and NEL. Operator opt-in for collecting CSP/network/feature-policy violation reports. Presence of any of the three is a maturity signal (1/1). Absence is NOT a finding (most sites don't bother) \u2014 scored 0/0 so it doesn't dilute the denominator for sites that haven't opted in.",
         "Reporting endpoints": {
             "present": {
-                "earned": 1,
+                "earned": 1.0,
                 "possible": 1
             },
             "absent": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 1
             }
         },
         "_comment_csp_detail": "Detailed CSP analysis derived from Google CSP Evaluator.",
         "CSP script-src safety": {
             "strict": {
-                "earned": 3,
-                "possible": 3
+                "earned": 6.0,
+                "possible": 6
             },
             "none": {
-                "earned": 3,
-                "possible": 3
+                "earned": 6.0,
+                "possible": 6
             },
             "nonce_or_hash": {
-                "earned": 2,
-                "possible": 3
+                "earned": 4.0,
+                "possible": 6
             },
             "host_allowlist": {
-                "earned": 1,
-                "possible": 3
+                "earned": 2.0,
+                "possible": 6
             },
             "unsafe_inline": {
-                "earned": 0,
-                "possible": 3
+                "earned": 0.0,
+                "possible": 6
             },
             "wildcard_or_scheme": {
-                "earned": 0,
-                "possible": 3
+                "earned": 0.0,
+                "possible": 6
             },
             "missing": {
-                "earned": 0,
-                "possible": 3
+                "earned": 0.0,
+                "possible": 6
             }
         },
         "CSP object-src": {
             "none_or_self": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "unrestricted": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "CSP base-uri": {
             "set": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "CSP frame-ancestors": {
             "set": {
-                "earned": 1,
-                "possible": 1
+                "earned": 3.0,
+                "possible": 3
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 3
             }
         },
         "CSP enforcement mode": {
             "enforced": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "report_only": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "Cross-Origin-Opener-Policy": {
             "same_origin": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "same_origin_allow_popups": {
-                "earned": 0.5,
-                "possible": 1
+                "earned": 1.0,
+                "possible": 2
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "Cross-Origin-Resource-Policy": {
             "same_origin_or_site": {
-                "earned": 1,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 2
             },
             "cross_origin": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             },
             "missing": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 2
             }
         },
         "X-XSS-Protection deprecated": {
             "absent_or_zero": {
-                "earned": 1,
+                "earned": 1.0,
                 "possible": 1
             },
             "set_dangerous": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 1
             }
         },
         "Server clock accuracy": {
             "in_sync": {
-                "earned": 1,
+                "earned": 1.0,
                 "possible": 1
             },
             "minor_skew": {
@@ -1084,45 +1084,45 @@
                 "possible": 1
             },
             "bad_skew": {
-                "earned": 0,
+                "earned": 0.0,
                 "possible": 1
             },
             "no_date": {
-                "earned": 0,
-                "possible": 0
+                "earned": 0.0,
+                "possible": 1
             }
         },
         "_comment_deep": "--deep-only checks. Only counted toward score when --deep was used.",
         "Subresource Integrity": {
             "all_external_have_sri": {
-                "earned": 2,
-                "possible": 2
+                "earned": 4.0,
+                "possible": 4
             },
             "some_external_have_sri": {
-                "earned": 1,
-                "possible": 2
+                "earned": 2.0,
+                "possible": 4
             },
             "no_external_scripts": {
-                "earned": 2,
-                "possible": 2
+                "earned": 4.0,
+                "possible": 4
             },
             "external_without_sri": {
-                "earned": 0,
-                "possible": 2
+                "earned": 0.0,
+                "possible": 4
             }
         },
         "Mixed content (in-page)": {
             "none": {
-                "earned": 1,
-                "possible": 1
+                "earned": 4.0,
+                "possible": 4
             },
             "passive_only": {
-                "earned": 0.5,
-                "possible": 1
+                "earned": 2.0,
+                "possible": 4
             },
             "active": {
-                "earned": 0,
-                "possible": 1
+                "earned": 0.0,
+                "possible": 4
             }
         }
     },
@@ -1255,18 +1255,18 @@
         "SSL Labs grade": "SSL Labs grade",
         "TLS 1.3": "TLS 1.2 only - TLS 1.3 not negotiated",
         "HTTP version": {
-            "http1":    "HTTP/1.1 only \u2014 server does not support HTTP/2 or HTTP/3 (http1mustdie.com)",
-            "http2":    "HTTP/2 only - HTTP/3 not supported",
+            "http1": "HTTP/1.1 only \u2014 server does not support HTTP/2 or HTTP/3 (http1mustdie.com)",
+            "http2": "HTTP/2 only - HTTP/3 not supported",
             "_default": "HTTP/2 only - HTTP/3 not supported"
         },
         "IPv4 RPKI": "IPv4 RPKI not-found - no ROA published, prefix unprotected",
         "IPv6 RPKI": "IPv6 RPKI not-found - no ROA published, prefix unprotected",
-        "BIMI": "BIMI logo published but DMARC is not at enforcement (p=quarantine or p=reject) — mailbox providers will not display the logo until DMARC is enforcing",
+        "BIMI": "BIMI logo published but DMARC is not at enforcement (p=quarantine or p=reject) \u2014 mailbox providers will not display the logo until DMARC is enforcing",
         "HTTP\u2192HTTPS redirect": "Port 80 open but not redirecting to HTTPS",
         "HSTS preloaded": {
             "_comment": "Multi-tier outcome \u2014 'pending' (submitted to hstspreload.org, accepted, waiting for next Chrome rollup) and 'preload_directive' (header has preload, never submitted) both score 0.5/1 but get different finding text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
-            "_default":          "HSTS preload directive present but not on preload list yet",
-            "pending":           "HSTS preload submission pending \u2014 accepted by hstspreload.org, waiting for the next Chrome release rollup (typically 2\u20133 months)",
+            "_default": "HSTS preload directive present but not on preload list yet",
+            "pending": "HSTS preload submission pending \u2014 accepted by hstspreload.org, waiting for the next Chrome release rollup (typically 2\u20133 months)",
             "preload_directive": "HSTS preload directive present but the domain has not been submitted to hstspreload.org"
         },
         "Server header": "Server header discloses software name (no version)",
@@ -1283,7 +1283,7 @@
         "DANE TLSA on MX": "DANE/TLSA on some but not all MX hosts",
         "STARTTLS-MX": "STARTTLS-MX: TLS 1.2 negotiated (TLS 1.3 not offered)",
         "CSP script-src safety": {
-            "_comment": "Multi-tier outcome — different partial outcomes need different text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
+            "_comment": "Multi-tier outcome \u2014 different partial outcomes need different text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
             "_default": "CSP script-src is partially restricted",
             "nonce_or_hash": "CSP script-src uses nonce/hash (good; strict-dynamic would be stronger)",
             "host_allowlist": "CSP script-src uses host allowlist (weaker than nonce/hash)"
@@ -1294,39 +1294,39 @@
         "Subresource Integrity": "Some external scripts have SRI but not all",
         "CAA records": "CAA present but no iodef= reporting contact",
         "DKIM key strength": {
-            "_comment": "Multi-tier outcome — different outcomes need different finding text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
-            "_default":     "DKIM key strength outcome unrecognised",
-            "weak":         "DKIM key uses RSA-1024 (deprecated by RFC 8301 \u2014 upgrade to RSA-2048+ or Ed25519)",
-            "broken":       "DKIM key uses RSA <1024 (broken)",
-            "unparseable":  "DKIM key found but could not be parsed",
-            "revoked":      "DKIM key explicitly revoked (p= empty) \u2014 deliberate operator action"
+            "_comment": "Multi-tier outcome \u2014 different outcomes need different finding text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
+            "_default": "DKIM key strength outcome unrecognised",
+            "weak": "DKIM key uses RSA-1024 (deprecated by RFC 8301 \u2014 upgrade to RSA-2048+ or Ed25519)",
+            "broken": "DKIM key uses RSA <1024 (broken)",
+            "unparseable": "DKIM key found but could not be parsed",
+            "revoked": "DKIM key explicitly revoked (p= empty) \u2014 deliberate operator action"
         },
         "Default error page": {
-            "_comment": "Multi-tier outcome — different outcomes need different finding text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
-            "_default":             "Default error page outcome unrecognised",
-            "default_no_version":   "Default error page detected (server software disclosed, no version)",
+            "_comment": "Multi-tier outcome \u2014 different outcomes need different finding text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
+            "_default": "Default error page outcome unrecognised",
+            "default_no_version": "Default error page detected (server software disclosed, no version)",
             "default_with_version": "Default error page detected with version disclosure",
-            "spa_or_2xx":           "Default error page check did not run (probe returned 2xx/3xx \u2014 SPA shell, wildcard route, or WAF redirect)",
-            "error":                "Default error page check could not run (probe failed)"
+            "spa_or_2xx": "Default error page check did not run (probe returned 2xx/3xx \u2014 SPA shell, wildcard route, or WAF redirect)",
+            "error": "Default error page check could not run (probe failed)"
         },
         "www and apex unified": {
             "_comment": "Multi-tier outcome \u2014 'half_missing' carries a missing_side ('apex' or 'www') that the renderer substitutes into a 'half_missing_apex' / 'half_missing_www' key. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
-            "_default":     "Apex and www variants are not unified",
-            "split":        "Apex and www both serve content but neither redirects to the other (split-brain site)",
+            "_default": "Apex and www variants are not unified",
+            "split": "Apex and www both serve content but neither redirects to the other (split-brain site)",
             "half_missing": "Only one of apex / www has DNS records \u2014 users typing the other form get a DNS error",
             "half_missing_apex": "Apex has no A/AAAA records \u2014 users typing the bare domain get a DNS error",
-            "half_missing_www":  "www variant has no A/AAAA records \u2014 users typing www get a DNS error"
+            "half_missing_www": "www variant has no A/AAAA records \u2014 users typing www get a DNS error"
         },
         "Authoritative delegation": "At least one nameserver listed at the parent registry is lame \u2014 it does not answer authoritatively for this zone",
         "NS not open resolver": "At least one authoritative nameserver also serves open recursion \u2014 abusable for DNS amplification attacks (RFC 5358)",
         "MX target hygiene": {
             "_comment": "Multi-tier outcome \u2014 separate keys for CNAME-only, IP-only, and both, so the finding can name what's wrong. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",
-            "_default":      "MX target hygiene problem (RFC 2181 \u00a710.3)",
-            "cname_target":  "At least one MX target is a CNAME, not a direct A/AAAA (RFC 2181 \u00a710.3 violation)",
-            "ip_literal":    "At least one MX target is an IP literal, not a hostname (RFC 2181 \u00a710.3 / RFC 5321 \u00a75.1 violation)",
-            "cname_and_ip":  "MX targets include both an IP literal and a CNAME target (RFC 2181 \u00a710.3 / RFC 5321 \u00a75.1 violations)"
+            "_default": "MX target hygiene problem (RFC 2181 \u00a710.3)",
+            "cname_target": "At least one MX target is a CNAME, not a direct A/AAAA (RFC 2181 \u00a710.3 violation)",
+            "ip_literal": "At least one MX target is an IP literal, not a hostname (RFC 2181 \u00a710.3 / RFC 5321 \u00a75.1 violation)",
+            "cname_and_ip": "MX targets include both an IP literal and a CNAME target (RFC 2181 \u00a710.3 / RFC 5321 \u00a75.1 violations)"
         }
     },
-    "_comment_scoring_policy_eol": "Per-library 0/1 scoring for detected EOL libraries, per-OS 0/3 scoring for detected EOL operating systems. Both implementations work the same way: score_results() in audit_checks.py iterates the relevant list (results['versioned_libs']['libraries'] for libs, results['os_eol']['os_findings'] for OSes) after all other checks and appends per-finding tuples with hardcoded weights (libraries are 0/1, OSes are 0/3). The rubric does NOT contain weight entries for these labels — they're appended directly. Category resolution falls through to 'Website' (the catch-all), which is the correct destination.",
-    "_comment_starttls_mx_aggregation": "STARTTLS-MX is scored worst-CONFIRMED-of across MX hosts. Severity ordering of confirmed outcomes (worst → best): no_starttls > tls_legacy > tls_1_2 > tls_1_3. Unprobed hosts are dropped from the aggregation when ANY confirmed result exists — a network error on one host (port 25 blocked egress, timeout, refused connection) does not pull down the score for a domain where other MX hosts produced clean handshakes. Only when EVERY host was unprobed does the entire check evaluate to 'unprobed' (0/0). The 0/0 row still appears in the breakdown rather than being silently dropped, so the operator sees the check ran but produced no signal."
+    "_comment_scoring_policy_eol": "Per-library 0/1 scoring for detected EOL libraries, per-OS 0/3 scoring for detected EOL operating systems. Both implementations work the same way: score_results() in audit_checks.py iterates the relevant list (results['versioned_libs']['libraries'] for libs, results['os_eol']['os_findings'] for OSes) after all other checks and appends per-finding tuples with hardcoded weights (libraries are 0/1, OSes are 0/3). The rubric does NOT contain weight entries for these labels \u2014 they're appended directly. Category resolution falls through to 'Website' (the catch-all), which is the correct destination.",
+    "_comment_starttls_mx_aggregation": "STARTTLS-MX is scored worst-CONFIRMED-of across MX hosts. Severity ordering of confirmed outcomes (worst \u2192 best): no_starttls > tls_legacy > tls_1_2 > tls_1_3. Unprobed hosts are dropped from the aggregation when ANY confirmed result exists \u2014 a network error on one host (port 25 blocked egress, timeout, refused connection) does not pull down the score for a domain where other MX hosts produced clean handshakes. Only when EVERY host was unprobed does the entire check evaluate to 'unprobed' (0/0). The 0/0 row still appears in the breakdown rather than being silently dropped, so the operator sees the check ran but produced no signal."
 }
