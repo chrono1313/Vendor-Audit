@@ -1,5 +1,5 @@
 {
-    "rubric_version": "1.5.2",
+    "rubric_version": "1.5.3",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
@@ -29,7 +29,6 @@
             "SPF policy",
             "SPF lookup count",
             "SPF redirect",
-            "DMARC present",
             "DMARC policy",
             "DMARC pct",
             "DMARC sp",
@@ -163,16 +162,6 @@
                 "possible": 4
             }
         },
-        "DMARC present": {
-            "present": {
-                "earned": 4,
-                "possible": 4
-            },
-            "missing": {
-                "earned": 0,
-                "possible": 4
-            }
-        },
         "DMARC policy": {
             "reject": {
                 "earned": 18,
@@ -183,6 +172,10 @@
                 "possible": 18
             },
             "none": {
+                "earned": 2,
+                "possible": 18
+            },
+            "missing": {
                 "earned": 0,
                 "possible": 18
             }
@@ -1174,7 +1167,6 @@
         "SPF policy": "SPF policy configured",
         "SPF lookup count": "SPF lookup count within limit",
         "SPF redirect": "SPF redirect resolves correctly",
-        "DMARC present": "DMARC record present",
         "DMARC policy": "DMARC policy enforced",
         "DMARC pct": "DMARC applies to 100% of mail",
         "DMARC sp": "DMARC subdomain policy set",
@@ -1261,7 +1253,11 @@
         "CSP": "CSP present but permissive (wildcard src detected)",
         "security.txt": "security.txt present but Expires: field missing or expired",
         "Cookie SameSite": "Some cookies use SameSite=None (cross-site embed)",
-        "DMARC policy": "DMARC policy: quarantine - not yet at reject",
+        "DMARC policy": {
+            "_default": "DMARC policy: quarantine - not yet at reject",
+            "quarantine": "DMARC policy: quarantine - not yet at reject",
+            "none": "DMARC policy p=none - monitoring only, not enforced"
+        },
         "SPF policy": "SPF soft fail only (~all) - not fully enforcing",
         "TLS connection": "TLS running but certificate is untrusted (self-signed/expired)",
         "Certificate name match": "TLS running but certificate is untrusted (self-signed/expired)",

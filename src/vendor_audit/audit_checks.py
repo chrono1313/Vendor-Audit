@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.5.2"
+__version__ = "1.5.3"
 
 import os
 import re
@@ -4929,22 +4929,25 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
 
     if not dmarc.get("error"):
         present = dmarc.get("present")
-        _p("DMARC present", "present" if present else "missing")
-
-        # DMARC policy is ALWAYS scored — a missing DMARC record means no
-        # policy, which must count as 0/18 in the denominator, NOT be omitted.
-        # Previously the policy row was only emitted when DMARC was present,
-        # so a domain with no DMARC at all escaped the 18-point policy check
-        # entirely (it dropped out of the denominator), letting a no-DMARC
-        # domain out-percentage a domain that had quarantine set. The policy
-        # check is the single most important email-auth signal; absence of
-        # DMARC is the worst outcome for it, not an exemption from it.
         pol = dmarc.get("policy", "") if present else ""
-        if pol in ("reject", "quarantine"):
+
+        # Single combined DMARC policy check (max 18). Replaces the old
+        # split of "DMARC present" (4) + "DMARC policy" (18), which
+        # presented poorly — a missing DMARC showed as a trivial-looking
+        # "0/4" line next to the real "0/18". Now one row carries the full
+        # severity:
+        #   missing    → 0/18  (no record at all)
+        #   none       → 2/18  (record exists, p=none — monitoring only)
+        #   quarantine → 10/18 (enforcing, not yet at reject)
+        #   reject     → 18/18 (full enforcement)
+        if not present:
+            _p("DMARC policy", "missing")
+        elif pol in ("reject", "quarantine"):
             _p("DMARC policy", pol)
         else:
-            _p("DMARC policy", "none")      # missing DMARC or p=none → 0/18
+            _p("DMARC policy", "none")
 
+        # Refinements only apply when there's an enforcing policy.
         if present and pol in ("reject", "quarantine"):
             pct = dmarc.get("pct")
             if pct is not None:
@@ -4956,8 +4959,7 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
         # rua= aggregate report destination — score whenever DMARC is
         # present, regardless of policy. Operators on p=none still need
         # rua to know whether moving to quarantine/reject would drop
-        # legitimate mail. (Not scored when DMARC is absent — the policy
-        # row above already captures the absence.)
+        # legitimate mail.
         if present:
             rua = dmarc.get("rua") or []
             _p("DMARC rua reporting", "present" if rua else "missing")

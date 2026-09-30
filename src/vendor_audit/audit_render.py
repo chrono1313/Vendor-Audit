@@ -32,7 +32,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.5.2"
+__version__ = "1.5.3"
 
 import sys
 from collections import defaultdict
@@ -292,9 +292,9 @@ def _render_email_section(domain_label, spf, dmarc, mx, warn, bad, err, ok):
             # Call _bad directly (bypass the wrapper) so the summary shows the
             # org domain rather than the subdomain being audited.
             print(_bad(f"No DMARC record on {domain_label} or {org}",
-                       f"DMARC — missing ({org})", "DMARC present"))
+                       f"DMARC — missing ({org})", "DMARC policy"))
         else:
-            print(bad("No DMARC record", "DMARC — missing", "DMARC present"))
+            print(bad("No DMARC record", "DMARC — missing", "DMARC policy"))
     else:
         if inherited:
             print(info(f"No DMARC on {domain_label} — inherits from {c(GREY, inherited)}"))

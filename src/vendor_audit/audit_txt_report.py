@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "1.5.2"
+__version__ = "1.5.3"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -222,7 +222,6 @@ _CRITICALITY_RANK_TABLE = {
     # EOL OS is handled separately (rank 5) by the prefix check in
     # _criticality_rank, since the label embeds the OS name.
     "SPF policy":                   10,   # +all = anyone can spoof
-    "DMARC present":                12,   # no DMARC = no enforcement
     "DMARC policy":                 13,   # p=none = no enforcement
     "TLS connection":               15,   # TLS broken = users can't reach site safely
     "Certificate name match":       16,
@@ -1114,8 +1113,11 @@ class _ReportData:
         """Synthesised phrasing for a fail row when the rubric's labels.fail
         map doesn't have a more specific entry."""
         per_label = {
-            "DMARC present":           "DMARC record not published",
-            "DMARC policy":            "DMARC policy not enforced",
+            "DMARC policy":            {
+                "_default": "DMARC policy not enforced",
+                "missing":  "DMARC not published — domain can be spoofed",
+                "none":     "DMARC policy p=none — monitoring only, not enforced",
+            },
             "DMARC pct":               "DMARC pct= not at 100%",
             "DMARC sp":                "DMARC sp= not aligned with main policy",
             "DMARC rua reporting":     "DMARC rua= aggregate reporting not configured",
@@ -1304,6 +1306,18 @@ class _ReportData:
                 cors = self.results.get("cors") or {}
                 outcome = cors.get("outcome")
                 if outcome and outcome in entry:
+                    return entry[outcome]
+            # DMARC policy: the combined present+policy check. Derive the same
+            # outcome the scorer used so the fail text distinguishes "no record
+            # at all" (missing) from "record exists but p=none" (none).
+            if label == "DMARC policy":
+                dmarc = self.results.get("dmarc") or {}
+                if not dmarc.get("present"):
+                    outcome = "missing"
+                else:
+                    pol = (dmarc.get("policy") or "").lower()
+                    outcome = pol if pol in ("reject", "quarantine") else "none"
+                if outcome in entry:
                     return entry[outcome]
             # BIMI: re-derive the same outcome the scorer computed from the
             # bimi result + DMARC policy, so the finding text agrees with
