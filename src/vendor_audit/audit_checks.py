@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.5.0"
+__version__ = "1.5.2"
 
 import os
 import re
@@ -4928,24 +4928,37 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
             _p("SPF redirect", "resolves")
 
     if not dmarc.get("error"):
-        _p("DMARC present", "present" if dmarc.get("present") else "missing")
-        if dmarc.get("present"):
-            pol = dmarc.get("policy", "")
-            if pol in ("reject", "quarantine"):
-                _p("DMARC policy", pol)
-            else:
-                _p("DMARC policy", "none")
-            if pol in ("reject", "quarantine"):
-                pct = dmarc.get("pct")
-                if pct is not None:
-                    _p("DMARC pct", "full" if pct == 100 else "partial")
-                sp = dmarc.get("sp")
-                if sp is not None:
-                    _p("DMARC sp", "none" if sp == "none" else "enforced")
-            # rua= aggregate report destination — score whenever DMARC is
-            # present, regardless of policy. Operators on p=none still need
-            # rua to know whether moving to quarantine/reject would drop
-            # legitimate mail.
+        present = dmarc.get("present")
+        _p("DMARC present", "present" if present else "missing")
+
+        # DMARC policy is ALWAYS scored — a missing DMARC record means no
+        # policy, which must count as 0/18 in the denominator, NOT be omitted.
+        # Previously the policy row was only emitted when DMARC was present,
+        # so a domain with no DMARC at all escaped the 18-point policy check
+        # entirely (it dropped out of the denominator), letting a no-DMARC
+        # domain out-percentage a domain that had quarantine set. The policy
+        # check is the single most important email-auth signal; absence of
+        # DMARC is the worst outcome for it, not an exemption from it.
+        pol = dmarc.get("policy", "") if present else ""
+        if pol in ("reject", "quarantine"):
+            _p("DMARC policy", pol)
+        else:
+            _p("DMARC policy", "none")      # missing DMARC or p=none → 0/18
+
+        if present and pol in ("reject", "quarantine"):
+            pct = dmarc.get("pct")
+            if pct is not None:
+                _p("DMARC pct", "full" if pct == 100 else "partial")
+            sp = dmarc.get("sp")
+            if sp is not None:
+                _p("DMARC sp", "none" if sp == "none" else "enforced")
+
+        # rua= aggregate report destination — score whenever DMARC is
+        # present, regardless of policy. Operators on p=none still need
+        # rua to know whether moving to quarantine/reject would drop
+        # legitimate mail. (Not scored when DMARC is absent — the policy
+        # row above already captures the absence.)
+        if present:
             rua = dmarc.get("rua") or []
             _p("DMARC rua reporting", "present" if rua else "missing")
 
@@ -5529,13 +5542,27 @@ def score_results(results):
             _p("HSTS max-age strength", "less_than_six")
 
     # ── Detailed CSP analysis ─────────────────────────────────────────────────
+    # Score the five CSP directives whenever we have web presence and the
+    # analysis ran — INCLUDING when there's no CSP at all. analyze_csp()
+    # always returns the outcome keys, defaulting to "missing" for an absent
+    # CSP, so a site with no CSP correctly scores 0 across these directives
+    # instead of having the rows vanish from the denominator (which would let
+    # a no-CSP site escape 30 points of CSP scoring — the same class of bug
+    # as DMARC policy). We only skip when csp_analysis wasn't produced at all
+    # (data unavailable) or there's no web to audit.
     csp_a = results.get("csp_analysis")
-    if csp_a and csp_a.get("present"):
-        _p("CSP script-src safety", csp_a["script_src_outcome"])
-        _p("CSP object-src",        csp_a["object_src_outcome"])
-        _p("CSP base-uri",          csp_a["base_uri_outcome"])
-        _p("CSP frame-ancestors",   csp_a["frame_ancestors_outcome"])
-        _p("CSP enforcement mode",  csp_a["enforcement_outcome"])
+    if csp_a is not None and not no_web_presence:
+        _p("CSP script-src safety", csp_a.get("script_src_outcome", "missing"))
+        _p("CSP object-src",        csp_a.get("object_src_outcome", "missing"))
+        _p("CSP base-uri",          csp_a.get("base_uri_outcome", "missing"))
+        _p("CSP frame-ancestors",   csp_a.get("frame_ancestors_outcome", "missing"))
+        # enforcement_outcome defaults to "enforced" for an absent CSP header
+        # (there's nothing to be report-only), which would wrongly award full
+        # credit. When CSP is absent, enforcement scores 0 (report_only).
+        if csp_a.get("present"):
+            _p("CSP enforcement mode",  csp_a.get("enforcement_outcome", "report_only"))
+        else:
+            _p("CSP enforcement mode",  "report_only")
 
     # ── Cross-Origin headers (COOP/CORP) ──────────────────────────────────────
     if not srv.get("error") and not no_web_presence:
