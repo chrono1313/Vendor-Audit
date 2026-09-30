@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -283,7 +283,6 @@ _CRITICALITY_RANK_TABLE = {
     "Cross-Origin-Opener-Policy":   87,
     "Cross-Origin-Resource-Policy": 88,
     "X-XSS-Protection deprecated":  89,
-    "Reporting endpoints":          90,
     "security.txt":                 92,
 
     # ── Tier 5: routing / availability — important but rarely a vendor's
@@ -622,17 +621,6 @@ EXPLANATIONS = {
             "The dangerous patterns are well-known. ACAO: * allows any origin to read responses, which is fine for genuinely public APIs but disastrous for anything authenticated. ACAO: * combined with Access-Control-Allow-Credentials: true is so dangerous that browsers reject it at runtime — but a server that emits the combination indicates the operator believes credentialed cross-origin reads are acceptable, which they almost never are. ACAO: null trusts sandboxed iframes and other null-origin contexts, which an attacker can trigger from a page they control. Reflective ACAO (echoing whatever Origin: the client sends) is effectively the same as allowing all origins, just slower.",
             "The right configuration is to allowlist specific origins. ACAO: https://app.example.com (one origin per response, varied per request based on a server-side allowlist). If you support multiple origins, the server inspects the request's Origin: header, checks it against an explicit allowlist, and echoes it back only on match. Add Vary: Origin so caches don't serve one origin's response to another. For credentialed cross-origin reads, also set Allow-Credentials: true — but only on responses to specific allowlisted origins, never with ACAO: *.",
             "Vendor Audit makes a single GET against the homepage with an Origin: header and inspects the response. Findings cover the four high-risk patterns (wildcard with credentials, null, reflective, broad wildcard) and the safe baseline (no CORS headers — meaning the browser refuses cross-origin reads, which is the secure default). Sites that legitimately need CORS for their own subdomains or partners will still pass this check as long as they enumerate allowed origins rather than wildcard them.",
-        ],
-    },
-    "reporting_endpoints": {
-        "what": "The Reporting-Endpoints header (and its predecessor Report-To) names URLs where the browser can POST violation reports for CSP, network errors, deprecations, and other policies.",
-        "why":  "Without a reporting endpoint, you're flying blind — CSP violations, certificate transparency failures, and other client-side issues are invisible to you.",
-        "fix":  "Add Reporting-Endpoints: csp-endpoint=\"https://example.com/csp\" (and other named endpoints), then reference them with report-to in your CSP and other policy headers.",
-        "details": [
-            "The Reporting API (W3C) is the modern way to collect telemetry from browsers about policy violations and network failures. CSP, Cross-Origin-Opener-Policy, Document-Policy, certificate transparency expectations, and deprecation/intervention reports all flow through this single channel. Without an endpoint configured, every violation is silently discarded — you find out about CSP misconfigurations from user complaints instead of telemetry.",
-            "Two header generations exist. The legacy Report-To header (JSON-formatted, with groups and endpoints) is being phased out. The modern Reporting-Endpoints header is simpler: a structured-fields list of named URLs, e.g. Reporting-Endpoints: csp-endpoint=\"https://example.com/csp\", coop-endpoint=\"https://example.com/coop\". Other policy headers reference an endpoint by name with report-to=\"csp-endpoint\". Browsers buffer reports and POST them as JSON to the endpoint, batched on a schedule.",
-            "Setting up an endpoint is straightforward but operationally meaningful. The URL receives JSON POSTs and needs to handle bursts (a misconfigured CSP can generate thousands of reports per minute when first deployed). Common patterns are pointing at a SaaS reporting service (Report URI, Sentry's CSP reporting, etc.) or a small in-house collector that drops reports into your existing log pipeline. The endpoint should be on a domain that doesn't itself trigger the policy you're reporting on — otherwise you create a loop.",
-            "Vendor Audit checks for either header. A passing site has at least one endpoint configured; a failing site has neither and is missing the visibility loop entirely. Note that having the endpoint header is just the plumbing — the policies (CSP, COOP, etc.) still need their own report-to= directives to actually emit reports through it.",
         ],
     },
     "rpki": {
@@ -3001,7 +2989,7 @@ def _render_security_txt_section(data):
     return "\n".join(parts)
 
 
-# ── Detailed sections: Default error page / CORS / Reporting endpoints ──────
+# ── Detailed sections: Default error page / CORS ────────────────────────────
 
 def _render_error_page_section(data):
     epr = data.results.get("error_page", {}) or {}
@@ -3076,27 +3064,6 @@ def _render_cors_section(data):
         parts.append(_status("info",
             f"Could not probe CORS: {cors.get('error', '?')}"))
 
-    return "\n".join(parts)
-
-
-def _render_reporting_endpoints_section(data):
-    srv = data.results.get("server_header", {}) or {}
-    if srv.get("error"):
-        return ""
-    rt  = srv.get("report_to")
-    re_ = srv.get("reporting_endpoints")
-    nel = srv.get("nel")
-    if not (rt or re_ or nel):
-        # Absent is not a finding — don't emit a section at all.
-        return ""
-
-    parts = ["", _heading("REPORTING ENDPOINTS (CSP / NEL TELEMETRY)"), ""]
-    if re_:
-        parts.append(_status("pass", "Reporting-Endpoints header set (W3C Reporting API)"))
-    if rt:
-        parts.append(_status("pass", "Report-To header set (legacy, still widely deployed)"))
-    if nel:
-        parts.append(_status("pass", "NEL header set (Network Error Logging)"))
     return "\n".join(parts)
 
 
@@ -3499,7 +3466,6 @@ def _render_text(data):
         _render_security_txt_section,
         _render_error_page_section,
         _render_cors_section,
-        _render_reporting_endpoints_section,
         _render_ssl_labs_section,
         _render_page_analysis_section,
         _render_starttls_section,

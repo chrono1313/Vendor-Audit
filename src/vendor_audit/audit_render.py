@@ -32,7 +32,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 import sys
 from collections import defaultdict
@@ -1871,21 +1871,6 @@ def render(original_domain, audit_domain, r, dns_server):
         elif co_outcome == "error":
             print(f"  {c(GREY, '?')} Could not probe CORS: {cors.get('error', '?')}")
 
-    # ── Reporting endpoints ───────────────────────────────────────────────────
-    srv = r.get("server_header", {})
-    if srv and not srv.get("error"):
-        rt  = srv.get("report_to")
-        re_ = srv.get("reporting_endpoints")
-        nel = srv.get("nel")
-        if rt or re_ or nel:
-            print(c(BOLD, "\nReporting Endpoints") + c(GREY, "  (CSP / NEL violation telemetry)"))
-            if re_:
-                print(ok(f"Reporting-Endpoints header set  {c(GREY, '(W3C Reporting API)')}"))
-            if rt:
-                print(ok(f"Report-To header set  {c(GREY, '(legacy, still widely deployed)')}"))
-            if nel:
-                print(ok(f"NEL header set  {c(GREY, '(Network Error Logging)')}"))
-
     # ── SSL Labs ──────────────────────────────────────────────────────────────
     ssl_result = r.get("ssl_labs")
     if ssl_result is not None:
@@ -2935,11 +2920,6 @@ def results_to_csv_row(original_domain, audit_domain, results, timestamp):
         # CORS configuration (3.0.0)
         "web_cors_outcome":            cors.get("outcome") or "",
 
-        # Reporting endpoints (3.0.0) — combined check across three headers
-        "web_report_to":               srv.get("report_to") or "",
-        "web_reporting_endpoints":     srv.get("reporting_endpoints") or "",
-        "web_nel":                     srv.get("nel") or "",
-
         "web_clock_skew_seconds":      _str_or_blank(clock.get("skew_seconds")),
         "web_clock_outcome":           clock.get("outcome", ""),
 
@@ -3130,7 +3110,6 @@ CSV_FIELDS = [
     "web_error_page_outcome", "web_error_page_detected",
     "web_error_page_version", "web_error_page_status",
     "web_cors_outcome",
-    "web_report_to", "web_reporting_endpoints", "web_nel",
     "web_clock_skew_seconds", "web_clock_outcome",
     "web_page_parsed",
     "web_page_third_party_origins", "web_page_third_party_count",

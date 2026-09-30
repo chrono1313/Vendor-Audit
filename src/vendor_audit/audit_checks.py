@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 import os
 import re
@@ -5291,15 +5291,6 @@ def score_results(results):
     if not no_web_presence and co_outcome in ("no_cors", "weak_wildcard_with_credentials",
                       "weak_null_origin", "weak_reflective", "error"):
         _p("CORS configuration", co_outcome)
-
-    # ── Reporting endpoints ───────────────────────────────────────────────────
-    # Combined check across Report-To / Reporting-Endpoints / NEL. Any one of
-    # the three present → operator collects violation reports → 1/1. Absence
-    # is 0/0 (not a finding — most sites don't bother). Only score when the
-    # server_header check itself succeeded; otherwise we have no data.
-    if not srv.get("error") and not no_web_presence:
-        any_reporting = any(srv.get(k) for k in ("report_to", "reporting_endpoints", "nel"))
-        _p("Reporting endpoints", "present" if any_reporting else "absent")
 
     # ── SSL Labs grade ────────────────────────────────────────────────────────
     ssl_result = results.get("ssl_labs")

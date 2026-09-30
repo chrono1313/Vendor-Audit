@@ -1,5 +1,5 @@
 {
-    "rubric_version": "1.4.0",
+    "rubric_version": "1.4.1",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
@@ -102,7 +102,6 @@
             "security.txt",
             "Default error page",
             "CORS configuration",
-            "Reporting endpoints",
             "Server clock accuracy",
             "Subresource Integrity",
             "Mixed content (in-page)"
@@ -245,7 +244,7 @@
             },
             "no_mx": {
                 "earned": 0,
-                "possible": 8
+                "possible": 0
             }
         },
         "_comment_email_transport": "Mail transport hardening - only scored when MX exists.",
@@ -329,7 +328,7 @@
             },
             "unprobed": {
                 "earned": 0,
-                "possible": 10
+                "possible": 0
             }
         },
         "_comment_dkim": "DKIM common-selector probe is a partial check - selectors are operator-chosen and arbitrary, so absence at our six common names proves nothing. Score 'found' as 1/1 (positive evidence). Score 'not_found' as 0/0 (no evidence either way - drops out of the denominator entirely so we don't penalise domains using uncommon selector names).",
@@ -340,7 +339,7 @@
             },
             "not_found": {
                 "earned": 0,
-                "possible": 10
+                "possible": 0
             }
         },
         "_comment_dkim_strength": "DKIM key strength scores the WORST observed key across all found selectors. Only scored when at least one selector was found (not_found drops out, same logic as DKIM common-selector probe). Ed25519 and RSA-2048+ score full credit; RSA-1024 (deprecated by RFC 8301) scores partial; RSA <1024 (broken) scores zero. 'unparseable' (we found a record but couldn't read the key) scores 0/0 \u2014 no signal either way. 'revoked' (operator explicitly disabled the selector via empty p=) scores 0/0 \u2014 deliberate operator action, not a finding.",
@@ -359,15 +358,15 @@
             },
             "unparseable": {
                 "earned": 0,
-                "possible": 10
+                "possible": 0
             },
             "revoked": {
                 "earned": 0,
-                "possible": 10
+                "possible": 0
             },
             "not_found": {
                 "earned": 0,
-                "possible": 10
+                "possible": 0
             }
         },
         "_comment_routing": "Routing - IPv6 reachability + RPKI/IRR per address family.",
@@ -497,7 +496,7 @@
             },
             "unprobed": {
                 "earned": 0,
-                "possible": 6
+                "possible": 0
             }
         },
         "_comment_open_resolver": "RFC 5358 / BCP 140: an authoritative NS should not also serve recursion to arbitrary clients. An open resolver is usable as a DNS amplification reflector in DDoS attacks. Worst-of: ANY NS that returned a recursive answer for our third-party probe (cloudflare.com) scores 0/1. unprobed = 0/0.",
@@ -512,7 +511,7 @@
             },
             "unprobed": {
                 "earned": 0,
-                "possible": 6
+                "possible": 0
             }
         },
         "_comment_tls": "TLS / certificate / HSTS - together describe the transport-security posture.",
@@ -579,7 +578,7 @@
             },
             "no_redirect": {
                 "earned": 0,
-                "possible": 4
+                "possible": 0
             }
         },
         "_comment_chain_completeness": "Server-side chain completeness \u2014 server SHOULD send leaf + every needed intermediate so clients don't fall back to AIA fetching. Compares OpenSSL's verified chain length against what the server actually sent. 'unsupported' covers Python <3.13 (the API was added in 3.13); scored 0/0 to keep results stable across Python versions.",
@@ -594,7 +593,7 @@
             },
             "unsupported": {
                 "earned": 0,
-                "possible": 8
+                "possible": 0
             }
         },
         "HSTS present": {
@@ -624,11 +623,11 @@
                 "possible": 4
             },
             "pending": {
-                "earned": 1,
+                "earned": 2,
                 "possible": 4
             },
             "preload_directive": {
-                "earned": 1,
+                "earned": 2,
                 "possible": 4
             },
             "not_preloaded": {
@@ -737,7 +736,7 @@
             },
             "no_redirect": {
                 "earned": 0,
-                "possible": 2
+                "possible": 0
             }
         },
         "_comment_www_apex_unified": "Mozilla deployment guidance: pick one canonical web hostname (apex OR www) and redirect the other variant to it, so a user typing either form lands at the same page. We don't score the CHOICE of canonical form \u2014 apex-canonical and www-canonical both pass \u2014 only the unification. 'split' (both serve content but neither redirects) and 'half_missing' (one variant has no A/AAAA, so users typing it get DNS errors) both score 0/1. 'unified' is full credit. 'not_scored' (both unreachable / DNS errors) is 0/0 \u2014 no signal.",
@@ -756,7 +755,7 @@
             },
             "not_scored": {
                 "earned": 0,
-                "possible": 2
+                "possible": 0
             }
         },
         "_comment_website": "Website - origin-side hygiene: server header disclosure, security headers, cookies, security.txt, clock, page-level deep checks.",
@@ -887,7 +886,7 @@
             },
             "no_prefixed": {
                 "earned": 0,
-                "possible": 2
+                "possible": 0
             }
         },
         "security.txt": {
@@ -920,18 +919,18 @@
             },
             "spa_or_2xx": {
                 "earned": 0,
-                "possible": 4
+                "possible": 0
             },
             "error": {
                 "earned": 0,
-                "possible": 4
+                "possible": 0
             }
         },
         "_comment_cors": "CORS configuration \u2014 only scored when broken. Absence of CORS is the SECURE DEFAULT (browsers refuse cross-origin reads without ACAO) and not a finding. Three failure modes are detected: ACAO=* combined with credentials=true (spec-forbidden pairing), ACAO=null (trusts sandboxed origins), and reflective ACAO (server echoes whatever Origin: the client sent \u2014 any origin trusted). 'no_cors' (passing default) scores 0/0; weak configurations score 0/1.",
         "CORS configuration": {
             "no_cors": {
                 "earned": 0,
-                "possible": 4
+                "possible": 0
             },
             "weak_wildcard_with_credentials": {
                 "earned": 0,
@@ -947,18 +946,7 @@
             },
             "error": {
                 "earned": 0,
-                "possible": 4
-            }
-        },
-        "_comment_reporting_endpoints": "Reporting endpoints \u2014 combined check across Report-To (legacy), Reporting-Endpoints (modern), and NEL. Operator opt-in for collecting CSP/network/feature-policy violation reports. Presence of any of the three is a maturity signal (1/1). Absence is NOT a finding (most sites don't bother) \u2014 scored 0/0 so it doesn't dilute the denominator for sites that haven't opted in.",
-        "Reporting endpoints": {
-            "present": {
-                "earned": 2,
-                "possible": 2
-            },
-            "absent": {
-                "earned": 0,
-                "possible": 2
+                "possible": 0
             }
         },
         "_comment_csp_detail": "Detailed CSP analysis derived from Google CSP Evaluator.",
@@ -1089,7 +1077,7 @@
             },
             "no_date": {
                 "earned": 0,
-                "possible": 2
+                "possible": 0
             }
         },
         "_comment_deep": "--deep-only checks. Only counted toward score when --deep was used.",
@@ -1228,7 +1216,6 @@
         "Cert chain completeness": "Server sends complete certificate chain (no AIA fallback needed)",
         "Default error page": "Default error page customised (no server disclosure)",
         "CORS configuration": "CORS configuration is safe",
-        "Reporting endpoints": "Operator collects violation reports (Report-To / Reporting-Endpoints / NEL)",
         "CAA records": "CAA records restrict certificate issuance",
         "Nameserver count": "Two or more authoritative nameservers (RFC 1034)",
         "Authoritative delegation": "All authoritative nameservers respond authoritatively (RFC 1034)",
