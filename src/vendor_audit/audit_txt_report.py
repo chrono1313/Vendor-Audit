@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -844,9 +844,19 @@ def _status(severity, body, sub_lines=None, note_lines=None):
         out.append(f"{BODY_INDENT}{cont}")
 
     if note_lines:
+        # Note lines get a "· " bullet prefix so they read as distinct
+        # remarks in the txt report AND so the HTML parser can tell them
+        # apart from body word-wrap continuations (which share the same
+        # 7-space indent but must be rejoined into the sentence).
         for ln in note_lines:
-            for wrapped in _wrap_at_words(ln, BODY_W):
-                out.append(f"{BODY_INDENT}{wrapped}")
+            wrapped_lines = _wrap_at_words(f"· {ln}", BODY_W)
+            for wi, wrapped in enumerate(wrapped_lines):
+                # Continuation of a long note keeps the bullet column aligned
+                # (2-space hanging indent) but only the first line carries "·".
+                if wi == 0:
+                    out.append(f"{BODY_INDENT}{wrapped}")
+                else:
+                    out.append(f"{BODY_INDENT}  {wrapped}")
     if sub_lines:
         sub_indent = BODY_INDENT + "  "
         sub_w = WIDTH - len(sub_indent)

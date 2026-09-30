@@ -964,8 +964,19 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
             severity = _MARKER_TO_SEVERITY.get(m.group("marker"), "info")
             cls = _SEVERITY_CLASS[severity]
             message = m.group("message")
-            # Look ahead for continuation/sub lines (deeper-indented,
-            # non-marker lines that follow).
+            # Look ahead for continuation and sub lines. The txt renderer
+            # (_status in audit_txt_report) produces three kinds of deeper-
+            # indented lines under a finding:
+            #   - BODY CONTINUATIONS (7-space, no bullet): word-wrap overflow
+            #     of the finding's own sentence. In HTML these must rejoin
+            #     the message so the browser wraps it naturally, instead of
+            #     the tail ("browsers. Recommended: ...") being split onto
+            #     its own indented line.
+            #   - NOTE LINES (7-space, "· " bullet prefix): separate short
+            #     remarks (e.g. "· Upgrade to RSA-2048+"). Kept as their own
+            #     lines in the sub box.
+            #   - SUB-LINES (9-space): raw values (URLs, records) in the box.
+            cont_parts: list[str] = []
             sub_lines: list[str] = []
             j = i + 1
             while j < len(lines):
@@ -977,8 +988,18 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
                 if all(ch == _RULE_HEAVY_CHAR for ch in nxt.strip()) or \
                    all(ch == _RULE_LIGHT_CHAR for ch in nxt.strip()):
                     break
-                sub_lines.append(nxt.strip())
+                s = nxt.strip()
+                indent = len(nxt) - len(nxt.lstrip())
+                if s.startswith("· "):
+                    sub_lines.append(s[2:].strip())      # note line
+                elif indent >= 9:
+                    sub_lines.append(s)                  # raw sub-value
+                else:
+                    cont_parts.append(s)                 # wrap continuation
                 j += 1
+
+            if cont_parts:
+                message = message + " " + " ".join(cont_parts)
 
             if not findings_open:
                 out.append('<ul class="findings">')
