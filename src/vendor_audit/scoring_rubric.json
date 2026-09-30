@@ -1,5 +1,5 @@
 {
-    "rubric_version": "1.5.6",
+    "rubric_version": "1.5.7",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
@@ -81,16 +81,12 @@
         "Website": [
             "Server header",
             "X-Powered-By absent",
-            "CSP",
             "X-Frame-Options",
             "X-Content-Type-Options",
             "Referrer-Policy",
             "Permissions-Policy",
             "CSP script-src safety",
-            "CSP object-src",
-            "CSP base-uri",
             "CSP frame-ancestors",
-            "CSP enforcement mode",
             "Cross-Origin-Opener-Policy",
             "Cross-Origin-Resource-Policy",
             "X-XSS-Protection deprecated",
@@ -776,20 +772,6 @@
                 "possible": 2
             }
         },
-        "CSP": {
-            "present": {
-                "earned": 10,
-                "possible": 10
-            },
-            "permissive": {
-                "earned": 5,
-                "possible": 10
-            },
-            "missing": {
-                "earned": 0,
-                "possible": 10
-            }
-        },
         "X-Frame-Options": {
             "set": {
                 "earned": 2,
@@ -973,30 +955,6 @@
                 "possible": 12
             }
         },
-        "CSP object-src": {
-            "none_or_self": {
-                "earned": 2,
-                "possible": 2
-            },
-            "unrestricted": {
-                "earned": 0,
-                "possible": 2
-            },
-            "missing": {
-                "earned": 0,
-                "possible": 2
-            }
-        },
-        "CSP base-uri": {
-            "set": {
-                "earned": 2,
-                "possible": 2
-            },
-            "missing": {
-                "earned": 0,
-                "possible": 2
-            }
-        },
         "CSP frame-ancestors": {
             "set": {
                 "earned": 6,
@@ -1005,16 +963,6 @@
             "missing": {
                 "earned": 0,
                 "possible": 6
-            }
-        },
-        "CSP enforcement mode": {
-            "enforced": {
-                "earned": 2,
-                "possible": 2
-            },
-            "report_only": {
-                "earned": 0,
-                "possible": 2
             }
         },
         "Cross-Origin-Opener-Policy": {
@@ -1191,7 +1139,6 @@
         "HSTS preloaded": "Domain on HSTS preload list",
         "Server header": "Server header not leaking origin",
         "X-Powered-By absent": "X-Powered-By not disclosed",
-        "CSP": "Content-Security-Policy set",
         "X-Frame-Options": "X-Frame-Options set",
         "X-Content-Type-Options": "X-Content-Type-Options: nosniff",
         "Referrer-Policy": "Referrer-Policy set",
@@ -1214,10 +1161,7 @@
         "NS not open resolver": "Authoritative nameservers do not also serve open recursion (RFC 5358 / BCP 140)",
         "MX target hygiene": "MX targets are hostnames (not IP literals) and resolve directly to A/AAAA (no CNAME) (RFC 2181 \u00a710.3)",
         "CSP script-src safety": "CSP script-src is strict (nonce/hash, strict-dynamic, or 'none')",
-        "CSP object-src": "CSP object-src restricted",
-        "CSP base-uri": "CSP base-uri restricted (prevents <base> hijack)",
         "CSP frame-ancestors": "CSP frame-ancestors restricted (clickjacking)",
-        "CSP enforcement mode": "CSP enforced (not Report-Only)",
         "Cross-Origin-Opener-Policy": "Cross-Origin-Opener-Policy set",
         "Cross-Origin-Resource-Policy": "Cross-Origin-Resource-Policy set",
         "X-XSS-Protection deprecated": "X-XSS-Protection correctly absent (deprecated header)",
@@ -1250,7 +1194,6 @@
         },
         "Server header": "Server header discloses software name (no version)",
         "Referrer-Policy": "Referrer-Policy present but using a weak value",
-        "CSP": "CSP present but permissive (wildcard src detected)",
         "security.txt": "security.txt present but Expires: field missing or expired",
         "Cookie SameSite": "Some cookies use SameSite=None (cross-site embed)",
         "DMARC policy": {

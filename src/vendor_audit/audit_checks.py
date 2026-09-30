@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.5.6"
+__version__ = "1.5.7"
 
 import os
 import re
@@ -5225,14 +5225,11 @@ def score_results(results):
 
     # ── Browser security headers ──────────────────────────────────────────────
     if not srv.get("error") and not no_web_presence:
-        csp_q = srv.get("csp_quality")
-        if csp_q == "present":
-            _p("CSP", "present")
-        elif csp_q == "permissive":
-            _p("CSP", "permissive")
-        else:
-            _p("CSP", "missing")
-
+        # NB: the basic "CSP" present/permissive/missing check was removed —
+        # it was redundant with "CSP script-src safety" (scored below in the
+        # detailed CSP block). If script-src scores, CSP exists; if there's
+        # no CSP, script-src scores 0 (missing). Scoring both double-counted
+        # the presence of CSP.
         xfo = (srv.get("x_frame_options") or "").split(",")[0].strip().upper()
         if srv.get("csp_frame_ancestors"):
             _p("X-Frame-Options", "set")
@@ -5544,27 +5541,21 @@ def score_results(results):
             _p("HSTS max-age strength", "less_than_six")
 
     # ── Detailed CSP analysis ─────────────────────────────────────────────────
-    # Score the five CSP directives whenever we have web presence and the
-    # analysis ran — INCLUDING when there's no CSP at all. analyze_csp()
-    # always returns the outcome keys, defaulting to "missing" for an absent
-    # CSP, so a site with no CSP correctly scores 0 across these directives
-    # instead of having the rows vanish from the denominator (which would let
-    # a no-CSP site escape 30 points of CSP scoring — the same class of bug
-    # as DMARC policy). We only skip when csp_analysis wasn't produced at all
-    # (data unavailable) or there's no web to audit.
+    # Score only the two CSP directives that carry distinct weight:
+    #   - CSP script-src safety (12): the primary CSP quality signal
+    #   - CSP frame-ancestors (6): clickjacking protection (genuinely separate)
+    # The other directives (object-src, base-uri, enforcement mode) are still
+    # DETECTED and shown in the report's CSP detail section (that rendering is
+    # independent of scoring), but they no longer each fire a separate penalty.
+    # Previously all six CSP rows scored, so a site with no CSP lost ~34 points
+    # across rows that were all measuring the same missing thing — a six-fold
+    # double-count. script-src already captures "is there a usable CSP"
+    # (scores 0/missing when absent), so no detection is lost by not scoring
+    # the minor directives.
     csp_a = results.get("csp_analysis")
     if csp_a is not None and not no_web_presence:
         _p("CSP script-src safety", csp_a.get("script_src_outcome", "missing"))
-        _p("CSP object-src",        csp_a.get("object_src_outcome", "missing"))
-        _p("CSP base-uri",          csp_a.get("base_uri_outcome", "missing"))
         _p("CSP frame-ancestors",   csp_a.get("frame_ancestors_outcome", "missing"))
-        # enforcement_outcome defaults to "enforced" for an absent CSP header
-        # (there's nothing to be report-only), which would wrongly award full
-        # credit. When CSP is absent, enforcement scores 0 (report_only).
-        if csp_a.get("present"):
-            _p("CSP enforcement mode",  csp_a.get("enforcement_outcome", "report_only"))
-        else:
-            _p("CSP enforcement mode",  "report_only")
 
     # ── Cross-Origin headers (COOP/CORP) ──────────────────────────────────────
     if not srv.get("error") and not no_web_presence:
