@@ -1434,7 +1434,7 @@ body {
 }
 .score-row {
   display: grid;
-  grid-template-columns: 90px 95px 1fr 50px;
+  grid-template-columns: 90px 120px 1fr 50px;
   align-items: center;
   gap: 0.8rem;
   padding: 0.35rem 0;
@@ -1453,6 +1453,7 @@ body {
   font: 0.92rem ui-monospace, monospace;
   text-align: right;
   color: var(--muted);
+  white-space: nowrap;
 }
 .score-fraction .num { color: var(--fg); font-weight: 600; }
 .score-fraction .sep { padding: 0 0.1rem; }
@@ -1970,8 +1971,8 @@ a:hover { color: var(--accent-hover); }
   .report { padding: 1rem 0.7rem 3rem; }
   .domain { font-size: 1.25rem; }
   .score-row {
-    grid-template-columns: 70px 80px 1fr 42px;
-    gap: 0.5rem;
+    grid-template-columns: 58px 108px 1fr 38px;
+    gap: 0.4rem;
   }
   .findings-list .finding {
     grid-template-columns: 22px 1fr auto;
