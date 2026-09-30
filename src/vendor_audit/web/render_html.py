@@ -227,6 +227,18 @@ def render_result(envelope: dict) -> str:
             f'{_h(data.results.get("_partial_reason") or "Some checks did not complete.")}'
             f'</div>'
         )
+    # No-web-presence note. A domain with no A/AAAA record (MX-only mail
+    # subdomain, DNS-only domain) has no website to audit. This is an
+    # informational note, not an error — styled distinctly from the
+    # partial-audit alert so it reads as "here's why the web sections are
+    # empty" rather than "something went wrong."
+    if data.results.get("_no_web_note"):
+        parts.append(
+            f'<div class="info-banner" role="note">'
+            f'  <strong>Mail-only / DNS-only domain:</strong> '
+            f'{_h(data.results.get("_no_web_note"))}'
+            f'</div>'
+        )
     parts.append(_render_action_bar_html(data, domain))
     parts.append(_render_score_panel_html(data))
     parts.append(_render_executive_summary_html(data))
@@ -539,6 +551,7 @@ _SECTION_LEVEL_EXPLANATION_KEY: dict[str, list[tuple[str, str]]] = {
     "disclosure": [
         ("Server identification", "server_disclosure"),
         ("End-of-life operating systems", "eol_os"),
+        ("End-of-life server software", "eol_tech"),
     ],
     "error_page": [
         ("Default error page", "error_page"),
@@ -703,6 +716,7 @@ _SUBHEADING_TO_KEY: dict[str, str] = {
     "DKIM":    "dkim",
     "MTA-STS": "mta_sts",
     "TLS-RPT": "tls_rpt",
+    "BIMI":    "bimi",
     "MX":      "mx",
     "DNSSEC":  "dnssec",
     "CAA":     "caa",
@@ -733,6 +747,7 @@ _SUBHEADING_PREFIX_TO_KEY: list[tuple[str, str]] = [
     ("SECURITY HEADERS",    "security_headers"),
     ("SECURITY CONTACT",    "security_txt"),
     ("SECURITY.TXT",        "security_txt"),
+    ("END-OF-LIFE SERVER SOFTWARE", "eol_tech"),
     ("END-OF-LIFE OS",      "eol_os"),
     ("OPERATING SYSTEM",    "eol_os"),
     ("EOL OS",              "eol_os"),
@@ -741,6 +756,8 @@ _SUBHEADING_PREFIX_TO_KEY: list[tuple[str, str]] = [
     ("EOL LIBRARIES",       "eol_libraries"),
     ("CLIENT-SIDE LIBRARIES", "eol_libraries"),
     ("LIBRARY DETECTION",   "eol_libraries"),
+    ("BIMI BRAND INDICATOR", "bimi"),
+    ("BIMI",                "bimi"),
     ("ROUTING",             "routing"),
     ("PAGE ANALYSIS",       "page_analysis"),
     ("PAGE",                "page_analysis"),
@@ -1390,6 +1407,19 @@ body {
   font-size: 0.95rem;
 }
 .partial-banner strong {
+  font-weight: 600;
+  margin-right: 0.4rem;
+}
+.info-banner {
+  background: var(--info-bg, #eef4fb);
+  color: var(--info, #2c5d8f);
+  padding: 0.7rem 1rem;
+  margin: 0 0 1rem;
+  border-left: 4px solid var(--info, #4a86c5);
+  border-radius: 0 4px 4px 0;
+  font-size: 0.95rem;
+}
+.info-banner strong {
   font-weight: 600;
   margin-right: 0.4rem;
 }

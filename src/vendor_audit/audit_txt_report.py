@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -169,6 +169,13 @@ _LIB_DISPLAY_NAMES = {
     "monaco-editor":   "Monaco Editor",
     "ace":             "Ace Editor",
     "codemirror":      "CodeMirror",
+}
+
+
+# Server-side tech display names — mirror of the keys in tech_eol.json.
+_TECH_DISPLAY_NAMES = {
+    "php":      "PHP",
+    "asp.net":  "ASP.NET",
 }
 
 
@@ -303,15 +310,19 @@ def _criticality_rank(label):
     "running unpatched software" and are usually the most consequential
     issues a vendor has, ahead of email or TLS configuration. EOL OS
     edges ahead (rank 5) because a kernel-level CVE on an EOL OS is
-    typically more urgent than a client-side library bug; EOL libraries
-    sit just behind at rank 8. Both ranks are above the most-critical
-    Tier 1 entries (SPF policy, DMARC, TLS connection) so EOL findings
-    always lead the Possible Issues list when present.
+    typically more urgent than a client-side library bug; EOL server-side
+    tech (PHP / ASP.NET) sits at rank 6 — a whole unpatched runtime, more
+    serious than a front-end library but narrower than the OS; EOL
+    libraries sit at rank 8. All three rank above the most-critical Tier 1
+    entries (SPF policy, DMARC, TLS connection) so EOL findings always
+    lead the Possible Issues list when present.
     """
     if not label:
         return _CRITICALITY_DEFAULT_RANK
     if label.startswith("EOL OS:"):
         return 5
+    if label.startswith("EOL tech:"):
+        return 6
     if label.startswith("EOL library:"):
         return 8
     return _CRITICALITY_RANK_TABLE.get(label, _CRITICALITY_DEFAULT_RANK)
@@ -382,6 +393,17 @@ EXPLANATIONS = {
             "SMTP TLS Reporting (TLS-RPT, RFC 8460) is the feedback channel for mail-transport security. It lets sending mail servers tell you, after the fact, when TLS or MTA-STS failed for messages bound for your domain. Reports are sent as JSON, typically once a day per sender, and are aggregated rather than per-message.",
             "The DNS record is small: a TXT record at _smtp._tls.<domain> with v=TLSRPTv1; rua=mailto:<address> (or rua=https://<endpoint> if you have a webhook receiver). Most operators point rua at an inbox they monitor or at a TLS-RPT processing service that aggregates and surfaces patterns.",
             "TLS-RPT is most valuable when paired with MTA-STS. The combination gives you both a policy senders should follow and a feedback loop telling you when they don't. Running MTA-STS without TLS-RPT means you've published a policy whose violations are invisible to you — exactly the state of operating blind that the policy was meant to fix.",
+        ],
+    },
+    "bimi": {
+        "what": "BIMI (Brand Indicators for Message Identification) lets mailbox providers display your brand's logo beside your authenticated messages in the inbox.",
+        "why":  "BIMI improves brand recognition and trust in the inbox, but only renders if DMARC is at enforcement (p=quarantine or p=reject) — publishing BIMI without enforcing DMARC does nothing.",
+        "fix":  "Publish a TXT record at default._bimi.<domain> with v=BIMI1; l=<https logo URL>; a=<https VMC URL>, and ensure your DMARC policy is at quarantine or reject.",
+        "details": [
+            "BIMI is a standard for showing a verified brand logo next to messages that pass authentication. It's published as a TXT record at default._bimi.<domain> in the form v=BIMI1; l=https://example.com/logo.svg; a=https://example.com/vmc.pem. The l= tag points at the logo — an SVG in the restrictive 'Tiny PS' profile (no scripts, no external references, square aspect). The a= tag points at a Verified Mark Certificate (VMC) or Common Mark Certificate (CMC), a cryptographic proof that the brand owns the trademark on the logo.",
+            "BIMI's single hard prerequisite is DMARC at enforcement. Mailbox providers will not display a BIMI logo for a domain whose DMARC policy is p=none — the whole point is that the logo only appears on mail that's provably authentic, and p=none means the domain isn't yet asking receivers to act on authentication failures. A BIMI record on a p=none domain is published but inert: it will never render. This is the most common BIMI misconfiguration, and Vendor Audit flags it specifically by cross-referencing your DMARC policy.",
+            "The VMC is where BIMI gets expensive and slow. Gmail and Apple Mail both require a VMC (issued by a handful of CAs after a trademark-verification process that can take weeks and costs on the order of a thousand dollars a year) before they'll show the logo. Some other providers display the logo from the l= SVG alone. So there are three tiers: no BIMI, BIMI with logo only (renders in some clients), and BIMI with logo + VMC (renders in Gmail and Apple Mail). The audit reports which tier you're in.",
+            "BIMI is scored as an email-authentication feature (1 point). A domain with MX but no BIMI record loses the point; a domain with a logo published and DMARC at enforcement earns it in full. The 'published but DMARC not enforcing' case earns half — the operator did the BIMI work, and the remaining fix is on the DMARC side. The value of surfacing it is both the nudge to publish and, more usefully, a clear explanation for operators who published a BIMI record but haven't reached DMARC enforcement and are wondering why their logo never appears.",
         ],
     },
     "mx": {
@@ -567,6 +589,17 @@ EXPLANATIONS = {
             "Vendor Audit recognises about 185 client-side libraries via static HTML inspection — script src attributes, inline version markers, well-known global object signatures. Of those, 28 have curated EOL dates (jQuery 1.x and 2.x, Bootstrap 2.x and 3.x, AngularJS, Angular versions before the current LTS, etc.). The remaining ~150 are reported with their version but not flagged as EOL — version detection is reliable, but EOL judgments require maintenance and citation.",
             "Upgrading client-side libraries is sometimes a small change (a single CDN URL update) and sometimes a months-long migration. AngularJS to Angular is the canonical hard case: different framework, complete rewrite. jQuery 1.x to 3.x is mostly mechanical but breaks in subtle ways with custom plugins. Regardless, an EOL library is a known-fragile dependency and the cost of replacement only goes up over time.",
             "If immediate upgrade is impossible, the next-best step is to add Subresource Integrity (SRI) attributes to the library's <script> tag and pin the version — at least preventing a CDN compromise from substituting a malicious version. But SRI doesn't fix vulnerabilities in the library itself; it just keeps the library you have from being silently swapped out.",
+        ],
+    },
+    "eol_tech": {
+        "what": "An end-of-life server-side runtime (PHP, ASP.NET, etc.) disclosed in your HTTP headers no longer receives security patches.",
+        "why":  "Attackers scan for outdated runtime versions specifically because their CVEs are public and permanently unpatched — and your headers are advertising exactly which one you run.",
+        "fix":  "Upgrade to a supported runtime version. For PHP, move to 8.3+ (8.2 is in security-only support until Dec 31 2026). Also suppress the version disclosure (expose_php = Off in php.ini).",
+        "details": [
+            "Server-side runtimes have fixed support lifecycles just like operating systems. PHP follows a four-year cycle: two years of active support, two more of security-only fixes, then end of life with zero patches. PHP 8.1 reached end of life on December 31, 2025; 8.0 on November 26, 2023; the entire 7.x line is long dead. PHP 8.2 is in its security-only phase and reaches EOL on December 31, 2026. ASP.NET's classic Framework versions (1.x–3.5) are similarly dead, and the X-AspNet-Version header that discloses them usually indicates an old WebForms application.",
+            "This finding is distinct from the plain X-Powered-By disclosure. Revealing 'PHP' at all is a minor information leak; revealing 'PHP/8.1.34' when 8.1 is end-of-life is a specific, actionable target. An attacker doesn't need to probe — the version string in your headers tells them precisely which CVE list applies. PHP sees roughly a dozen new CVEs a year, and once a version is EOL, none of them will ever be fixed on it.",
+            "Vendor Audit reads the disclosed version from three headers already collected during the audit: X-Powered-By (the usual PHP carrier, e.g. 'PHP/8.1.34'), the Server header (some configurations append the PHP version there), and X-AspNet-Version. Detection is keyed on major.minor because runtime lifecycles differ by minor version — PHP 8.1 is EOL while 8.2 is still supported. If your stack is behind a CDN or reverse proxy that strips these headers, the check can't see the version and won't flag it — which is also, incidentally, the cleanest mitigation.",
+            "The fix has two halves. First, upgrade the runtime: for PHP, 8.3 or 8.4 are the current supported lines, and PHP upgrades within the 8.x series are usually low-friction compared to the old 5.x-to-7.x jump. Second, stop advertising the version at all — set expose_php = Off in php.ini to drop the X-Powered-By header, and remove any X-AspNet-Version / X-AspNetMvc-Version headers via web.config or your reverse proxy. Suppressing the header doesn't patch anything, but it removes the free reconnaissance you're currently handing attackers.",
         ],
     },
     "error_page": {
@@ -906,6 +939,11 @@ class _ReportData:
         """Mirror audit_render._category_for_score_label."""
         if not score_label:
             return "Website"
+        # BIMI is an email-authentication-adjacent feature and belongs in the
+        # Email category, but it's an info-only row not present in the
+        # rubric's category map, so classify it here.
+        if score_label == "BIMI":
+            return "Email"
         cat_map = self.rubric.get("categories", {}) or {}
         for cat, labels in cat_map.items():
             if score_label in labels:
@@ -951,6 +989,7 @@ class _ReportData:
 
         eol_os_lookup  = self._build_eol_os_lookup()
         eol_lib_lookup = self._build_eol_lib_lookup()
+        eol_tech_lookup = self._build_eol_tech_lookup()
 
         # SSL Labs grade gets a dynamic label — the actual letter grade is
         # informative on every severity, not just on a fail. The rubric's
@@ -970,6 +1009,8 @@ class _ReportData:
                 display = eol_os_lookup[label]
             elif label in eol_lib_lookup:
                 display = eol_lib_lookup[label]
+            elif label in eol_tech_lookup:
+                display = eol_tech_lookup[label]
             elif label == "SSL Labs grade" and ssl_grade:
                 display = f"SSL Labs grade: {ssl_grade}"
             elif sev == "pass":
@@ -1053,6 +1094,24 @@ class _ReportData:
             out[key] = f"End-of-life library: {display_name} {ver} ({msg})"
         return out
 
+    def _build_eol_tech_lookup(self):
+        """Map EOL server-side tech breakdown labels → vendor-friendly display."""
+        out = {}
+        tech_eol = self.results.get("tech_eol") or {}
+        for t in (tech_eol.get("techs") or []):
+            if t.get("eol_status") != "eol":
+                continue
+            tech = t.get("tech", "?")
+            ver  = t.get("version", "?")
+            key  = f"EOL tech: {tech} {ver}".rstrip()
+            disp = _TECH_DISPLAY_NAMES.get(tech, tech.upper())
+            msg  = t.get("eol_message") or "version is end-of-life"
+            # eol_message already includes the tech name + version; use it
+            # directly for the parenthetical detail but lead with a clear
+            # "End-of-life runtime:" framing.
+            out[key] = f"End-of-life server software: {disp} {ver} ({msg})"
+        return out
+
     def _failure_phrasing(self, label, base_display):
         """Synthesised phrasing for a fail row when the rubric's labels.fail
         map doesn't have a more specific entry."""
@@ -1132,6 +1191,11 @@ class _ReportData:
             "SSL Labs grade":          "SSL Labs grade indicates serious TLS issues",
             "Cert chain completeness": "Server sends incomplete certificate chain — clients fall back to AIA fetching",
             "DKIM key strength":       "DKIM key uses RSA <1024 (broken)",
+            "BIMI":                    {
+                "_default":  "BIMI brand indicator not published",
+                "missing":   "BIMI brand indicator not published (no logo will display beside your mail)",
+                "malformed": "BIMI record present but malformed — no logo (l=) URL, so no logo can display"
+            },
             "Default error page":      {
                 "_default":             "Default error page detected",
                 "default_with_version": "Default error page detected with version disclosure",
@@ -1164,6 +1228,7 @@ class _ReportData:
         """Phrasing for 0/0 rows (checks that didn't apply)."""
         if partial_label:
             return partial_label
+
         per_label = {
             "DKIM (common selectors)": "DKIM key not found at common selectors (operator may use a custom selector)",
             "STARTTLS-MX":             "STARTTLS-MX could not be probed (port 25 likely blocked egress)",
@@ -1241,6 +1306,25 @@ class _ReportData:
                 cors = self.results.get("cors") or {}
                 outcome = cors.get("outcome")
                 if outcome and outcome in entry:
+                    return entry[outcome]
+            # BIMI: re-derive the same outcome the scorer computed from the
+            # bimi result + DMARC policy, so the finding text agrees with
+            # the score row. Outcomes: present / dmarc_weak / malformed /
+            # missing (see score_results).
+            if label == "BIMI":
+                bimi = self.results.get("bimi") or {}
+                dmarc = self.results.get("dmarc") or {}
+                pol = (dmarc.get("policy") or "").lower()
+                enforcing = pol in ("quarantine", "reject")
+                if not bimi.get("present"):
+                    outcome = "missing"
+                elif not bimi.get("has_logo"):
+                    outcome = "malformed"
+                elif not enforcing:
+                    outcome = "dmarc_weak"
+                else:
+                    outcome = "present"
+                if outcome in entry:
                     return entry[outcome]
             # www/apex unification: outcome can be 'unified', 'split',
             # 'half_missing', or 'not_scored'. For half_missing we
@@ -1810,6 +1894,58 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 f"Mail transport hardening — {domain_label} (RFC 8461, 8460, 6376, 7672)",
                 "mail_transport"))
             out.extend(items)
+
+        # ── BIMI (brand logo, informational) ─────────────────────────────────
+        # Only shown for the source domain (no prefix). BIMI is now a scored
+        # email check (0/1..1/1), so we render the subsection whenever the
+        # domain has MX — including the missing case (a fail). The DMARC
+        # cross-reference calls out the "published but won't render"
+        # misconfiguration explicitly.
+        bimi = results.get(f"{prefix}bimi", {}) or {}
+        if not prefix and not bimi.get("error"):
+            dmarc_pol = (dmarc.get("policy") or "").lower()
+            enforcing = dmarc_pol in ("quarantine", "reject")
+            bimi_items = []
+            if not bimi.get("present"):
+                bimi_items.append(_status("fail",
+                    "No BIMI record — no brand logo will display beside your mail",
+                    note_lines=["Publish default._bimi.<domain> with v=BIMI1; l=<logo URL>; "
+                                "requires DMARC at quarantine or reject to render."]))
+            elif not bimi.get("has_logo"):
+                if bimi.get("selfassert"):
+                    bimi_items.append(_status("fail",
+                        "BIMI record present but self-asserting (empty l=) — no logo published",
+                        note_lines=["A self-asserting record declares participation but "
+                                    "publishes no mark, so no logo can display."]))
+                else:
+                    bimi_items.append(_status("fail",
+                        "BIMI record present but malformed — no logo (l=) URL"))
+            else:
+                logo = bimi.get("logo_url") or ""
+                if not enforcing:
+                    pol = dmarc_pol or "none"
+                    bimi_items.append(_status("warn",
+                        f"BIMI logo published but DMARC is p={pol} — the logo will "
+                        f"NOT display until DMARC is at quarantine or reject",
+                        note_lines=[f"Logo: {logo}"] if logo else None))
+                elif bimi.get("has_vmc"):
+                    bimi_items.append(_status("pass",
+                        "BIMI published with logo and VMC — eligible for logo display "
+                        "in Gmail, Apple Mail, and other supporting clients",
+                        note_lines=[f"Logo: {logo}"] if logo else None))
+                else:
+                    bimi_items.append(_status("pass",
+                        "BIMI published with logo (VMC not present) — renders in clients "
+                        "that don't require a Verified Mark Certificate; Gmail and Apple "
+                        "Mail additionally require a VMC",
+                        note_lines=[f"Logo: {logo}"] if logo else None))
+            if bimi_items:
+                out.append("")
+                out.append("")
+                out.extend(_subheading_with_explanation(
+                    f"BIMI brand indicator — {domain_label}",
+                    "bimi"))
+                out.extend(bimi_items)
 
     return "\n".join(out)
 
@@ -2507,6 +2643,29 @@ def _render_server_disclosure_section(data):
             parts.append(_status("warn",
                 f"Legacy TLS still negotiated: {', '.join(tls_signals)}",
                 note_lines=["Corroborates old-stack hypothesis"]))
+
+    # ── EOL server-side runtime (PHP / ASP.NET) ──────────────────────────────
+    # Cross-references the disclosed X-Powered-By / Server / X-AspNet-Version
+    # version against tech_eol.json. Only rendered when there's something to
+    # say (an EOL runtime detected). The plain disclosure lines above already
+    # cover the "version is revealed" finding; this subsection adds the
+    # "and that version is end-of-life" dimension.
+    tech_eol = r.get("tech_eol") or {}
+    eol_techs = [t for t in (tech_eol.get("techs") or [])
+                 if t.get("eol_status") == "eol"]
+    if eol_techs:
+        parts.append("")
+        parts.append("")
+        parts.extend(_subheading_with_explanation(
+            "End-of-life server software", "eol_tech"))
+        for t in eol_techs:
+            disp = _TECH_DISPLAY_NAMES.get(t.get("tech", ""), (t.get("tech") or "?").upper())
+            ver  = t.get("version", "?")
+            msg  = t.get("eol_message") or ""
+            date = t.get("eol_last_release", "")
+            detail = f" — EOL {date}" if date else ""
+            parts.append(_status("fail",
+                f"{disp} {ver}{detail} — unsupported runtime, no security patches"))
 
     # Technology stack
     stack = srv.get("stack", []) or []

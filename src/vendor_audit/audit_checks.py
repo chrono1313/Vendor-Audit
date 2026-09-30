@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 
 import os
 import re
@@ -139,6 +139,25 @@ try:
         OS_EOL = json.load(_fh)
 except (OSError, json.JSONDecodeError):
     OS_EOL = {}
+
+# ── Server-side tech EOL data loader ──────────────────────────────────────────
+# tech_eol.json sits next to this module. Hand-curated EOL data for server-side
+# runtimes and frameworks disclosed in HTTP response headers (X-Powered-By,
+# Server, X-AspNet-Version) — PHP, ASP.NET, etc. Distinct from LIBRARY_EOL
+# (client-side JS/CSS in page HTML) and OS_EOL (operating systems). Same load
+# semantics: optional file, malformed → no annotations. Same schema shape as
+# LIBRARY_EOL, so _annotate_eol() consumes both. Server-runtime lifecycles are
+# keyed major.minor (PHP 8.1 vs 8.2 differ), which the shared annotator handles
+# via min_supported_major_minor.
+
+_TECH_EOL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tech_eol.json")
+
+TECH_EOL: dict = {}
+try:
+    with open(_TECH_EOL_PATH, encoding="utf-8") as _fh:
+        TECH_EOL = json.load(_fh)
+except (OSError, json.JSONDecodeError):
+    TECH_EOL = {}
 
 # ── Error-page fingerprint loader ─────────────────────────────────────────────
 # error_page_fingerprints.json sits next to this module. Hand-curated set of
@@ -1030,7 +1049,81 @@ def check_tls_rpt(domain):
     return {"present": False, "rua": None, "record": None}
 
 
-# ── DANE / TLSA on MX hosts ──────────────────────────────────────────────────
+# ── BIMI (Brand Indicators for Message Identification) ───────────────────────
+# BIMI lets mail providers display a brand's logo beside authenticated
+# messages in the inbox. It's published as a TXT record at
+# default._bimi.<domain> with the form:
+#
+#   v=BIMI1; l=https://example.com/logo.svg; a=https://example.com/vmc.pem
+#
+#   l=  the logo: an HTTPS URL to a Tiny-PS-profile SVG. Required (an empty
+#       l= is a valid "self-asserting opt-out", but a record with neither
+#       l= nor a= is malformed).
+#   a=  the VMC (Verified Mark Certificate) or CMC: an HTTPS URL to the
+#       PEM-encoded cert proving trademark ownership. Optional in the spec,
+#       but Gmail and Apple Mail require it to actually display the logo.
+#
+# BIMI has a hard prerequisite: DMARC must be at enforcement (p=quarantine
+# or p=reject, with sufficient pct). Mail providers refuse to display a
+# BIMI logo for a domain whose DMARC is p=none. So a BIMI record on a
+# domain with weak DMARC is a misconfiguration — the record exists but
+# will never render. We cross-reference the DMARC result to surface that.
+#
+# This is DNS-only: a single TXT lookup, joining the other email checks in
+# the DNS-worker phase. We deliberately do NOT fetch the logo URL or
+# validate the SVG profile / VMC chain here — that's real HTTP work and
+# extra latency per audit, out of scope for the cheap DNS-level signal.
+# The parsed l= / a= presence is enough to tell the operator whether their
+# record is structurally complete.
+
+def check_bimi(domain):
+    """Check for a BIMI record at default._bimi.<domain>.
+
+    Returns:
+      present:    bool — a v=BIMI1 record was found
+      has_logo:   bool — the record carries a non-empty l= (logo URL)
+      has_vmc:    bool — the record carries a non-empty a= (VMC/CMC URL)
+      logo_url:   str | None
+      vmc_url:    str | None
+      selfassert: bool — record present but l= empty (self-asserting opt-out)
+      record:     the raw TXT string, or None
+      error:      resolver error string, or None
+
+    Never raises.
+    """
+    recs = resolve(f"default._bimi.{domain}", "TXT")
+    err  = resolve_error(recs)
+    if err:
+        return {"present": False, "has_logo": False, "has_vmc": False,
+                "logo_url": None, "vmc_url": None, "selfassert": False,
+                "record": None, "error": err}
+
+    for r in recs:
+        # BIMI records start with v=BIMI1 (case-insensitive per spec).
+        if re.match(r"\s*v\s*=\s*BIMI1\b", r, re.IGNORECASE):
+            l_match = re.search(r"\bl\s*=\s*([^;]*)", r, re.IGNORECASE)
+            a_match = re.search(r"\ba\s*=\s*([^;]*)", r, re.IGNORECASE)
+            logo = (l_match.group(1).strip() if l_match else "") or ""
+            vmc  = (a_match.group(1).strip() if a_match else "") or ""
+            has_logo = bool(logo)
+            has_vmc  = bool(vmc)
+            # l= present but empty is the spec's "self-asserting opt-out"
+            # (the domain declares BIMI participation without a logo).
+            selfassert = (l_match is not None) and not has_logo
+            return {
+                "present":    True,
+                "has_logo":   has_logo,
+                "has_vmc":    has_vmc,
+                "logo_url":   logo or None,
+                "vmc_url":    vmc or None,
+                "selfassert": selfassert,
+                "record":     r,
+                "error":      None,
+            }
+
+    return {"present": False, "has_logo": False, "has_vmc": False,
+            "logo_url": None, "vmc_url": None, "selfassert": False,
+            "record": None, "error": None}
 
 def check_dane(domain, mx_entries):
     """For each MX host, look up TLSA records at _25._tcp.<mx-host>.
@@ -3023,6 +3116,7 @@ def check_server_header(domain, _cached_response=None):
         return {
             "server":              h.get("Server"),
             "x_powered_by":        h.get("X-Powered-By"),
+            "x_aspnet_version":    h.get("X-AspNet-Version"),
             "final_url":           resp.url,
             "stack":               stack,
             "http3_advertised":    "h3" in alt_svc,
@@ -3935,6 +4029,144 @@ def check_versioned_libraries(html: str) -> dict:
     return {"libraries": libraries, "any_eol": any_eol}
 
 
+# ── Server-side tech EOL detection ────────────────────────────────────────────
+# Inspects HTTP response headers for disclosed server-side runtime/framework
+# versions and flags end-of-life ones. Unlike client-side library detection
+# (which parses page HTML), this reads three headers already captured by
+# check_server_header:
+#
+#   - X-Powered-By: PHP/8.1.34     → php 8.1  → EOL 2025-12-31
+#   - X-Powered-By: ASP.NET        → (no version, not flagged)
+#   - X-AspNet-Version: 2.0.50727  → asp.net 2.0 → EOL long ago
+#   - Server: ... PHP/7.4.3 ...    → php 7.4  → EOL 2022-11-28  (some servers
+#                                     put the PHP version in the Server header
+#                                     instead of / in addition to X-Powered-By)
+#
+# Version keys are major.minor because runtime lifecycles differ by minor
+# (PHP 8.1 EOL, 8.2 supported). We match against TECH_EOL (tech_eol.json).
+# The disclosed-version part is separately a mild finding (server_header
+# X-Powered-By disclosure) — this check adds the EOL dimension on top: not
+# just "you're revealing PHP" but "the PHP you're revealing is unsupported."
+
+# Patterns to extract (tech_key, version) from header values. Each returns
+# a major.minor version string. Ordered; first match per tech wins.
+_TECH_VERSION_PATTERNS = [
+    # PHP/8.1.34 or PHP/8.1  (in X-Powered-By or Server)
+    ("php",     re.compile(r"PHP/(\d+\.\d+)(?:\.\d+)*", re.IGNORECASE)),
+    # ASP.NET version header: "2.0.50727" → 2.0
+    ("asp.net", re.compile(r"^(\d+\.\d+)", re.IGNORECASE)),
+]
+
+
+def _annotate_tech_eol(tech: str, version_mm: str) -> dict:
+    """Annotate a server-side tech (major.minor) against TECH_EOL.
+
+    version_mm is a major.minor string like "8.1". Returns a dict with
+    {tech, version, eol_status}, plus eol_message / eol_last_release /
+    eol_last_version when EOL. Mirrors _annotate_library_eol but keyed on
+    major.minor throughout (that's how server-runtime lifecycles work).
+    """
+    out = {"tech": tech, "version": version_mm}
+    entry = TECH_EOL.get(tech)
+    if not entry:
+        out["eol_status"] = "unknown"
+        return out
+
+    def _vt(s):
+        try:
+            return tuple(int(p) for p in s.split("."))
+        except ValueError:
+            return ()
+
+    eol_majors = entry.get("eol_majors") or {}
+    specific = eol_majors.get(version_mm)
+
+    floor_str = entry.get("min_supported_major_minor")
+    below_floor = False
+    if floor_str:
+        ft, vt = _vt(floor_str), _vt(version_mm)
+        below_floor = bool(ft) and bool(vt) and vt < ft
+
+    if specific or below_floor:
+        out["eol_status"] = "eol"
+        if specific:
+            parts = []
+            if specific.get("last_version"):
+                parts.append(f"last release {specific['last_version']}")
+            if specific.get("last_release"):
+                parts.append(f"EOL {specific['last_release']}")
+            detail = ", ".join(parts) if parts else "end of life"
+            out["eol_message"] = f"{tech.upper()} {version_mm} — {detail}"
+            if specific.get("last_release"):
+                out["eol_last_release"] = specific["last_release"]
+            if specific.get("last_version"):
+                out["eol_last_version"] = specific["last_version"]
+        else:
+            out["eol_message"] = (
+                f"{tech.upper()} {version_mm} — below minimum supported "
+                f"version ({floor_str})"
+            )
+    else:
+        out["eol_status"] = "ok"
+    return out
+
+
+def check_tech_eol(server_header_result: dict) -> dict:
+    """Detect EOL server-side tech from already-captured HTTP headers.
+
+    Consumes the dict returned by check_server_header (specifically the
+    'server', 'x_powered_by', and 'x_aspnet_version' fields). Pure CPU on
+    strings already in hand — no extra network I/O. Safe to call after the
+    server_header check completes.
+
+    Returns:
+      {
+        "techs": [
+          {"tech": "php", "version": "8.1", "eol_status": "eol",
+           "eol_message": "PHP 8.1 — last release 8.1.x, EOL 2025-12-31",
+           "eol_last_release": "2025-12-31", "eol_last_version": "8.1.x"},
+          ...
+        ],
+        "any_eol": True/False,
+      }
+
+    Only EOL and 'ok' techs where we could extract a version are returned;
+    techs we can't version (bare "ASP.NET" with no version header) are
+    omitted — the plain disclosure finding covers those.
+    """
+    if not server_header_result or server_header_result.get("error"):
+        return {"techs": [], "any_eol": False}
+
+    # Sources to scan, in priority order. X-Powered-By is the usual PHP
+    # carrier; Server sometimes carries it too; X-AspNet-Version is the
+    # ASP.NET one.
+    xpb   = server_header_result.get("x_powered_by") or ""
+    srv   = server_header_result.get("server") or ""
+    aspnet = server_header_result.get("x_aspnet_version") or ""
+
+    found: dict[str, str] = {}   # tech -> major.minor
+
+    # PHP: check X-Powered-By first, then Server.
+    php_re = _TECH_VERSION_PATTERNS[0][1]
+    for source in (xpb, srv):
+        m = php_re.search(source)
+        if m:
+            found["php"] = m.group(1)
+            break
+
+    # ASP.NET version: from the dedicated header.
+    if aspnet:
+        m = _TECH_VERSION_PATTERNS[1][1].search(aspnet.strip())
+        if m:
+            found["asp.net"] = m.group(1)
+
+    techs = [_annotate_tech_eol(t, v) for t, v in sorted(found.items())]
+    # Only surface techs we have EOL data for (drop 'unknown').
+    techs = [t for t in techs if t.get("eol_status") in ("eol", "ok")]
+    any_eol = any(t.get("eol_status") == "eol" for t in techs)
+    return {"techs": techs, "any_eol": any_eol}
+
+
 # ── OS EOL detection (2.9.0) ──────────────────────────────────────────────────
 # Inspects the Server header (and a couple of corroborating signals) for
 # evidence that the host is running an end-of-life operating system. Three
@@ -4777,6 +5009,30 @@ def score_results(results):
     v4 = ipr.get("v4", {})
     v6 = ipr.get("v6", {})
 
+    # ── No-web-presence detection ────────────────────────────────────────────
+    # A domain with neither an A nor an AAAA record has no host to serve
+    # HTTP/TLS. This is a legitimate configuration — an MX-only subdomain
+    # that receives mail but hosts no website (records.example.com), or a
+    # domain that only exists for DNS/mail. Scoring its absent web stack as
+    # a pile of failures (TLS 0/13, HTTP 0/2, every header "missing") is
+    # wrong: there's nothing to audit on the web side, so those rows should
+    # be omitted entirely, not scored as zero.
+    #
+    # We detect this from ip_routing: both address families reported the
+    # "no A record" / "no AAAA record" sentinel. We deliberately do NOT
+    # trigger on lookup *errors* (timeouts, SERVFAIL) — those are
+    # uncertainty, and the existing per-check error handling covers them.
+    # We only skip the web rubric when DNS authoritatively says "there is
+    # no address here."
+    _v4_absent = v4.get("error") == "no A record"
+    _v6_absent = v6.get("error") == "no AAAA record"
+    no_web_presence = _v4_absent and _v6_absent
+
+    # Whether the domain has any MX — used to decide whether "no web
+    # presence" is the MX-only mail case (audit email, skip web) or a
+    # domain that resolves to nothing useful at all.
+    _has_mx = bool(mx.get("entries")) and not mx.get("error")
+
     # ── Email — source domain (always) ───────────────────────────────────────
     _score_email(spf, dmarc, mx, pts)
 
@@ -4792,8 +5048,14 @@ def score_results(results):
         )
 
     # ── IPv6 (always in denominator — capability + hygiene) ──────────────────
-    v6_present = bool(v6.get("address"))
-    _p("IPv6", "present" if v6_present else "missing")
+    # Skipped when the domain has no web presence at all: "no IPv6 web
+    # address" is not a meaningful finding for an MX-only mail subdomain
+    # or a DNS-only domain that intentionally has no A/AAAA.
+    if not no_web_presence:
+        v6_present = bool(v6.get("address"))
+        _p("IPv6", "present" if v6_present else "missing")
+    else:
+        v6_present = bool(v6.get("address"))
 
     # ── IPv4 routing ─────────────────────────────────────────────────────────
     if not v4.get("error") or v4.get("address"):
@@ -4892,7 +5154,11 @@ def score_results(results):
         #      and later serves clean TLS, this row not having scored is
         #      the right answer; penalising it as 0/13 punishes a transient
         #      reachability problem.
-        if not _was_skipped(tls):
+        #   3. No web presence at all (no A/AAAA record) — an MX-only mail
+        #      subdomain or a DNS-only domain. There is no host to serve
+        #      TLS. Scoring the absent web stack as failures is wrong; the
+        #      web rubric simply doesn't apply. Skip it.
+        if not _was_skipped(tls) and not no_web_presence:
             # tls_cert_error=True → port 443 open, cert is self-signed/untrusted.
             # tls_cert_error=False → no port 443 at all.
             cert_err = tls.get("tls_cert_error", False)
@@ -4906,12 +5172,12 @@ def score_results(results):
     # ── HTTP→HTTPS redirect ──────────────────────────────────────────────────
     hr = results.get("http_redirect", {})
     hr_s = hr.get("status")
-    if hr_s in ("https_only", "http_error", "http_available"):
+    if hr_s in ("https_only", "http_error", "http_available") and not no_web_presence:
         _p("HTTP→HTTPS redirect", hr_s)
     # "unreachable" → not scored
 
     # ── HSTS ──────────────────────────────────────────────────────────────────
-    if not hsts.get("error"):
+    if not hsts.get("error") and not no_web_presence:
         _p("HSTS present", "present" if hsts.get("present") else "missing")
         _p("HSTS includeSubDomains",
            "set" if hsts.get("includes_subdomains") else "unset")
@@ -4931,7 +5197,7 @@ def score_results(results):
                 _p("HSTS preloaded", "not_preloaded")
 
     # ── Server / disclosure ───────────────────────────────────────────────────
-    if not srv.get("error"):
+    if not srv.get("error") and not no_web_presence:
         kind = classify_server(srv.get("server"))
         if kind in ("absent", "good_proxy"):
             _p("Server header", "absent_or_proxy")
@@ -4943,7 +5209,7 @@ def score_results(results):
         _p("X-Powered-By absent", "present" if srv.get("x_powered_by") else "absent")
 
     # ── Browser security headers ──────────────────────────────────────────────
-    if not srv.get("error"):
+    if not srv.get("error") and not no_web_presence:
         csp_q = srv.get("csp_quality")
         if csp_q == "present":
             _p("CSP", "present")
@@ -4974,7 +5240,7 @@ def score_results(results):
     # ── Cookies ───────────────────────────────────────────────────────────────
     # Fixed 3-point budget (Secure / HttpOnly / SameSite). Worst-cookie-wins.
     # Infra cookies (CDN/WAF) excluded — operator can't control them.
-    if not srv.get("error"):
+    if not srv.get("error") and not no_web_presence:
         cookies = [ck for ck in (srv.get("cookies") or []) if not ck.get("infra")]
         if cookies:
             all_secure   = all(ck["secure"]   for ck in cookies)
@@ -4997,7 +5263,7 @@ def score_results(results):
 
     # ── security.txt ──────────────────────────────────────────────────────────
     sectxt = results.get("security_txt", {})
-    if not sectxt.get("error"):
+    if not sectxt.get("error") and not no_web_presence:
         if sectxt.get("present") and sectxt.get("contact"):
             if sectxt.get("expired") is False:
                 _p("security.txt", "present_with_expiry")
@@ -5012,8 +5278,8 @@ def score_results(results):
     # the 0/0 mapping; we just need to not skip them silently.
     epr = results.get("error_page", {})
     epo = epr.get("outcome")
-    if epo in ("custom_404", "default_no_version", "default_with_version",
-               "spa_or_2xx", "error"):
+    if not no_web_presence and epo in ("custom_404", "default_no_version",
+                                       "default_with_version", "spa_or_2xx", "error"):
         _p("Default error page", epo)
 
     # ── CORS configuration ────────────────────────────────────────────────────
@@ -5022,7 +5288,7 @@ def score_results(results):
     # breakdown row visible without affecting the score.
     cors = results.get("cors", {})
     co_outcome = cors.get("outcome")
-    if co_outcome in ("no_cors", "weak_wildcard_with_credentials",
+    if not no_web_presence and co_outcome in ("no_cors", "weak_wildcard_with_credentials",
                       "weak_null_origin", "weak_reflective", "error"):
         _p("CORS configuration", co_outcome)
 
@@ -5031,13 +5297,13 @@ def score_results(results):
     # the three present → operator collects violation reports → 1/1. Absence
     # is 0/0 (not a finding — most sites don't bother). Only score when the
     # server_header check itself succeeded; otherwise we have no data.
-    if not srv.get("error"):
+    if not srv.get("error") and not no_web_presence:
         any_reporting = any(srv.get(k) for k in ("report_to", "reporting_endpoints", "nel"))
         _p("Reporting endpoints", "present" if any_reporting else "absent")
 
     # ── SSL Labs grade ────────────────────────────────────────────────────────
     ssl_result = results.get("ssl_labs")
-    if ssl_result is not None:
+    if ssl_result is not None and not no_web_presence:
         grade = ssl_result.get("worst_grade")
         if grade in _W["SSL Labs grade"]:
             _p("SSL Labs grade", grade)
@@ -5110,6 +5376,32 @@ def score_results(results):
         tls_rpt = results.get("tls_rpt", {})
         if not tls_rpt.get("error"):
             _p("TLS-RPT", "present" if tls_rpt.get("present") else "missing")
+
+        # ── BIMI ─────────────────────────────────────────────────────────────
+        # Scored 0/1..1/1. BIMI publishes a brand logo for authenticated mail,
+        # but only renders when DMARC is at enforcement (p=quarantine/reject),
+        # so the outcome depends on both the BIMI record and the DMARC policy:
+        #   present     1/1  — logo published AND DMARC enforcing (will render)
+        #   dmarc_weak  0.5  — logo published but DMARC p=none (won't render;
+        #                      the fix is on the DMARC side, so partial credit)
+        #   malformed   0/1  — record present but no logo (l=) URL
+        #   missing     0/1  — no BIMI record
+        # Only scored when MX exists (a mail domain); non-mail domains don't
+        # get a BIMI row. A self-asserting record (l= empty by design) is
+        # treated as present-but-no-logo → malformed bucket, since it can't
+        # actually display a logo.
+        bimi = results.get("bimi", {})
+        if not bimi.get("error"):
+            dmarc_pol = (dmarc.get("policy") or "").lower()
+            dmarc_enforcing = dmarc_pol in ("quarantine", "reject")
+            if not bimi.get("present"):
+                _p("BIMI", "missing")
+            elif not bimi.get("has_logo"):
+                _p("BIMI", "malformed")
+            elif not dmarc_enforcing:
+                _p("BIMI", "dmarc_weak")
+            else:
+                _p("BIMI", "present")
 
         dane = results.get("dane", {})
         # dane scoring: only meaningful if we have MX hosts to compare against
@@ -5235,7 +5527,7 @@ def score_results(results):
     # outcome=no_date → not scored
 
     # ── HSTS max-age strength ─────────────────────────────────────────────────
-    if not hsts.get("error") and hsts.get("present"):
+    if not hsts.get("error") and hsts.get("present") and not no_web_presence:
         ma = hsts.get("max_age")
         min_age = _THRESH.get("hsts_max_age_min_seconds", 15552000)
         if ma is None:
@@ -5255,7 +5547,7 @@ def score_results(results):
         _p("CSP enforcement mode",  csp_a["enforcement_outcome"])
 
     # ── Cross-Origin headers (COOP/CORP) ──────────────────────────────────────
-    if not srv.get("error"):
+    if not srv.get("error") and not no_web_presence:
         coop = (srv.get("coop") or "").lower().strip()
         if coop == "same-origin":
             _p("Cross-Origin-Opener-Policy", "same_origin")
@@ -5282,7 +5574,7 @@ def score_results(results):
             _p("X-XSS-Protection deprecated", "set_dangerous")
 
     # ── Cookie name prefixes ──────────────────────────────────────────────────
-    if not srv.get("error"):
+    if not srv.get("error") and not no_web_presence:
         cookies = [ck for ck in (srv.get("cookies") or []) if not ck.get("infra")]
         prefixed = [ck for ck in cookies
                     if ck["name"].startswith(("__Host-", "__Secure-"))]
@@ -5314,18 +5606,18 @@ def score_results(results):
     # end (NXDOMAIN) or a second, separate site. See check_www_apex_unification.
     wau = results.get("www_apex_unified", {})
     wau_outcome = wau.get("outcome")
-    if wau_outcome in ("unified", "split", "half_missing"):
+    if wau_outcome in ("unified", "split", "half_missing") and not no_web_presence:
         _p("www and apex unified", wau_outcome)
     # "not_scored" (or absent) → 0/0, no rubric row emitted.
 
     # ── Cert covers redirect variant ──────────────────────────────────────────
     cert_var = results.get("cert_variant", {})
-    if cert_var.get("outcome") in ("covers", "missing_variant"):
+    if cert_var.get("outcome") in ("covers", "missing_variant") and not no_web_presence:
         _p("Cert covers www variant", cert_var["outcome"])
 
     # ── Deep-mode: page-level ─────────────────────────────────────────────────
     page = results.get("page_signals", {})
-    if page and page.get("parsed"):
+    if page and page.get("parsed") and not no_web_presence:
         _p("Subresource Integrity", page["sri_outcome"])
         _p("Mixed content (in-page)", page["mixed_outcome"])
 
@@ -5346,10 +5638,11 @@ def score_results(results):
     # row in the breakdown, and they all map to the Website category via
     # the prefix-aware category lookup in audit_render.
     vlibs = (results.get("versioned_libs") or {}).get("libraries") or []
-    for lib in vlibs:
-        if lib.get("eol_status") == "eol":
-            label = f"EOL library: {lib.get('library', '?')} {lib.get('version', '?')}"
-            pts.append((label, 0, 1))
+    if not no_web_presence:
+        for lib in vlibs:
+            if lib.get("eol_status") == "eol":
+                label = f"EOL library: {lib.get('library', '?')} {lib.get('version', '?')}"
+                pts.append((label, 0, 1))
 
     # ── EOL operating system (2.9.0) ──────────────────────────────────────────
     # Big penalty: each detected EOL OS contributes 0/3 to the score. This
@@ -5363,19 +5656,41 @@ def score_results(results):
     # claim) do not contribute to the score in either direction. Only
     # confirmed EOL findings produce a 0/3 row.
     os_eol = results.get("os_eol") or {}
-    for finding in os_eol.get("os_findings") or []:
-        if finding.get("eol_status") == "eol":
-            os_name = finding.get("os", "?")
-            ver     = finding.get("version") or ""
-            # Strip the placeholder "?" version (used when distro was named
-            # but no version string was recovered) so the breakdown label
-            # doesn't read "EOL OS: centos ?". For 999-floor OSes that's
-            # the common case and the version doesn't add information.
-            if ver in ("?", ""):
-                label = f"EOL OS: {os_name}"
-            else:
-                label = f"EOL OS: {os_name} {ver}"
-            pts.append((label, 0, 3))
+    if not no_web_presence:
+        for finding in os_eol.get("os_findings") or []:
+            if finding.get("eol_status") == "eol":
+                os_name = finding.get("os", "?")
+                ver     = finding.get("version") or ""
+                # Strip the placeholder "?" version (used when distro was named
+                # but no version string was recovered) so the breakdown label
+                # doesn't read "EOL OS: centos ?". For 999-floor OSes that's
+                # the common case and the version doesn't add information.
+                if ver in ("?", ""):
+                    label = f"EOL OS: {os_name}"
+                else:
+                    label = f"EOL OS: {os_name} {ver}"
+                pts.append((label, 0, 3))
+
+    # ── EOL server-side tech (PHP / ASP.NET) ──────────────────────────────────
+    # Each disclosed EOL runtime/framework version is its own 0/2 penalty.
+    # Weighted between EOL library (0/1) and EOL OS (0/3): an unsupported
+    # PHP is more serious than a stale front-end library (it's the whole
+    # server-side runtime, and PHP CVEs are actively exploited) but less
+    # sweeping than an EOL operating system (which implies the kernel and
+    # every system package is unpatched too). Same 'ok'/'unknown' → not
+    # scored convention as the other two EOL checks.
+    #
+    # Label prefix "EOL tech:" gets top-tier criticality via _criticality_rank
+    # (same treatment as EOL OS / EOL library) so these lead the Possible
+    # Issues list, and maps to the Website category in audit_render.
+    tech_eol = results.get("tech_eol") or {}
+    if not no_web_presence:
+        for t in tech_eol.get("techs") or []:
+            if t.get("eol_status") == "eol":
+                tech_name = t.get("tech", "?")
+                ver       = t.get("version") or ""
+                label = f"EOL tech: {tech_name} {ver}".rstrip()
+                pts.append((label, 0, 2))
 
     earned   = sum(e for _, e, _ in pts)
     possible = sum(p for _, _, p in pts)

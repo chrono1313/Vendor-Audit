@@ -1,5 +1,5 @@
 {
-    "rubric_version": "1.2.3",
+    "rubric_version": "1.2.4",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
@@ -41,7 +41,8 @@
             "DANE TLSA on MX",
             "STARTTLS-MX",
             "DKIM (common selectors)",
-            "DKIM key strength"
+            "DKIM key strength",
+            "BIMI"
         ],
         "DNS": [
             "DNSSEC TLD signed",
@@ -269,6 +270,24 @@
         "TLS-RPT": {
             "present": {
                 "earned": 1,
+                "possible": 1
+            },
+            "missing": {
+                "earned": 0,
+                "possible": 1
+            }
+        },
+        "BIMI": {
+            "present": {
+                "earned": 1,
+                "possible": 1
+            },
+            "dmarc_weak": {
+                "earned": 0.5,
+                "possible": 1
+            },
+            "malformed": {
+                "earned": 0,
                 "possible": 1
             },
             "missing": {
@@ -1201,6 +1220,7 @@
         "SSL Labs grade": "SSL Labs grade",
         "MTA-STS": "MTA-STS policy published",
         "TLS-RPT": "TLS-RPT reporting endpoint published",
+        "BIMI": "BIMI brand indicator published (logo eligible to display)",
         "DANE TLSA on MX": "DANE/TLSA records on MX hosts",
         "STARTTLS-MX": "STARTTLS negotiated on MX hosts (TLS 1.3)",
         "DKIM (common selectors)": "DKIM key found at common selector(s)",
@@ -1241,6 +1261,7 @@
         },
         "IPv4 RPKI": "IPv4 RPKI not-found - no ROA published, prefix unprotected",
         "IPv6 RPKI": "IPv6 RPKI not-found - no ROA published, prefix unprotected",
+        "BIMI": "BIMI logo published but DMARC is not at enforcement (p=quarantine or p=reject) — mailbox providers will not display the logo until DMARC is enforcing",
         "HTTP\u2192HTTPS redirect": "Port 80 open but not redirecting to HTTPS",
         "HSTS preloaded": {
             "_comment": "Multi-tier outcome \u2014 'pending' (submitted to hstspreload.org, accepted, waiting for next Chrome rollup) and 'preload_directive' (header has preload, never submitted) both score 0.5/1 but get different finding text. Reader: see _resolve_partial_label() in audit_txt_report.py / audit_render.py",

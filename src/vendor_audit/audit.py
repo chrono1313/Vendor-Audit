@@ -79,6 +79,7 @@ from .audit_checks import (
     check_ip_routing,
     check_mta_sts,
     check_mta_sts_policy,
+    check_bimi,
     check_mx,
     check_ns_soa,
     check_ns_health,
@@ -91,11 +92,12 @@ from .audit_checks import (
     check_starttls_mx,
     check_tls,
     check_tls_rpt,
+    check_tech_eol,
     check_versioned_libraries,
     check_www_apex_unification,
 )
 
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 
 log = logging.getLogger(__name__)
 
@@ -325,6 +327,7 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
         ("mx",      lambda d: check_mx(d)),
         ("mta_sts", lambda d: check_mta_sts(d)),
         ("tls_rpt", lambda d: check_tls_rpt(d)),
+        ("bimi",    lambda d: check_bimi(d)),
         ("dkim",    lambda d: check_dkim_common(d)),
     ]
 
@@ -617,6 +620,18 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
         }
     check_timings["os_eol"] = round(time.monotonic() - os_t0, 3)
 
+    # ── Server-side tech EOL detection ───────────────────────────────────
+    # Pure CPU on the already-collected server_header result (X-Powered-By /
+    # Server / X-AspNet-Version). No network I/O. Flags EOL PHP / ASP.NET
+    # versions disclosed in headers. Robust against a missing/errored
+    # server_header result (check_tech_eol returns empty in that case).
+    tech_t0 = time.monotonic()
+    try:
+        results["tech_eol"] = check_tech_eol(results.get("server_header") or {})
+    except Exception as exc:
+        results["tech_eol"] = {"techs": [], "any_eol": False, "error": str(exc)}
+    check_timings["tech_eol"] = round(time.monotonic() - tech_t0, 3)
+
     # ── Record total scan wall time + per-check timings for the report ───
     scan_elapsed = round(time.monotonic() - scan_t0, 3)
     results["_scan"] = {
@@ -634,6 +649,33 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
     if partial_envelope_reason is not None:
         results["_partial"] = True
         results["_partial_reason"] = partial_envelope_reason
+
+    # No-web-presence note: a domain with neither A nor AAAA has no host to
+    # serve a website. This is a legitimate configuration (MX-only mail
+    # subdomain, DNS-only domain). The scorer already omits the web-side
+    # rubric; this note tells the reader *why* the TLS / HTTP / headers
+    # sections are empty, so an empty web section reads as "not applicable"
+    # rather than "the audit broke."
+    ipr = results.get("ip_routing", {})
+    v4_absent = ipr.get("v4", {}).get("error") == "no A record"
+    v6_absent = ipr.get("v6", {}).get("error") == "no AAAA record"
+    if v4_absent and v6_absent:
+        mx_present = bool(results.get("mx", {}).get("entries")) and \
+            not results.get("mx", {}).get("error")
+        if mx_present:
+            results["_no_web_note"] = (
+                "This domain has no A or AAAA record — no web server to audit. "
+                "It does have MX records, so it's configured for mail only "
+                "(e.g. a mail-receiving subdomain). Email, DNS, and mail-"
+                "transport checks were run; website checks (TLS, HTTP, "
+                "security headers) were skipped as not applicable."
+            )
+        else:
+            results["_no_web_note"] = (
+                "This domain has no A or AAAA record — there is no web server "
+                "to audit. DNS-level checks were run; website checks (TLS, "
+                "HTTP, security headers) were skipped as not applicable."
+            )
 
     return {
         "domain":       domain,

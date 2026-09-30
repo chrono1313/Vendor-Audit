@@ -1,0 +1,35 @@
+{
+  "_comment": "End-of-life data for server-side technologies disclosed in HTTP response headers (Server, X-Powered-By). Distinct from library_eol.json, which covers client-side JS/CSS libraries detected in page HTML. Same schema shape so _annotate_eol() in audit_checks.py can consume both. Versions here are keyed major.minor because server-runtime lifecycles (PHP, Python, etc.) differ by minor version, not just major. Dates are authoritative end-of-life (no security patches) dates from each project's official lifecycle page.",
+  "_schema_version": 1,
+  "_verified_on": "2026-09-29",
+  "php": {
+    "_note": "php.net/supported-versions. 4-year lifecycle (2yr active + 2yr security). 8.1 EOL 2025-12-31; 8.2 EOL 2026-12-31 (security-only now); 8.3/8.4/8.5 supported. Everything 8.0 and below is EOL.",
+    "_source": "https://www.php.net/supported-versions.php",
+    "min_supported_major_minor": "8.2",
+    "eol_majors": {
+      "8.1": {"last_release": "2025-12-31", "last_version": "8.1.x"},
+      "8.0": {"last_release": "2023-11-26", "last_version": "8.0.30"},
+      "7.4": {"last_release": "2022-11-28", "last_version": "7.4.33"},
+      "7.3": {"last_release": "2021-12-06", "last_version": "7.3.33"},
+      "7.2": {"last_release": "2020-11-30", "last_version": "7.2.34"},
+      "7.1": {"last_release": "2019-12-01", "last_version": "7.1.33"},
+      "7.0": {"last_release": "2019-01-10", "last_version": "7.0.33"},
+      "5.6": {"last_release": "2018-12-31", "last_version": "5.6.40"},
+      "5.5": {"last_release": "2016-07-21", "last_version": "5.5.38"},
+      "5.4": {"last_release": "2015-09-03", "last_version": "5.4.45"},
+      "5.3": {"last_release": "2014-08-14", "last_version": "5.3.29"}
+    }
+  },
+  "asp.net": {
+    "_note": "ASP.NET Framework versions exposed via X-AspNet-Version. The classic .NET Framework 1.x-3.x are long dead; 4.x is the last Framework line (supported as part of Windows). This covers the classic X-AspNet-Version disclosures, which almost always indicate old WebForms apps.",
+    "_source": "https://learn.microsoft.com/en-us/lifecycle/products/microsoft-net-framework",
+    "min_supported_major_minor": "4.0",
+    "eol_majors": {
+      "2.0": {"last_release": "2011-07-12", "last_version": "2.0.50727"},
+      "3.0": {"last_release": "2011-07-12", "last_version": "3.0"},
+      "3.5": {"last_release": "2011-07-12", "last_version": "3.5"},
+      "1.1": {"last_release": "2008-10-14", "last_version": "1.1.4322"},
+      "1.0": {"last_release": "2009-07-14", "last_version": "1.0.3705"}
+    }
+  }
+}
