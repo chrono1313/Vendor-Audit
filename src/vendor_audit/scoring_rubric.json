@@ -1,5 +1,5 @@
 {
-    "rubric_version": "1.5.5",
+    "rubric_version": "1.5.6",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
@@ -754,26 +754,26 @@
         "_comment_website": "Website - origin-side hygiene: server header disclosure, security headers, cookies, security.txt, clock, page-level deep checks.",
         "Server header": {
             "absent_or_proxy": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "origin_no_version": {
-                "earned": 2,
-                "possible": 4
+                "earned": 1,
+                "possible": 2
             },
             "origin_with_version": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "X-Powered-By absent": {
             "absent": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "present": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "CSP": {
@@ -792,12 +792,12 @@
         },
         "X-Frame-Options": {
             "set": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "unset": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "X-Content-Type-Options": {
@@ -812,16 +812,16 @@
         },
         "Referrer-Policy": {
             "strong": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "weak": {
-                "earned": 2,
-                "possible": 4
+                "earned": 1,
+                "possible": 2
             },
             "missing": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "Permissions-Policy": {
@@ -884,31 +884,31 @@
         },
         "security.txt": {
             "present_with_expiry": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "present_no_expiry": {
-                "earned": 2,
-                "possible": 4
+                "earned": 1,
+                "possible": 2
             },
             "missing": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "_comment_error_page": "Default error-page disclosure \u2014 operators who care about disclosure customise/strip default 404 pages. Detection uses fingerprints in error_page_fingerprints.json (layout-specific patterns to keep FPs low). 'spa_or_2xx' (no 404 to inspect) and 'error' (probe failed) score 0/0 \u2014 no signal.",
         "Default error page": {
             "custom_404": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "default_no_version": {
-                "earned": 2,
-                "possible": 4
+                "earned": 1,
+                "possible": 2
             },
             "default_with_version": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             },
             "spa_or_2xx": {
                 "earned": 0,
@@ -927,15 +927,15 @@
             },
             "weak_wildcard_with_credentials": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             },
             "weak_null_origin": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             },
             "weak_reflective": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             },
             "error": {
                 "earned": 0,
@@ -975,26 +975,26 @@
         },
         "CSP object-src": {
             "none_or_self": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "unrestricted": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             },
             "missing": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "CSP base-uri": {
             "set": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "missing": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "CSP frame-ancestors": {
@@ -1009,40 +1009,40 @@
         },
         "CSP enforcement mode": {
             "enforced": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "report_only": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "Cross-Origin-Opener-Policy": {
             "same_origin": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "same_origin_allow_popups": {
-                "earned": 2,
-                "possible": 4
+                "earned": 1,
+                "possible": 2
             },
             "missing": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "Cross-Origin-Resource-Policy": {
             "same_origin_or_site": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "cross_origin": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             },
             "missing": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "X-XSS-Protection deprecated": {
