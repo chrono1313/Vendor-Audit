@@ -1,5 +1,5 @@
 {
-    "rubric_version": "1.4.2",
+    "rubric_version": "1.5.0",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
@@ -119,7 +119,7 @@
                 "possible": 18
             },
             "softfail": {
-                "earned": 4,
+                "earned": 7,
                 "possible": 18
             },
             "neutral": {
@@ -149,28 +149,28 @@
         },
         "SPF lookup count": {
             "within_limit": {
-                "earned": 8,
-                "possible": 8
+                "earned": 6,
+                "possible": 6
             },
             "exceeds_limit": {
                 "earned": 0,
-                "possible": 8
+                "possible": 6
             }
         },
         "SPF redirect": {
             "resolves": {
-                "earned": 6,
-                "possible": 6
+                "earned": 4,
+                "possible": 4
             }
         },
         "DMARC present": {
             "present": {
-                "earned": 14,
-                "possible": 14
+                "earned": 4,
+                "possible": 4
             },
             "missing": {
                 "earned": 0,
-                "possible": 14
+                "possible": 4
             }
         },
         "DMARC policy": {
@@ -179,7 +179,7 @@
                 "possible": 18
             },
             "quarantine": {
-                "earned": 6,
+                "earned": 10,
                 "possible": 18
             },
             "none": {
@@ -189,58 +189,58 @@
         },
         "DMARC pct": {
             "full": {
-                "earned": 8,
-                "possible": 8
+                "earned": 6,
+                "possible": 6
             },
             "partial": {
                 "earned": 2,
-                "possible": 8
+                "possible": 6
             }
         },
         "DMARC sp": {
             "enforced": {
-                "earned": 8,
-                "possible": 8
+                "earned": 6,
+                "possible": 6
             },
             "none": {
                 "earned": 0,
-                "possible": 8
+                "possible": 6
             }
         },
         "_comment_dmarc_rua": "Without rua=, operators can't see who's spoofing them or whether legit mail is being rejected, so a deployment is operating blind.",
         "DMARC rua reporting": {
             "present": {
-                "earned": 6,
-                "possible": 6
+                "earned": 4,
+                "possible": 4
             },
             "missing": {
                 "earned": 0,
-                "possible": 6
+                "possible": 4
             }
         },
         "MX records": {
             "present": {
-                "earned": 10,
-                "possible": 10
+                "earned": 4,
+                "possible": 4
             }
         },
         "_comment_mx_target_hygiene": "RFC 2181 \u00a710.3 and RFC 5321 \u00a75.1: MX RDATA must be a domain name (not an IP literal) AND that name must resolve directly to A/AAAA records (not via a CNAME). Real sending MTAs vary in how they handle violations \u2014 Postfix warns; some receivers bounce. Worst-of: ANY MX with a CNAME target OR ANY MX as IP literal scores 0/1. clean = 1/1. no_mx = 0/0 (the MX-records check above already covered absence).",
         "MX target hygiene": {
             "clean": {
-                "earned": 8,
-                "possible": 8
+                "earned": 6,
+                "possible": 6
             },
             "cname_target": {
                 "earned": 0,
-                "possible": 8
+                "possible": 6
             },
             "ip_literal": {
                 "earned": 0,
-                "possible": 8
+                "possible": 6
             },
             "cname_and_ip": {
                 "earned": 0,
-                "possible": 8
+                "possible": 6
             },
             "no_mx": {
                 "earned": 0,
@@ -372,12 +372,12 @@
         "_comment_routing": "Routing - IPv6 reachability + RPKI/IRR per address family.",
         "IPv6": {
             "present": {
-                "earned": 8,
-                "possible": 8
+                "earned": 4,
+                "possible": 4
             },
             "missing": {
                 "earned": 0,
-                "possible": 8
+                "possible": 4
             }
         },
         "IPv4 RPKI": {
@@ -431,32 +431,32 @@
         "_comment_dnssec": "DNSSEC weighting rationale: the TLD being signed is not the operator's choice (most are signed by default), so it's worth 1 not 3. The AD flag is the only check that proves the validation chain actually works end-to-end - that's worth 3.",
         "DNSSEC TLD signed": {
             "signed": {
-                "earned": 6,
-                "possible": 6
+                "earned": 2,
+                "possible": 2
             },
             "unsigned": {
                 "earned": 0,
-                "possible": 6
+                "possible": 2
             }
         },
         "DNSSEC DNSKEY": {
             "present": {
-                "earned": 8,
-                "possible": 8
+                "earned": 4,
+                "possible": 4
             },
             "missing": {
                 "earned": 0,
-                "possible": 8
+                "possible": 4
             }
         },
         "DNSSEC AD flag": {
             "set": {
-                "earned": 10,
-                "possible": 10
+                "earned": 6,
+                "possible": 6
             },
             "unset": {
                 "earned": 0,
-                "possible": 10
+                "possible": 6
             }
         },
         "_comment_dns_hygiene": "DNS hygiene - CAA + nameserver count.",
@@ -598,55 +598,55 @@
         },
         "HSTS present": {
             "present": {
-                "earned": 10,
-                "possible": 10
+                "earned": 6,
+                "possible": 6
             },
             "missing": {
                 "earned": 0,
-                "possible": 10
+                "possible": 6
             }
         },
         "HSTS includeSubDomains": {
             "set": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "unset": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "_comment_hsts_preloaded": "Four outcomes. 'preloaded' = on the live HSTS preload list, full credit. 'pending' = submitted to hstspreload.org AND accepted, waiting for the next Chromium release rollup (typically 2-3 months from submission). 'preload_directive' = header has the preload directive but the domain isn't on the list and hasn't been accepted to pending \u2014 operator may have set the directive without submitting. 'pending' and 'preload_directive' both score 0.5/1: deliberate operator action toward preloading, but not yet shipped to users. The renderer distinguishes the two so vendors who already submitted aren't told to submit again.",
         "HSTS preloaded": {
             "preloaded": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "pending": {
-                "earned": 2,
-                "possible": 4
+                "earned": 1,
+                "possible": 2
             },
             "preload_directive": {
-                "earned": 2,
-                "possible": 4
+                "earned": 1,
+                "possible": 2
             },
             "not_preloaded": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "HSTS max-age strength": {
             "six_months_plus": {
-                "earned": 4,
-                "possible": 4
+                "earned": 2,
+                "possible": 2
             },
             "less_than_six": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             },
             "missing": {
                 "earned": 0,
-                "possible": 4
+                "possible": 2
             }
         },
         "_comment_ssl_labs": "SSL Labs is weighted at 5 points. A higher weight would make it the single largest contributor and overlap substantially with the locally-checked TLS items above. Five points is enough to materially reward A+/A grades and penalise F/T/M, while leaving the locally-checked TLS posture (TLS 1.3, cert lifetime, name match, HSTS) as the dominant signal in this category.",
@@ -799,12 +799,12 @@
         },
         "X-Frame-Options": {
             "set": {
-                "earned": 6,
-                "possible": 6
+                "earned": 4,
+                "possible": 4
             },
             "unset": {
                 "earned": 0,
-                "possible": 6
+                "possible": 4
             }
         },
         "X-Content-Type-Options": {
@@ -843,36 +843,36 @@
         },
         "Cookie Secure": {
             "all_secure": {
-                "earned": 8,
-                "possible": 8
+                "earned": 4,
+                "possible": 4
             },
             "some_insecure": {
                 "earned": 0,
-                "possible": 8
+                "possible": 4
             }
         },
         "Cookie HttpOnly": {
             "all_httponly": {
-                "earned": 8,
-                "possible": 8
+                "earned": 4,
+                "possible": 4
             },
             "some_not": {
                 "earned": 0,
-                "possible": 8
+                "possible": 4
             }
         },
         "Cookie SameSite": {
             "strict_or_lax": {
-                "earned": 6,
-                "possible": 6
+                "earned": 4,
+                "possible": 4
             },
             "none_with_secure": {
-                "earned": 3,
-                "possible": 6
+                "earned": 2,
+                "possible": 4
             },
             "missing_or_bad": {
                 "earned": 0,
-                "possible": 6
+                "possible": 4
             }
         },
         "Cookie name prefixes": {

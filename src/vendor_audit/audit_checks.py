@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.4.2"
+__version__ = "1.5.0"
 
 import os
 import re
