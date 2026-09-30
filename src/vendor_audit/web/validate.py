@@ -255,6 +255,20 @@ def validate_domain_input(raw: str, *, dns_check: bool = True) -> ValidatedDomai
             addresses = www_addresses
 
     if not addresses:
+        # No A/AAAA — but the domain may still be a legitimate audit target
+        # if it's mail-only (MX records, no website). Examples: a dedicated
+        # mail-receiving subdomain like records.example.com, or a domain that
+        # exists purely for email. We check for MX before rejecting; if MX
+        # exists, we accept the domain with an empty addresses tuple and let
+        # the audit proceed — the scorer skips the web-side rubric for a
+        # no-web-presence domain and audits email / DNS / mail-transport
+        # normally.
+        if _has_mx(normalized):
+            return ValidatedDomain(
+                domain=normalized,
+                original=raw,
+                addresses=(),   # mail-only: no web address, and that's fine
+            )
         raise ValidationError(
             f"{normalized} did not resolve to any address.",
             code="cannot_resolve",
@@ -315,6 +329,40 @@ def _resolve_all(domain: str) -> list[str]:
         seen.add(addr)
         out.append(addr)
     return out
+
+
+def _has_mx(domain: str) -> bool:
+    """True if the domain publishes at least one usable MX record.
+
+    Used to accept mail-only domains (no A/AAAA but real MX) as auditable
+    rather than rejecting them as unresolvable. A Null MX (RFC 7505 — a
+    single '0 .' record) is an explicit declaration of no mail and does
+    NOT count: such a domain has neither web nor mail and isn't a useful
+    audit target, so it should still get the cannot_resolve rejection.
+
+    Uses dnspython (already a project dependency) with a short timeout.
+    Returns False on any error — fail-closed, so a resolver hiccup means
+    the domain is rejected as unresolvable rather than accepted on a
+    maybe. That's the safe default for the validation perimeter.
+    """
+    try:
+        import dns.resolver
+        resolver = dns.resolver.Resolver()
+        resolver.timeout = 3.0
+        resolver.lifetime = 4.0
+        answers = resolver.resolve(domain, "MX", raise_on_no_answer=False)
+        if answers.rrset is None:
+            return False
+        for rdata in answers:
+            parts = str(rdata).split()
+            # Null MX is "0 ." — preference 0, target a bare dot.
+            if len(parts) == 2 and parts[0] == "0" and parts[1] in (".", ""):
+                continue  # explicit no-mail declaration; not a real MX
+            # Any non-null MX record counts.
+            return True
+        return False
+    except Exception:
+        return False
 
 
 def _is_public_address(addr: str) -> bool:

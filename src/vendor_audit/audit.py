@@ -461,10 +461,18 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
     results["cert_variant"] = check_cert_covers_variant(audit_domain, domain, sans)
 
     # ── Mark unresolvable domains ────────────────────────────────────────
+    # A domain is "unresolvable" (nothing to audit) only when it has neither
+    # a web presence (A/AAAA) nor mail (MX). A mail-only domain — MX but no
+    # A/AAAA, e.g. a dedicated mail-receiving subdomain like
+    # records.example.com — IS auditable: the email, DNS, and mail-transport
+    # checks all run, and score_results skips the web-side rubric for it.
+    # So we only set _unresolvable when there's no MX either.
     ipr = results.get("ip_routing", {})
     no_v4 = not ipr.get("v4", {}).get("address")
     no_v6 = not ipr.get("v6", {}).get("address")
-    if no_v4 and no_v6:
+    mx_r = results.get("mx", {}) or {}
+    has_mx = bool(mx_r.get("entries")) and not mx_r.get("null_mx")
+    if no_v4 and no_v6 and not has_mx:
         results["_unresolvable"] = True
 
     # ── Post-pool extras (run in parallel) ───────────────────────────────
