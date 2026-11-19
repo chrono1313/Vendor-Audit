@@ -13,6 +13,9 @@ pin:
   - one cause is one finding (HSTS, DNSSEC, clickjacking, failed TLS)
   - certificate lifetime and renewal thresholds
   - the HTML page stays one self-contained response with one script
+  - every check has a record with an explanation, a standard and a detail
+    panel on the page
+  - a bot-challenge response is recorded and the reports say so
 
 Run:  python3 tests/test_findings.py
 Exits non-zero on failure.
@@ -60,7 +63,7 @@ def sample():
                           "permissions_policy": None, "coop": None, "corp": None, "cookies": [], "stack": []},
         "csp_analysis": {"present": False, "script_src_outcome": "missing", "frame_ancestors_outcome": "missing"},
         "security_txt": {"present": False}, "error_page": {"outcome": "custom_404"},
-        "cors": {"outcome": "no_cors"}, "clock": {"outcome": "in_sync"},
+        "cors": {"outcome": "no_cors"}, "clock": {"outcome": "in_sync", "skew_seconds": 1.1, "server_time": "2026-11-19 04:55:33 UTC"},
         "page_signals": {"parsed": True, "sri_outcome": "external_without_sri", "mixed_outcome": "active"},
     }
     d["os_eol"] = ac.check_os_eol("Microsoft-IIS/8.0", d["tls"], today="2026-11-18")
@@ -222,7 +225,7 @@ def test_page_budget():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped page budget: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "2.0.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "2.1.0"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     scripts = re.findall(r"<script\b[^>]*>", page)
@@ -231,15 +234,79 @@ def test_page_budget():
     check("<img" not in page and "@font-face" not in page and "@import" not in page, "page must not load images or fonts")
     check(not re.search(r'\b(?:src|href)="https?://(?!github\.com|www\.ssllabs\.com|vendoraudit\.org)[^"]*\.(?:js|css|woff2?|png|svg)"', page),
           "page must not reference third-party assets")
-    kb = len(page.encode("utf-8")) / 1024
-    check(kb < 220, f"page is {kb:.0f} KB; budget is 220 KB")
+    import gzip
+    raw = page.encode("utf-8")
+    kb, wire = len(raw) / 1024, len(gzip.compress(raw)) / 1024
+    check(kb < 250, f"page is {kb:.0f} KB; budget is 250 KB")
+    check(wire < 45, f"page is {wire:.0f} KB compressed; budget is 45 KB on the wire")
     check("2 critical and 4 high findings" in page, "headline should state the two worst severities")
     check("<!--AGO-->" in page, "scan-age placeholder must survive for the cache layer")
+    check('class="ring"' in page and "passed of" in page, "pass-rate ring should be on the page")
+    rows = re.findall(r'<tr data-sev="(\w+)" data-cat="[^"]*" data-id="([\w-]+)">', page)
+    check(len(rows) == len(ac.assess_results(sample())), f"one table row per check, got {len(rows)}")
+    for _sev, rid in rows:
+        check(f'id="check-{rid}"' in page, f"check {rid} has no detail panel")
+    for target in set(re.findall(r'href="#([\w-]+)"', page)):
+        check(f'id="{target}"' in page, f"link to #{target} has no target on the page")
+
+
+def test_bot_challenge():
+    """A response Cloudflare marks as a challenge is recorded as one, and the
+    reports say so. A plain 403 is not a challenge."""
+    import httpx
+    def resp(status, headers):
+        return httpx.Response(status, headers=headers, content=b"<html><body>x</body></html>",
+                              request=httpx.Request("GET", "https://example.com/"))
+    hit = ac.check_server_header("example.com", _cached_response=resp(403, {"cf-mitigated": "challenge"}))
+    miss = ac.check_server_header("example.com", _cached_response=resp(403, {"Server": "cloudflare"}))
+    check(hit.get("bot_challenge") is True and hit.get("status_code") == 403, "challenge response should be recorded")
+    check(miss.get("bot_challenge") is False, "a plain 403 is not a challenge")
+    d = sample(); d["_scan"] = {"deep": True, "version": "2.1.0"}
+    d["server_header"] = dict(d["server_header"], bot_challenge=True, status_code=403)
+    data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
+    check("Bot challenge:" in atr._render_text(data), "text report should carry the challenge note")
+    try:
+        from vendor_audit.web import render_html
+    except Exception:
+        return
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
+    check("Bot challenge:" in page, "page should carry the challenge note")
+
+
+def test_records():
+    """Every check becomes one record with something to say about it."""
+    from vendor_audit import audit_records as ar
+    d = sample(); d["_scan"] = {"deep": True, "version": "2.1.0"}
+    data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
+    recs = ar.build_records(data)
+    check(len(recs) == len(data.finding_rows), "one record per finding row")
+    check(len({r["id"] for r in recs}) == len(recs), "record ids must be unique")
+    order = [atr.SEVERITY_ORDER.index(r["severity"]) for r in recs]
+    check(order == sorted(order), "records run from critical to passing")
+    for r in recs:
+        for field in ("topic", "standard", "what", "why"):
+            check(bool(r[field]), f'record "{r["label"]}" has no {field}')
+    # Every label the rubric can produce has a topic and a standard, and the
+    # topic has its explanation.
+    for label in ac.RUBRIC["findings"]:
+        check(ar.topic_for(label) in atr.EXPLANATIONS, f'no explanation topic for "{label}"')
+        check(bool(ar.standard_for(label)), f'no standard for "{label}"')
+        check(all(ar.explanation_for(label)), f'incomplete explanation for "{label}"')
+    for label in ar._CHECK_TEXT:
+        check(label in ac.RUBRIC["findings"], f'_CHECK_TEXT names an unknown check "{label}"')
+    # A builder that meets a shape it does not expect yields nothing.
+    check(ar.evidence_for("DMARC policy", {"dmarc": "not a dict"}) == [], "evidence must not raise")
+    check(ar.evidence_for("SPF policy", {}) == [], "no result, no evidence")
+    # The share passed leaves informational rows out of both sides.
+    check(atr.passed_pct({"pass": 17, "critical": 2, "high": 4, "medium": 10, "low": 10, "info": 2}) == 40,
+          "17 of 43 assessed checks is 40%")
+    check(atr.passed_pct({"pass": 0, "info": 3}) is None, "nothing assessed, no percentage")
 
 
 def run():
     for fn in (test_rubric_integrity, test_sample_counts, test_spf_everywhere, test_one_cause_one_finding,
-               test_certificate_thresholds, test_mta_sts_default_mode, test_page_budget):
+               test_certificate_thresholds, test_mta_sts_default_mode, test_page_budget, test_bot_challenge, test_records):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

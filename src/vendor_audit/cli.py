@@ -78,7 +78,7 @@ Minimum Python version: 3.8+
 """
 from __future__ import annotations
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 import os
 import sys
@@ -1690,6 +1690,18 @@ PROJECT
             results_clean = {k: v for k, v in results.items() if not k.startswith("_")}
             if scan_meta:
                 results_clean["scan"] = scan_meta
+            # The findings and their counts, so a JSON consumer gets the
+            # same severities the reports show.
+            from .audit_checks import assess_results, severity_counts
+            from .audit_txt_report import passed_pct, verdict_for
+            _findings = assess_results(results)
+            _counts = severity_counts(_findings)
+            results_clean["findings"] = _findings
+            results_clean["summary"] = {
+                "counts": _counts,
+                "verdict": verdict_for(_counts),
+                "passed_pct": passed_pct(_counts),
+            }
             print(json.dumps({"timestamp": timestamp, **results_clean}, indent=2, default=str))
         else:
             render(original, audit_domain, results, dns_server=args.dns_server)

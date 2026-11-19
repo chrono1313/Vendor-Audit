@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 import os
 import re
@@ -3166,6 +3166,11 @@ def check_server_header(domain, _cached_response=None):
             "x_aspnetmvc_version": h.get("X-AspNetMvc-Version"),
             "sharepoint_version":  h.get("MicrosoftSharePointTeamServices"),
             "final_url":           resp.url,
+            # HTTP status of the page the header checks read, and whether
+            # that page was a bot challenge instead of the site. Cloudflare
+            # marks a challenge response with "cf-mitigated: challenge".
+            "status_code":         getattr(resp, "status_code", None),
+            "bot_challenge":       (h.get("cf-mitigated") or "").strip().lower() == "challenge",
             "stack":               stack,
             "http3_advertised":    "h3" in alt_svc,
             "alt_svc":             alt_svc or None,
@@ -3206,6 +3211,7 @@ def check_server_header(domain, _cached_response=None):
 
     _EMPTY = {
         "server": None, "x_powered_by": None, "final_url": None, "stack": [],
+        "status_code": None, "bot_challenge": False,
         "http3_advertised": None, "alt_svc": None,
         "csp": None, "csp_report_only": None, "csp_quality": None, "csp_frame_ancestors": False,
         "x_frame_options": None, "x_content_type": None,

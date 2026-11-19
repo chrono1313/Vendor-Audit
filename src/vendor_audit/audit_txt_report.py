@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -100,6 +100,14 @@ def severity_summary(counts, sep=" · "):
     """'2 critical · 4 high · 11 medium · 10 low' — zero counts left out."""
     bits = [f"{counts.get(s, 0)} {s}" for s in ISSUE_SEVERITIES if counts.get(s, 0)]
     return sep.join(bits) if bits else "no issues"
+
+
+def passed_pct(counts):
+    """Share of assessed checks that passed, as a whole percent, or None
+    when nothing was assessed. Informational rows are not assessed, so they
+    are in neither the numerator nor the denominator."""
+    assessed = counts.get("pass", 0) + sum(counts.get(s, 0) for s in ISSUE_SEVERITIES)
+    return round(100 * counts.get("pass", 0) / assessed) if assessed else None
 
 
 def verdict_for(counts):
@@ -3157,6 +3165,15 @@ def _render_text(data):
             "Some checks did not complete."
         out.append("  ⚠ PARTIAL AUDIT")
         out.append(f"    {reason}")
+        out.append("")
+        out.append("")
+
+    sh = data.results.get("server_header") or {}
+    if sh.get("bot_challenge"):
+        status = f" (HTTP {sh['status_code']})" if sh.get("status_code") else ""
+        out.append(f"  Bot challenge: the site answered this audit with a challenge page{status}.")
+        out.append("  The Website findings describe that challenge page, not the site itself.")
+        out.append("  Email, DNS, routing and certificate checks are not affected.")
         out.append("")
         out.append("")
 

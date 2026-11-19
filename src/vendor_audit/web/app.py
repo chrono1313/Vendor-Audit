@@ -537,7 +537,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     right belt-and-suspenders.
 
     All our pages are JS-free except for the result page, which loads
-    /static/result.js for the expand-all / collapse-all controls.
+    /static/result.js for the check filters and the check detail panel.
     The CSP for the result page allows script-src 'self' (own-origin
     only, no inline, no eval); every other page stays at script-src
     'none'. The strongest possible setting per page.
@@ -548,8 +548,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # Most pages are JS-free → script-src 'none' (the strictest
         # setting, blocking even legitimate scripts on the page). The
-        # result page loads /static/result.js for the expand-all /
-        # collapse-all buttons, so for that path we allow script-src
+        # result page loads /static/result.js for the check filters and
+        # detail panel, so for that path we allow script-src
         # 'self' — own-origin scripts only, no inline, no 'unsafe-eval',
         # no third-party.
         #
@@ -1128,8 +1128,8 @@ async def favicon_svg():
 
 # ── Static JS for the result page ────────────────────────────────────────────
 
-# Small client-side script for the result page's expand-all / collapse-all
-# buttons. Served as an external file at /static/result.js so the result-page
+# Small client-side script for the result page: check filters and the check
+# detail panel. Served as an external file at /static/result.js so the result-page
 # CSP can stay at script-src 'self' — own-origin only, no inline, no eval,
 # no third-party.
 #

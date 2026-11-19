@@ -25,6 +25,12 @@ adds 3–5 seconds when enabled. SSL Labs (`--ssl`) and bulk mode
 exposing their API on a public website, and bulk mode is meant for
 batch CSV generation.
 
+The report is one page: a summary with the share of checks passed and the
+findings by severity, the findings to fix first, and a table of every
+check that can be filtered by severity or category and searched. Selecting
+a check opens its detail: what was found, what the practice is, why it
+matters and how to fix it. A link to a report can point at one check.
+
 If you want to self-host the web service, see
 [`deploy/INSTALL.md`](deploy/INSTALL.md). It's an optional, separate install
 path — the CLI you get from `pipx install` does not start a web server and
@@ -274,6 +280,9 @@ Three output formats, used independently or together:
   cause Vendor Audit to refuse to append to the old file.
 - **Plain-text report** (`--report`) — 100-column UTF-8, severity-grouped
   findings, suitable for sharing with the vendor's technical team.
+- **JSON** (`--json`) — the raw result of every check, plus `findings`
+  (each with its severity, category and sentence) and a `summary` with the
+  counts by severity.
 
 ## End-of-life data
 
@@ -327,7 +336,9 @@ Two rules keep the findings defensible:
   Re-run periodically or wire into a scheduled CI job for trend tracking.
 - **Bot-mitigated sites.** Cloudflare / Akamai / AWS WAF challenge pages
   produce unreliable page-level findings, which is why page parsing is
-  gated behind `--deep` rather than running by default. These reverse
+  gated behind `--deep` rather than running by default. When Cloudflare
+  marks its answer as a challenge, the report says so at the top: the
+  Website findings then describe the challenge page. These reverse
   proxies may obscure other findings like outdated server OSes, but the
   report should still be accurate as to externally-visible exposure
   and configuration.
