@@ -1,13 +1,13 @@
 # Vendor Audit
 
-A passive, lightweight, fast audit of a domain's maturity, security,
-and alignment with best practices. Audits DNS, email, TLS, HTTP, and
-web-tier posture — and produces a categorical score, a CSV row, and
+A passive, lightweight, fast audit of how closely a domain follows
+published best practices. Audits DNS, email, TLS, HTTP, and web delivery,
+and produces findings rated Critical, High, Medium or Low, a CSV row, and
 an optional plain-text report suitable for sharing with the vendor.
 See `example_reports_and_screenshots/` for a console screenshot and
 sample `.txt` and `.csv` outputs.
 
-A default-mode run audits 60+ scored data points in roughly a second.
+A default-mode run makes about 60 checks in roughly a second.
 `--deep` adds 3–5 seconds. In bulk mode (`--file`), domains are audited
 10 at a time in parallel — over 200 domains in under a minute is typical.
 `--ssl` is sequential and adds 1–2 minutes per domain because SSL Labs
@@ -48,7 +48,7 @@ See `example_reports_and_screenshots/` for this report.
 Vendor Audit is a due-diligence tool. Run it on a vendor's domain before
 purchasing a product or service to get a quick, evidence-based read on
 how their domain configuration aligns with current best practices.
-A weak score isn't a deal-breaker on its own, but it's a useful
+Findings aren't a deal-breaker on their own, but they're a useful
 conversation starter and a data point alongside everything else you're
 evaluating.
 
@@ -73,8 +73,43 @@ brute-forcing, file or path guessing, login probing, or other behaviour
 a WAF or firewall would treat as an attack. There are good tools for
 that work; this isn't one of them. Vendor Audit reads what a domain
 voluntarily publishes (DNS records, HTTP responses to a single GET, SMTP
-EHLO banners, public APIs like SSL Labs and RIPEstat) and scores it
-against published standards.
+EHLO banners, public APIs like SSL Labs and RIPEstat) and compares it
+with published standards.
+
+## Findings and severity
+
+There is no score. Every check ends in one outcome, and each outcome has a
+severity, set in `rubric.json`:
+
+| Severity | Meaning |
+| --- | --- |
+| Critical | Broken or unsupported today: end-of-life OS or server software, no SPF or DMARC, no working HTTPS |
+| High | An important protection is missing or weak: no HSTS, no CSP, TLS 1.0/1.1, an end-of-life library |
+| Medium | An expected practice is missing: DNSSEC, CAA, IPv6, MTA-STS, automated certificates |
+| Low | A refinement: SPF `~all`, version disclosure, minor headers |
+| Info | Optional, or could not be determined (BIMI, DANE). Listed, never counted |
+
+A report leads with the counts ("2 critical, 4 high, 11 medium, 10 low") and
+a one-line verdict taken from the worst severity present. Nothing is added
+up, and one cause is one finding: a missing HSTS header is a single High
+finding, not three.
+
+### Sorting a CSV of many domains
+
+The CSV carries a few columns meant for sorting:
+
+| Column | What it is | Sort |
+| --- | --- | --- |
+| `findings_sort_key` | The four counts side by side, three digits each: critical, high, medium, low. 2 critical, 4 high, 11 medium, 10 low is `2004011010` | Ascending = best first |
+| `findings_issues` | Critical + high + medium + low | Ascending = fewest findings |
+| `findings_critical_high` | Critical + high | Ascending |
+| `findings_passed` | Checks met | Descending |
+| `findings_passed_pct` | Passed as a share of passed + issues | Descending |
+
+`findings_sort_key` is a sort key, not a score. Each severity has its own
+block of digits, so no number of lower findings outweighs one higher
+finding: fifty mediums still sort ahead of a single high. The gaps between
+values mean nothing.
 
 ## What it checks
 
@@ -88,10 +123,10 @@ DKIM (common-selector probe), DMARC (presence, `p=` policy, `pct=`, `sp=`,
 (`--deep`), STARTTLS-MX (`--deep`).
 
 **DNS** — DNSSEC chain validation (TLD signing, DNSKEY, AD flag), CAA records,
-nameserver count. SOA serial is reported for change tracking but not scored.
+nameserver count. SOA serial is reported for change tracking only.
 
 **Routing** — IPv6 reachability, IPv4 / IPv6 RPKI ROA coverage, IPv4 / IPv6
-IRR/RIS presence (via RIPEstat). ASN is reported for context but not scored.
+IRR/RIS presence (via RIPEstat). ASN is reported for context only.
 
 **TLS** — Cert validity, SAN coverage, lifetime (91 days or less reads as
 automated issuance), renewal headroom (under 10% of the lifetime left is
@@ -100,11 +135,10 @@ overdue), name match, `www`-variant coverage, TLS 1.3 support, HSTS (presence, `
 findings (`--ssl`).
 
 **HTTP** — HTTP/2 / HTTP/3 (Alt-Svc) support, HTTP→HTTPS redirect presence,
-first-hop redirect hygiene. Response time and clock skew are captured but not
-scored.
+first-hop redirect hygiene. Response time is reported for context only.
 
 **Website** — Server / X-Powered-By header disclosure, security headers (CSP
-analyzed Google-Evaluator-style with sub-scoring for `script-src`,
+analyzed Google-Evaluator-style, covering `script-src`,
 `object-src`, `base-uri`, `frame-ancestors`, and enforcement mode;
 X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy,
 Cross-Origin-Opener-Policy, Cross-Origin-Resource-Policy, X-XSS-Protection
@@ -217,8 +251,8 @@ Requires a one-time email registration with Qualys (free):
 vendor-audit --sslregistration --ssl your@email.com
 ```
 
-The grade contributes 5 points to the score, and the report includes a
-Findings list explaining the conditions affecting the grade (vulnerable
+The grade becomes a finding (F, T and M are Critical; D and E High; C
+Medium; B and A- Low), and the report includes a Findings list explaining the conditions affecting the grade (vulnerable
 protocols, named CVEs like Heartbleed/ROBOT/POODLE, missing forward secrecy,
 certificate chain issues, etc.).
 

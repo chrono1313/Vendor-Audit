@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vendor-audit"
-version = "1.0"
-description = "A lightweight, fast, passive security and maturity check for a domain or list of domains."
+version = "2.0.0"
+description = "A lightweight, fast, passive best-practice audit for a domain or list of domains."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -75,7 +75,7 @@ where = ["src"]
 # these via os.path.dirname(__file__) at import time, so they must travel with
 # the package wheel.
 vendor_audit = [
-    "scoring_rubric.json",
+    "rubric.json",
     "library_eol.json",
     "os_eol.json",
     "tech_eol.json",

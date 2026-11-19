@@ -27,19 +27,19 @@ reads them. All score weights, label maps, and grade colors come from
 audit_checks.RUBRIC.
 
 The four .py files (vendor_audit, audit_checks, audit_render, audit_txt_report)
-and scoring_rubric.json share a single version number that is enforced
+and rubric.json share a single version number that is enforced
 at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.6.0"
+__version__ = "2.0.0"
 
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
 
 from .audit_checks import (
-    RUBRIC, classify_server, score_results,
+    RUBRIC, classify_server, assess_results, severity_counts,
     _org_domain, STRONG_REFERRER_POLICIES,
 )
 
@@ -68,8 +68,6 @@ def c(color, text):
 
 # ── Rubric-driven label tables ────────────────────────────────────────────────
 
-_SCORE_LABEL_DISPLAY = RUBRIC["score_label_display"]
-_PARTIAL_LABEL       = RUBRIC["partial_label"]
 
 # 2.9.0: pretty display names for the OS keys used in os_eol.json. Like the
 # library equivalent, missing entries fall back to the raw key.
@@ -84,26 +82,6 @@ _OS_DISPLAY_NAMES = {
 }
 _GRADE_COLOR_NAMES   = RUBRIC["ssl_grade_colors"]
 _GRADE_COLOR = {g: _COLOR_BY_NAME.get(name, GREY) for g, name in _GRADE_COLOR_NAMES.items()}
-_SSL_GRADE_PTS = {g: entry["earned"]
-                  for g, entry in RUBRIC["weights"]["SSL Labs grade"].items()
-                  if g not in ("no_tls_at_all",)}
-# The "possible" weight is the same across every grade entry in the rubric
-# (we just want one number for the /N denominator). Pull it once at module
-# load so the displayed denominator follows the rubric automatically and
-# never goes stale when a weight is changed in scoring_rubric.json.
-_SSL_GRADE_POSSIBLE = next(
-    iter(RUBRIC["weights"]["SSL Labs grade"].values())
-)["possible"]
-
-_SCORE_GREEN = RUBRIC["thresholds"]["score_color_green_pct"]
-_SCORE_YELLOW = RUBRIC["thresholds"]["score_color_yellow_pct"]
-
-# ── Categories ────────────────────────────────────────────────────────────────
-# The rubric defines six top-level categories used in both the detailed
-# sections and the summary. Build a reverse lookup score_label -> category
-# so we can prepend a category prefix to each finding/passing line in the
-# summary section.
-
 _CATEGORIES = RUBRIC.get("categories", {})
 _CATEGORY_ORDER = ["Email", "DNS", "Routing", "TLS", "HTTP", "Website"]
 _LABEL_TO_CATEGORY = {}
@@ -694,7 +672,7 @@ def render(original_domain, audit_domain, r, dns_server):
     www_fallback = redirect.get("www_fallback", False)
 
     print(f"\n{c(BOLD+CYAN, '━'*56)}")
-    print(f"{c(BOLD+CYAN, f'  Security Health Check — {original_domain}')}")
+    print(f"{c(BOLD+CYAN, f'  Vendor Audit — {original_domain}')}")
     if www_fallback:
         # The user typed the apex but the apex has no A/AAAA, so web/TLS
         # checks were routed at www. This is NOT a real HTTP redirect —
@@ -1936,12 +1914,10 @@ def render(original_domain, audit_domain, r, dns_server):
         if worst is None:
             print(err("No grade returned from SSL Labs", "SSL Labs — no grade"))
         else:
-            pts     = _SSL_GRADE_PTS.get(worst)
             gcol    = _GRADE_COLOR.get(worst, GREY)
-            pts_str = c(GREY, f"  ({pts}/{_SSL_GRADE_POSSIBLE})") if pts is not None else ""
             unique_grades = list(dict.fromkeys(all_g))
             ep_str  = c(GREY, f"  (endpoints: {', '.join(all_g)})") if len(unique_grades) > 1 else ""
-            grade_line = f"Grade: {c(gcol+BOLD, worst)}{pts_str}{ep_str}"
+            grade_line = f"Grade: {c(gcol+BOLD, worst)}{ep_str}"
             if worst in ("A+", "A", "A-"):
                 print(ok(grade_line))
             elif worst in ("B", "C", "M"):
@@ -2161,7 +2137,7 @@ def render(original_domain, audit_domain, r, dns_server):
                            f"{c(GREY, '(no text and no aria-label/title)')}",
                            None, None))
 
-            print(c(GREY, "  · A11y signals are not scored — they are reported for awareness only."))
+            print(c(GREY, "  · A11y signals are not rated as findings — they are reported for awareness only."))
             print(c(GREY, "    For a full audit use WebAIM WAVE, Axe DevTools, or pa11y."))
 
     # ── STARTTLS / DANE on MX hosts (--deep only) ────────────────────────────
@@ -2297,191 +2273,53 @@ def render(original_domain, audit_domain, r, dns_server):
     if redirected:
         print(f"  {c(GREY, '→')} {original_domain} redirects to {audit_domain} — email audited for both domains; web/TLS reflects {audit_domain}\n")
 
-    earned, possible, breakdown = score_results(r)
-    passing = [(label, e, p) for label, e, p in breakdown if e == p and p > 0]
-    partial = [(label, e, p) for label, e, p in breakdown if 0 < e < p]
-    score_lookup = {label: (e, p) for label, e, p in breakdown}
+    # ── Summary: findings by severity ────────────────────────────────────────
+    # Built from the same finding rows the .txt and HTML reports use, so all
+    # three agree. There are no points: each finding has a severity, and the
+    # totals line counts them.
+    from .audit_txt_report import (_ReportData, ISSUE_SEVERITIES,
+                                   SEVERITY_TITLES, severity_summary)
+    data = _ReportData(original_domain, audit_domain, r, "",
+                       (r.get("_scan") or {}).get("version", "?"))
+    sev_color = {"critical": RED, "high": RED, "medium": YELLOW, "low": YELLOW}
 
-    def _fmt_score(e, p):
-        e_disp = int(e) if e == int(e) else e
-        return c(GREY, f"{e_disp}/{p}")
-
-    # ── Passing checks ────────────────────────────────────────────────────────
-    # Each line is prefixed with its category (Email:/DNS:/Routing:/TLS:/HTTP:
-    # /Website:) so a reader can scan for what passed in their area of concern
-    # without re-reading the detailed sections above.
-    if passing:
+    passes = [x for x in data.finding_rows if x["severity"] == "pass"]
+    if passes:
         print(c(BOLD, "  Passing checks"))
-        # Group by category, then print in the canonical order so all Email
-        # items appear together, all DNS items together, etc.
-        passing_by_cat = defaultdict(list)
-        for label, e, p in passing:
-            cat = _category_for_score_label(label)
-            passing_by_cat[cat].append((label, e, p))
         for cat in _CATEGORY_ORDER:
-            for label, e, p in passing_by_cat.get(cat, []):
-                if label == "SSL Labs grade":
-                    ssl_r = r.get("ssl_labs", {})
-                    worst = ssl_r.get("worst_grade", "?")
-                    gcol  = _GRADE_COLOR.get(worst, GREEN)
-                    print(f"  {c(GREEN, '✔')} {c(GREY, cat + ':')}  "
-                          f"SSL Labs grade: {c(gcol+BOLD, worst)}  {_fmt_score(e, p)}")
-                    continue
-                display = _SCORE_LABEL_DISPLAY.get(label, label)
-                print(f"  {c(GREEN, '✔')} {c(GREY, cat + ':')}  {display}  {_fmt_score(e, p)}")
+            for x in passes:
+                if x["category"] == cat:
+                    print(f"  {c(GREEN, '✔')} {c(GREY, cat + ':')}  {x['display']}")
 
-    # ── SSL Labs zero-score grades → findings ─────────────────────────────────
-    ssl_r = r.get("ssl_labs")
-    if ssl_r is not None:
-        worst = ssl_r.get("worst_grade")
-        if worst is not None:
-            e_ssl, p_ssl = score_lookup.get("SSL Labs grade", (None, None))
-            if e_ssl is not None and e_ssl == 0:
-                findings.append(("bad",
-                                 f"SSL Labs — grade {worst}  → https://www.ssllabs.com/ssltest/analyze.html?d={audit_domain}",
-                                 "SSL Labs grade"))
+    infos = [x for x in data.finding_rows if x["severity"] == "info"]
+    if infos:
+        print(c(BOLD, "\n  Informational"))
+        for x in infos:
+            print(f"  {c(GREY, '·')} {c(GREY, x['category'] + ':')}  {c(GREY, x['display'])}")
 
-    # ── Partial findings ──────────────────────────────────────────────────────
-    already_in_findings = set()
-    for level, msg, sl in findings:
-        if sl:
-            already_in_findings.add(sl)
-
-    partial_findings = []
-    for label, e, p in partial:
-        if label in already_in_findings:
-            continue
-        if label == "SSL Labs grade":
-            ssl_r = r.get("ssl_labs", {})
-            worst = ssl_r.get("worst_grade", "?")
-            desc = f"SSL Labs grade: {worst}  → https://www.ssllabs.com/ssltest/analyze.html?d={audit_domain}"
-        else:
-            entry = _PARTIAL_LABEL.get(label)
-            # Some checks (notably CSP script-src safety and HTTP version)
-            # have multiple partial outcomes that score differently and
-            # need different finding text. Those entries are dicts keyed
-            # by outcome; a plain string is the simple case.
-            if isinstance(entry, dict):
-                if label == "CSP script-src safety":
-                    csp_a = r.get("csp_analysis") or {}
-                    outcome = csp_a.get("script_src_outcome")
-                    desc = entry.get(outcome) or entry.get("_default")
-                elif label == "HTTP version":
-                    # Mirror the scoring logic in audit_checks.score_results.
-                    # http3 advertised → http3 (not actually shown here since
-                    # http3 is a full pass, not a partial). HTTP/2 → http2.
-                    # HTTP/1.1 → http1.
-                    hv      = r.get("http_version") or {}
-                    srv_h   = r.get("server_header") or {}
-                    hv_ver  = hv.get("version")
-                    http3   = srv_h.get("http3_advertised")
-                    if http3:
-                        outcome = "http3"
-                    elif hv_ver == "HTTP/2":
-                        outcome = "http2"
-                    elif hv_ver:
-                        outcome = "http1"
-                    else:
-                        outcome = None
-                    desc = entry.get(outcome) or entry.get("_default")
-                elif label == "Default error page":
-                    ep = r.get("error_page") or {}
-                    outcome = ep.get("outcome")
-                    desc = entry.get(outcome) or entry.get("_default")
-                elif label == "DKIM key strength":
-                    dkim = r.get("dkim") or {}
-                    outcome = dkim.get("worst_strength")
-                    desc = entry.get(outcome) or entry.get("_default")
-                elif label == "CORS configuration":
-                    cors = r.get("cors") or {}
-                    outcome = cors.get("outcome")
-                    desc = entry.get(outcome) or entry.get("_default")
-                else:
-                    desc = entry.get("_default")
-                if not desc:
-                    desc = f"{_SCORE_LABEL_DISPLAY.get(label, label)} — partial"
-            else:
-                desc = entry or f"{_SCORE_LABEL_DISPLAY.get(label, label)} — partial"
-        partial_findings.append((label, desc, e, p))
-
-    # ── Findings ──────────────────────────────────────────────────────────────
-    # Each finding line is prefixed with its category so the reader can scan
-    # the same way as the passing-checks list. We resolve the category from
-    # the score_label when one is attached (rubric-driven, exact match);
-    # otherwise we fall back to keyword sniffing on the finding label.
-    grouped = defaultdict(list)
-    for level, msg, score_label in findings:
-        if score_label is None:
-            score_ann = f"  {c(GREY, '0/0')}"
-        else:
-            se, sp = score_lookup.get(score_label, (None, None))
-            if se is not None and sp:
-                score_ann = f"  {_fmt_score(se, sp)}"
-            else:
-                # Either the label isn't in score_lookup (informational
-                # finding) or it has possible=0 (DKIM not-found, etc.).
-                # Either way render as 0/0 so the no-penalty status is clear.
-                score_ann = f"  {c(GREY, '0/0')}"
-        cat = _finding_category(msg, score_label)
-        grouped[cat].append((level, cat, f"{msg}{score_ann}"))
-
-    for label, desc, e, p in partial_findings:
-        cat = _category_for_score_label(label)
-        grouped[cat].append(("partial", cat, f"{desc}  {_fmt_score(e, p)}"))
-
-    has_findings = bool(grouped)
-    if has_findings:
-        print(c(BOLD, f"\n  Findings"))
-        for cat in _CATEGORY_ORDER:
-            if cat not in grouped:
+    ranked = data.issues_ranked()
+    if ranked:
+        for sev in ISSUE_SEVERITIES:
+            rows = [x for x in ranked if x["severity"] == sev]
+            if not rows:
                 continue
-            for level, line_cat, msg in grouped[cat]:
-                sym = c(RED, '✘') if level == "bad" else c(YELLOW, '⚠') if level in ("warn", "partial") else c(GREY, '?')
-                # Indent any continuation lines (multi-line finding text such
-                # as the DKIM partial-check explanation) so they line up under
-                # the body, not under the symbol/category prefix.
-                lines = msg.split("\n")
-                first = lines[0]
-                print(f"  {sym} {c(GREY, line_cat + ':')}  {first}")
-                for cont in lines[1:]:
-                    print(f"        {cont}")
+            sym = '✘' if sev in ("critical", "high") else '⚠'
+            print(c(BOLD, f"\n  {SEVERITY_TITLES[sev].capitalize()} ({len(rows)})"))
+            for x in rows:
+                print(f"  {c(sev_color[sev], sym)} {c(GREY, x['category'] + ':')}  {x['display']}")
     elif not redirected:
         print(f"\n  {c(GREEN, '✔')} No issues found")
 
-    # ── Score + category bar chart ────────────────────────────────────────────
-    earned_disp = int(earned) if earned == int(earned) else earned
-    pct = round((earned / possible * 100)) if possible else 0
-    score_color = GREEN if pct >= _SCORE_GREEN else YELLOW if pct >= _SCORE_YELLOW else RED
-    print(f"\n  {c(BOLD, 'Score:')}  {c(score_color+BOLD, f'{earned_disp}/{possible}')}  {c(score_color+BOLD, f'({pct}%)')}")
+    head_color = sev_color.get(data.worst_severity, GREEN)
+    print(f"\n  {c(BOLD, 'Findings:')}  "
+          f"{c(head_color+BOLD, severity_summary(data.counts))}  "
+          f"{c(GREY, '(' + data.verdict + ')')}")
     print()
+    for row in data.category_rows:
+        cc = sev_color.get(row["worst"], GREEN)
+        print(f"    {row['category']:<8}  {c(cc, severity_summary(row['counts']))}  "
+              f"{c(GREY, str(row['passed']) + ' passed')}")
 
-    # Per-category subscores driven directly off the rubric's `categories`
-    # map. New checks added to the rubric automatically appear here without
-    # touching this code.
-    by_cat_pts = defaultdict(list)
-    for label, e, p in breakdown:
-        by_cat_pts[_category_for_score_label(label)].append((e, p))
-    for cat in _CATEGORY_ORDER:
-        cat_pts = by_cat_pts.get(cat, [])
-        if not cat_pts:
-            continue
-        ce = sum(e for e, p in cat_pts)
-        cp = sum(p for e, p in cat_pts)
-        if cp == 0:
-            continue
-        cpct = round(ce / cp * 100)
-        ce_disp = int(ce) if ce == int(ce) else ce
-        cc = GREEN if cpct >= _SCORE_GREEN else YELLOW if cpct >= _SCORE_YELLOW else RED
-        bar_filled = round(cpct / 10)
-        bar = c(cc, "█" * bar_filled) + c(GREY, "░" * (10 - bar_filled))
-        print(f"    {cat:<8}  {bar}  {c(cc, f'{ce_disp}/{cp}')}  {c(GREY, f'({cpct}%)')}")
-
-    # ── Scan info footer ──────────────────────────────────────────────────────
-    # Shows version, which options the run used, and total wall time. If one
-    # individual check accounted for most of the wall time we name it — that
-    # makes slowdowns from network operations (RIPEstat, DANE TLSA, STARTTLS,
-    # etc.) immediately diagnosable instead of mysteriously vanishing into the
-    # parallel pool.
     scan = r.get("_scan") or {}
     if scan:
         opts = []
@@ -2526,7 +2364,7 @@ def render(original_domain, audit_domain, r, dns_server):
 # guard in vendor_audit.py refuses to append rows from a different schema to
 # an existing CSV; users see a clear error asking them to start a fresh file.
 
-_SCHEMA_VERSION = "1.2"
+_SCHEMA_VERSION = "2.0"
 
 
 def _yn(v):
@@ -2556,32 +2394,61 @@ def _str_or_blank(v):
     return "" if v is None else str(v)
 
 
+def findings_sort_key(counts):
+    """One number that orders domains from best to worst when sorted
+    ascending, without pretending severities trade off against each other.
+
+    It is the four counts written side by side, three digits each:
+    critical, high, medium, low. 2 critical, 4 high, 11 medium, 10 low
+    → 2004011010. Because each severity has its own block of digits, no
+    number of lower findings can outweigh a single higher one: 50 mediums
+    (50000) still sorts ahead of 1 high (1000000). Counts cap at 999.
+
+    It is a sort key, not a score — the gaps between values mean nothing.
+    """
+    key = 0
+    for sev in ("critical", "high", "medium", "low"):
+        key = key * 1000 + min(int(counts.get(sev, 0) or 0), 999)
+    return key
+
+
 def _score_csv(results):
-    """Per-category subscores plus the overall score, ready to merge into a row."""
-    earned, possible, breakdown = score_results(results)
-    earned_disp = int(earned) if earned == int(earned) else earned
-    pct = round(earned / possible * 100) if possible else 0
+    """Findings columns for the CSV row.
 
-    # Per-category subscores using the rubric-driven category mapping.
-    by_cat = defaultdict(lambda: [0, 0])
-    for label, e, p in breakdown:
-        cat = _category_for_score_label(label)
-        by_cat[cat][0] += e
-        by_cat[cat][1] += p
-
+    Sorting columns first, for lists of hundreds of domains:
+      findings_sort_key      ascending = best first (see findings_sort_key)
+      findings_issues        critical + high + medium + low
+      findings_critical_high critical + high
+      findings_passed        checks met
+      findings_passed_pct    passed / (passed + issues); informational rows
+                             are left out of both
+    then the four severity counts, info, the verdict, and for each category
+    the number of issues and its worst severity."""
+    from .audit_txt_report import ISSUE_SEVERITIES, verdict_for
+    findings = assess_results(results)
+    counts = severity_counts(findings)
+    issues = sum(counts[s] for s in ISSUE_SEVERITIES)
+    assessed = issues + counts["pass"]
     out = {
-        "score_total_earned":   _str_or_blank(earned_disp),
-        "score_total_possible": _str_or_blank(possible),
-        "score_total_pct":      _str_or_blank(pct),
+        "findings_sort_key":      _str_or_blank(findings_sort_key(counts)),
+        "findings_issues":        _str_or_blank(issues),
+        "findings_critical_high": _str_or_blank(counts["critical"] + counts["high"]),
+        "findings_passed_pct":    _str_or_blank(round(100 * counts["pass"] / assessed)) if assessed else "",
+        "findings_critical": _str_or_blank(counts["critical"]),
+        "findings_high":     _str_or_blank(counts["high"]),
+        "findings_medium":   _str_or_blank(counts["medium"]),
+        "findings_low":      _str_or_blank(counts["low"]),
+        "findings_info":     _str_or_blank(counts["info"]),
+        "findings_passed":   _str_or_blank(counts["pass"]),
+        "findings_verdict":  verdict_for(counts),
     }
     for cat in _CATEGORY_ORDER:
-        ce, cp = by_cat.get(cat, [0, 0])
-        ce_disp = int(ce) if ce == int(ce) else ce
-        cpct = round(ce / cp * 100) if cp else ""
-        prefix = f"score_{cat.lower()}"
-        out[f"{prefix}_earned"]   = _str_or_blank(ce_disp) if cp else ""
-        out[f"{prefix}_possible"] = _str_or_blank(cp) if cp else ""
-        out[f"{prefix}_pct"]      = _str_or_blank(cpct)
+        in_cat = [f["severity"] for f in findings if f["category"] == cat]
+        issues = [s for s in in_cat if s in ISSUE_SEVERITIES]
+        worst = next((s for s in ISSUE_SEVERITIES if s in issues), "")
+        prefix = f"findings_{cat.lower()}"
+        out[f"{prefix}_issues"] = _str_or_blank(len(issues)) if in_cat else ""
+        out[f"{prefix}_worst"]  = worst
     return out
 
 
@@ -3179,13 +3046,16 @@ CSV_FIELDS = [
     "tech_os_tls_old_stack",
 
     # Score — overall + per-category breakdown
-    "score_total_earned", "score_total_possible", "score_total_pct",
-    "score_email_earned", "score_email_possible", "score_email_pct",
-    "score_dns_earned", "score_dns_possible", "score_dns_pct",
-    "score_routing_earned", "score_routing_possible", "score_routing_pct",
-    "score_tls_earned", "score_tls_possible", "score_tls_pct",
-    "score_http_earned", "score_http_possible", "score_http_pct",
-    "score_website_earned", "score_website_possible", "score_website_pct",
+    "findings_sort_key", "findings_issues", "findings_critical_high",
+    "findings_passed", "findings_passed_pct",
+    "findings_critical", "findings_high", "findings_medium", "findings_low",
+    "findings_info", "findings_verdict",
+    "findings_email_issues", "findings_email_worst",
+    "findings_dns_issues", "findings_dns_worst",
+    "findings_routing_issues", "findings_routing_worst",
+    "findings_tls_issues", "findings_tls_worst",
+    "findings_http_issues", "findings_http_worst",
+    "findings_website_issues", "findings_website_worst",
 ]
 
 

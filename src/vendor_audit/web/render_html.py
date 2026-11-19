@@ -121,7 +121,16 @@ _SEVERITY_CLASS = {
     "warn": "sev-warn",
     "fail": "sev-fail",
     "info": "sev-info",
+    "critical": "sev-critical",
+    "high":     "sev-high",
+    "medium":   "sev-medium",
+    "low":      "sev-low",
 }
+
+ISSUE_SEVERITIES = audit_txt_report.ISSUE_SEVERITIES
+SEVERITY_ORDER   = audit_txt_report.SEVERITY_ORDER
+_SEV_WORD = {"critical": "Critical", "high": "High", "medium": "Medium",
+             "low": "Low", "info": "Informational", "pass": "Passed"}
 
 # Inline-marker colorization. Some txt lines pack multiple marker symbols
 # inline — most notably the cookie-attributes line:
@@ -206,18 +215,25 @@ def render_result(envelope: dict) -> str:
         report_version=results.get("_scan", {}).get("version", "?"),
     )
 
+    details_html = _render_detail_sections_html(data)
+    # Side-navigation entries for the detail sections that actually rendered.
+    section_links = re.findall(
+        r'<details class="detail-section" id="section-([\w-]+)">\s*<summary>(.*?)</summary>',
+        details_html)
+    section_links = [(sid, html.unescape(title)) for sid, title in section_links]
+
     parts: list[str] = []
     parts.append(_DOC_HEAD.replace("__TITLE__",
-                                   _h(f"Vendor Audit — {domain}")))
+                                   _h(f"Vendor Audit \u2014 {domain}")))
     parts.append('<body>')
+    parts.append(_render_top_bar_html(data, domain))
+    parts.append('<div class="shell">')
+    parts.append(_render_side_nav_html(data, section_links))
     parts.append('<main class="report">')
 
-    parts.append(_render_header_html(data, domain, audit_domain,
-                                     timestamp, duration_ms))
-    # Partial-results banner. When run_audit hits its wall-clock
-    # deadline, results._partial is True and _partial_reason is a
-    # human-readable explanation. We surface this up top so the user
-    # doesn't read the report as a complete audit.
+    # Partial-results banner. When run_audit hits its wall-clock deadline,
+    # results._partial is True. Surfaced first so the report is not read as
+    # a complete audit.
     if data.results.get("_partial"):
         parts.append(
             f'<div class="partial-banner" role="alert">'
@@ -225,11 +241,8 @@ def render_result(envelope: dict) -> str:
             f'{_h(data.results.get("_partial_reason") or "Some checks did not complete.")}'
             f'</div>'
         )
-    # No-web-presence note. A domain with no A/AAAA record (MX-only mail
-    # subdomain, DNS-only domain) has no website to audit. This is an
-    # informational note, not an error — styled distinctly from the
-    # partial-audit alert so it reads as "here's why the web sections are
-    # empty" rather than "something went wrong."
+    # No-web-presence note: an MX-only or DNS-only domain has no website to
+    # audit. Informational, not an error.
     if data.results.get("_no_web_note"):
         parts.append(
             f'<div class="info-banner" role="note">'
@@ -237,217 +250,391 @@ def render_result(envelope: dict) -> str:
             f'{_h(data.results.get("_no_web_note"))}'
             f'</div>'
         )
-    parts.append(_render_action_bar_html(data, domain))
-    parts.append(_render_score_panel_html(data))
+    parts.append(_render_overview_html(data, domain, audit_domain,
+                                       timestamp, duration_ms))
     parts.append(_render_executive_summary_html(data))
-    parts.append(_render_detail_sections_html(data))
+    parts.append(details_html)
     parts.append(_render_footer_html(data, domain))
 
     parts.append('</main>')
-    # Result-page JS — small client-side helper for the expand-all /
-    # collapse-all controls on the Detail section. Loaded as an external
-    # <script src> from /static/result.js so the result-page CSP can
-    # stay at script-src 'self' — own-origin only, no inline, no eval,
-    # no third-party. The script is at the very end of <body> so the
-    # entire DOM is parsed before it runs; no DOMContentLoaded gating
-    # needed.
-    parts.append('<script src="/static/result.js"></script>')
+    parts.append('</div>')
+    # One first-party script, loaded last: expand/collapse-all and opening
+    # the section a navigation link points at. The page works without it.
+    # The CSP stays at script-src 'self'. The ?v= query busts the browser
+    # cache when the script changes; the route ignores it.
+    parts.append(f'<script src="/static/result.js?v={_h(audit_txt_report.__version__)}"></script>')
     parts.append('</body></html>')
     return "\n".join(parts)
 
 
 # ── Header ───────────────────────────────────────────────────────────────────
 
-def _render_header_html(data, domain, audit_domain, timestamp, duration_ms):
-    redirected = (audit_domain and audit_domain != domain)
-    # www-fallback (1.1): apex has no A/AAAA, web/TLS checks were routed
-    # at www. This is NOT an HTTP-layer redirect — the apex simply has
-    # no addresses to redirect FROM — so the language differs.
-    redirect_envelope = data.results.get("redirect", {}) or {}
-    www_fallback = bool(redirect_envelope.get("www_fallback"))
-    deep = data.results.get("_scan", {}).get("deep", False)
-    ts_human = _format_timestamp(timestamp)
+def _plural(n, word):
+    return f"{n} {word}" + ("" if n == 1 else "s")
 
-    out = ['<header class="report-header">']
-    out.append('  <a class="brand-link" href="/" aria-label="Vendor Audit home">')
-    out.append(f'    <div class="logo">{_LOGO_SVG}</div>')
-    out.append('    <div class="brand">Vendor Audit</div>')
-    out.append('  </a>')
-    out.append(f'  <h1 class="domain">{_h(domain)}</h1>')
-    if www_fallback:
-        fb_host = redirect_envelope.get("www_fallback_host") or audit_domain
-        out.append(
-            f'  <p class="redirect-notice">'
-            f'Apex <strong>{_h(domain)}</strong> has no DNS records \u2014 '
-            f'web and TLS audited against <strong>{_h(fb_host)}</strong>; '
-            f'email still audited against the apex.'
-            f'</p>'
-        )
-    elif redirected:
-        out.append(
-            f'  <p class="redirect-notice">'
-            f'Redirects to <strong>{_h(audit_domain)}</strong> — '
-            f'email is audited for both domains; web and TLS reflect the destination.'
-            f'</p>'
-        )
+
+def _short(text):
+    """First clause of a finding sentence, for cards and compact lists:
+    the part before an em dash, minus any trailing parentheticals.
+    A parenthetical in the middle stays ("... (HSTS) not set")."""
+    head = (text or "").split(" \u2014 ", 1)[0]
+    return re.sub(r"(\s*\([^()]*\))+$", "", head).strip()
+
+
+def _humanize_left(seconds):
+    return audit_txt_report._humanize_seconds(seconds)
+
+
+def _section_for(row):
+    """Detail-section id that explains a finding."""
+    label = row.get("label", "")
+    if label.startswith("redirect target: "):
+        return "email"
+    if label.startswith("EOL library"):
+        return "libraries"
+    if label.startswith("EOL "):
+        return "disclosure"
+    return _LABEL_SECTION.get(label) or _CATEGORY_SECTION.get(row.get("category", ""), "email")
+
+
+_CATEGORY_SECTION = {"Email": "email", "DNS": "dns", "Routing": "routing",
+                     "TLS": "tls", "HTTP": "http", "Website": "headers"}
+_LABEL_SECTION = {
+    "HSTS": "hsts", "HSTS preload": "hsts",
+    "SSL Labs grade": "ssl_labs",
+    "STARTTLS-MX": "starttls",
+    "Server header": "disclosure", "X-Powered-By absent": "disclosure",
+    "Server clock accuracy": "disclosure",
+    "Default error page": "error_page",
+    "CORS configuration": "cors",
+    "security.txt": "security_txt",
+    "Subresource Integrity": "page_analysis", "Mixed content (in-page)": "page_analysis",
+}
+
+
+# ── Top bar ─────────────────────────────────────────────────────────────────
+
+def _render_top_bar_html(data, domain):
+    """Brand, the audited domain, the audit-another-domain form and the
+    .txt download — one compact bar across the top.
+
+    The hidden `from` field carries the domain on screen. /audit compares
+    it with the submitted one and, when they match, bypasses the cache so
+    re-submitting the same domain runs a fresh audit.
+    """
+    deep = bool(data.results.get("_scan", {}).get("deep", False))
+    txt_href = f"/audit/{_h(domain)}.txt" + ("?deep=1" if deep else "")
+    checked = " checked" if deep else ""
+    return "\n".join([
+        '<header class="top-bar">',
+        '  <a class="brand-link" href="/" aria-label="Vendor Audit home">',
+        f'    <span class="logo">{_LOGO_SVG}</span>',
+        '    <span class="brand">Vendor Audit</span>',
+        '  </a>',
+        f'  <span class="top-domain">{_h(domain)}</span>',
+        '  <div class="top-action-bar">',
+        '  <form class="inline-audit-form" method="get" action="/audit"'
+        ' aria-label="Audit another domain">',
+        f'    <input type="hidden" name="from" value="{_h(domain)}">',
+        '    <input type="text" name="domain" placeholder="example.com"'
+        ' aria-label="Domain to audit"'
+        ' required autocomplete="off" autocapitalize="off" autocorrect="off"'
+        ' spellcheck="false" data-1p-ignore data-lpignore="true"'
+        ' data-form-type="other">',
+        f'    <label class="inline-deep"><input type="checkbox" name="deep" value="1"{checked}>'
+        '<span>Deep</span></label>',
+        '    <button type="submit">Audit</button>',
+        '  </form>',
+        f'  <a class="download-link" href="{txt_href}" download>Download .txt</a>',
+        '  </div>',
+        '</header>',
+    ])
+
+
+# ── Side navigation ─────────────────────────────────────────────────────────
+
+def _render_side_nav_html(data, section_links):
+    """Anchor links to the parts of this one page. No routing, no requests."""
+    out = ['<nav class="side-nav" aria-label="Report sections">',
+           '  <div class="nav-group">Report</div>',
+           '  <a class="nav-link" href="#overview">Overview</a>']
+    if data.issue_count:
+        out.append(f'  <a class="nav-link" href="#fix-first">Fix first'
+                   f'<span class="nav-count nav-count-issues">{data.issue_count}</span></a>')
+    out.append(f'  <a class="nav-link" href="#findings">All findings'
+               f'<span class="nav-count">{len(data.finding_rows)}</span></a>')
+    if section_links:
+        out.append('  <div class="nav-group">Details</div>')
+        for sid, title in section_links:
+            out.append(f'  <a class="nav-link" href="#section-{_h(sid)}">{_h(title)}</a>')
+    out.append('  <div class="nav-group">Scan</div>')
+    out.append('  <a class="nav-link" href="#scan">Scan details</a>')
+    out.append('</nav>')
+    return "\n".join(out)
+
+
+# ── Overview ────────────────────────────────────────────────────────────────
+
+def _headline(data, domain):
+    """'example.com has 2 critical and 4 high findings' — a rule on the
+    counts: the two most serious severities present."""
+    present = [(s, data.counts[s]) for s in ISSUE_SEVERITIES if data.counts[s]]
+    if not present:
+        return f"{domain} has no findings"
+    top = present[:2]
+    phrase = " and ".join(f"{n} {s}" for s, n in top)
+    noun = "finding" if sum(n for _, n in top) == 1 else "findings"
+    return f"{domain} has {phrase} {noun}"
+
+
+def _stacked_bar_html(counts, total, label):
+    """One horizontal bar split by severity. Widths are plain percentages
+    computed here; the legend beside it carries the numbers as text."""
+    if not total:
+        return ""
+    segs = []
+    for sev in SEVERITY_ORDER:
+        n = counts.get(sev, 0)
+        if n:
+            segs.append(f'<span class="seg seg-{sev}" style="width: {n * 100.0 / total:.2f}%"></span>')
+    return (f'<span class="stacked-bar" role="img" aria-label="{_h(label)}">'
+            + "".join(segs) + '</span>')
+
+
+def _render_overview_html(data, domain, audit_domain, timestamp, duration_ms):
+    results = data.results
+    counts = data.counts
+    total = len(data.finding_rows)
+    ranked = data.issues_ranked()
+    deep = bool(results.get("_scan", {}).get("deep", False))
+    redirect_envelope = results.get("redirect", {}) or {}
+    www_fallback = bool(redirect_envelope.get("www_fallback"))
+    redirected = bool(audit_domain and audit_domain != domain)
+
+    out = ['<section class="overview" id="overview" aria-label="Overview">']
+
+    # ── Headline ──
     out.append('  <div class="scan-meta">')
-    # Scan-time is rendered with the absolute UTC timestamp followed by a
-    # placeholder (<!--AGO-->) that the web layer substitutes at serve
-    # time with " · N minutes/hours/days ago" relative to the current
-    # request. The placeholder design lets us cache HTML once per domain
-    # while still showing each visitor the correct age. See
-    # web/app.py:_inject_age().
-    out.append(
-        f'    <span class="scan-time">Scanned {_h(ts_human)}'
-        f'<span class="scan-age"><!--AGO--></span></span>'
-    )
+    # <!--AGO--> is substituted at serve time with " · N minutes ago", so the
+    # HTML can be cached once per domain and still show each visitor the age.
+    out.append(f'    <span class="scan-time">Scanned {_h(_format_timestamp(timestamp))}'
+               f'<span class="scan-age"><!--AGO--></span></span>')
     out.append(f'    <span class="scan-duration">{duration_ms} ms</span>')
     if deep:
         out.append('    <span class="flag">--deep</span>')
     out.append('  </div>')
-    out.append('</header>')
-    return "\n".join(out)
+    out.append(f'  <h1 class="headline">{_h(_headline(data, domain))}</h1>')
+    out.append(f'  <p class="verdict verdict-{data.worst_severity}">'
+               f'<span class="verdict-dot" aria-hidden="true"></span>{_h(data.verdict)}</p>')
+    if www_fallback:
+        fb_host = redirect_envelope.get("www_fallback_host") or audit_domain
+        out.append(f'  <p class="redirect-notice">Apex <strong>{_h(domain)}</strong> has no DNS records — '
+                   f'web and TLS audited against <strong>{_h(fb_host)}</strong>; '
+                   f'email still audited against the apex.</p>')
+    elif redirected:
+        out.append(f'  <p class="redirect-notice">Redirects to <strong>{_h(audit_domain)}</strong> — '
+                   f'email is audited for both domains; web and TLS reflect the destination.</p>')
+    if data.issue_count:
+        summary = (f'{_plural(data.issue_count, "finding")} across {_plural(total, "check")}: '
+                   f'{audit_txt_report.severity_summary(counts, ", ")}. ')
+    else:
+        summary = f'{_plural(total, "check")} ran and none raised a finding. '
+    summary += f'{counts["pass"]} passed'
+    if counts["info"]:
+        summary += f' and {counts["info"]} {"is" if counts["info"] == 1 else "are"} informational'
+    out.append(f'  <p class="summary-line">{_h(summary)}.</p>')
 
-
-# ── Score panel ──────────────────────────────────────────────────────────────
-
-def _render_score_panel_html(data):
-    """Overall score + per-category bars. Read from ReportData's already-
-    computed fields; no scoring logic lives here."""
-    overall_sev = data.score_severity
-    out = ['<section class="score-panel" aria-label="Score">']
-
-    # Overall row
-    out.append('  <div class="score-row score-overall">')
-    out.append('    <div class="score-label">Overall</div>')
-    out.append(_score_bar_html(data.earned, data.possible, data.pct, overall_sev))
+    # ── Severity cards ──
+    out.append('  <div class="sev-cards">')
+    for sev in ISSUE_SEVERITIES:
+        rows = [r for r in ranked if r["severity"] == sev]
+        out.append(f'    <a class="sev-card sev-{sev}" href="#findings-{sev}">')
+        out.append(f'      <span class="sev-card-label">{_SEV_WORD[sev]}</span>')
+        out.append(f'      <span class="sev-card-count">{len(rows)}</span>')
+        if rows:
+            out.append('      <span class="sev-card-items">')
+            for r in rows[:3]:
+                out.append(f'        <span class="sev-card-item">{_h(_short(r["display"]))}</span>')
+            if len(rows) > 3:
+                out.append(f'        <span class="sev-card-more">+{len(rows) - 3} more</span>')
+            out.append('      </span>')
+        else:
+            out.append('      <span class="sev-card-none">None</span>')
+        out.append('    </a>')
     out.append('  </div>')
 
-    # Per-category rows
-    if data.category_rows:
-        out.append('  <div class="score-categories">')
-        for r in data.category_rows:
-            out.append('  <div class="score-row score-category">')
-            out.append(f'    <div class="score-label">{_h(r["category"])}</div>')
-            out.append(_score_bar_html(r["earned"], r["possible"],
-                                       r["pct"], r["severity"]))
-            out.append('  </div>')
+    # ── Checks breakdown + by category ──
+    out.append('  <div class="panels">')
+    out.append('    <section class="panel" aria-label="All checks">')
+    out.append(f'      <h2 class="panel-title">{_plural(total, "check")}</h2>')
+    out.append('      ' + _stacked_bar_html(
+        counts, total, audit_txt_report.severity_summary(counts, ", ")
+        + f', {counts["info"]} informational, {counts["pass"]} passed'))
+    out.append('      <ul class="legend">')
+    for sev in SEVERITY_ORDER:
+        out.append(f'        <li><span class="dot seg-{sev}" aria-hidden="true"></span>'
+                   f'<span class="legend-n">{counts[sev]}</span> {_SEV_WORD[sev]}</li>')
+    out.append('      </ul>')
+    out.append('    </section>')
+
+    out.append('    <section class="panel" aria-label="Findings by category">')
+    out.append('      <h2 class="panel-title">By category</h2>')
+    out.append('      <div class="cat-rows">')
+    for r in data.category_rows:
+        sid = _CATEGORY_SECTION.get(r["category"], "email")
+        desc = audit_txt_report.severity_summary(r["counts"], ", ")
+        out.append(f'        <a class="cat-row" href="#section-{sid}">')
+        out.append(f'          <span class="cat-name">{_h(r["category"])}</span>')
+        out.append('          ' + _stacked_bar_html(
+            r["counts"], r["total"], f'{r["category"]}: {desc}, {r["passed"]} passed'))
+        out.append(f'          <span class="cat-desc">{_h(desc)}</span>')
+        out.append(f'          <span class="cat-passed">{r["passed"]} passed</span>')
+        out.append('        </a>')
+    out.append('      </div>')
+    out.append('    </section>')
+    out.append('  </div>')
+
+    # ── At a glance ──
+    glance = _glance_cards(data)
+    if glance:
+        out.append('  <div class="glance-cards">')
+        out.extend(glance)
         out.append('  </div>')
 
+    # ── Fix these first ──
+    if ranked:
+        out.append('  <section class="fix-first" id="fix-first" aria-label="Fix these first">')
+        out.append('    <div class="fix-head"><h2>Fix these first</h2>')
+        if len(ranked) > _FIX_FIRST_N:
+            out.append(f'      <a href="#findings">All {len(ranked)} findings, ranked →</a>')
+        out.append('    </div>')
+        out.append('    <ol class="fix-list">')
+        for i, r in enumerate(ranked[:_FIX_FIRST_N], 1):
+            sev = r["severity"]
+            out.append(
+                f'      <li><a class="fix-row" href="#section-{_section_for(r)}">'
+                f'<span class="fix-n">{i:02d}</span>'
+                f'<span class="fix-text">{_h(r["display"])}'
+                f'<span class="fix-cat">{_h(r["category"])}</span></span>'
+                f'<span class="sev-badge sev-{sev}">{_SEV_WORD[sev]}</span>'
+                f'</a></li>')
+        out.append('    </ol>')
+        out.append('    <p class="fix-note">Ranked by severity, then by how much each practice matters.</p>')
+        out.append('  </section>')
+
     out.append('</section>')
     return "\n".join(out)
 
 
-def _score_bar_html(earned, possible, pct, severity):
-    """One score bar — earned/possible fraction + visual bar + percentage."""
-    cls = _SEVERITY_CLASS.get(severity, "sev-info")
-    earned_disp = _fmt_score_number(earned)
-    poss_disp   = _fmt_score_number(possible)
-    return (
-        f'    <div class="score-fraction">'
-        f'<span class="num">{earned_disp}</span>'
-        f'<span class="sep"> / </span>'
-        f'<span class="den">{poss_disp}</span>'
-        f'</div>'
-        f'    <div class="score-bar {cls}" '
-        f'role="progressbar" aria-valuenow="{int(pct)}" '
-        f'aria-valuemin="0" aria-valuemax="100">'
-        f'<div class="score-bar-fill" style="width: {int(pct)}%"></div>'
-        f'</div>'
-        f'    <div class="score-percent">{int(pct)}%</div>'
-    )
+_FIX_FIRST_N = 6
 
 
-def _fmt_score_number(n):
-    """Mirror audit_txt_report._fmt_int_or_float — show 1.5 not 1.5000000004."""
-    if isinstance(n, float):
-        return f"{n:g}"
-    return str(n)
+def _glance_cards(data):
+    """Three fact cards built from results the audit already holds. Each has
+    a good state, so a clean domain still gets a card."""
+    r = data.results
+    cards = []
+
+    def card(title, value, value_cls, lines, href):
+        out = [f'    <a class="glance-card" href="{href}">',
+               f'      <span class="glance-title">{_h(title)}</span>',
+               f'      <span class="glance-value {value_cls}">{_h(value)}</span>']
+        for ln in lines:
+            out.append(f'      <span class="glance-line">{_h(ln)}</span>')
+        out.append('    </a>')
+        return "\n".join(out)
+
+    # End of life
+    eol = [row for row in data.issues_ranked() if row["label"].startswith("EOL ")]
+    if not r.get("_no_web_note"):
+        if eol:
+            names = [_short(row["display"]).split(": ", 1)[-1] for row in eol]
+            cards.append(card("End of life", _plural(len(eol), "item"), "glance-bad",
+                              names[:3] + ([f"+{len(names) - 3} more"] if len(names) > 3 else []),
+                              f"#section-{_section_for(eol[0])}"))
+        else:
+            cards.append(card("End of life", "None detected", "glance-good",
+                              ["Judged from versions the server discloses"], "#section-disclosure"))
+
+    # Certificate
+    tls = r.get("tls") or {}
+    if tls and not tls.get("error") and tls.get("cert_remaining_seconds") is not None:
+        pct = tls.get("cert_remaining_pct")
+        overdue = pct is not None and pct < audit_txt_report._CERT_RENEWAL_MIN_PCT
+        lines = []
+        if tls.get("cert_lifetime_days") is not None:
+            lines.append(f'{tls["cert_lifetime_days"]}-day lifetime')
+        if tls.get("cert_issuer"):
+            lines.append(f'Issued by {tls["cert_issuer"]}')
+        cards.append(card("Certificate expires in", _humanize_left(tls["cert_remaining_seconds"]),
+                          "glance-bad" if overdue else "glance-good", lines, "#section-tls"))
+
+    # Email authentication
+    spf = (r.get("spf") or {}).get("status")
+    dmarc = r.get("dmarc") or {}
+    spf_tag = {"hardfail": "-all", "null_sender": "-all (sends no mail)", "softfail": "~all",
+               "neutral": "?all", "pass_all_DANGEROUS": "+all", "missing": "not published",
+               "no_all_mechanism": "no 'all'", "redirect_no_all": "no 'all'",
+               "redirect_target_no_spf": "broken redirect"}.get(spf)
+    if spf_tag and not dmarc.get("error"):
+        dmarc_tag = (f'p={dmarc.get("policy")}' if dmarc.get("present") and dmarc.get("policy")
+                     else "not published")
+        rows = {row["label"]: row["severity"] for row in data.finding_rows}
+        worst = next((s for s in ISSUE_SEVERITIES
+                      if s in (rows.get("SPF policy"), rows.get("DMARC policy"))), "pass")
+        value = {"pass": "Enforced", "low": "Mostly enforced"}.get(worst, "Not enforced")
+        lines = [f"SPF {spf_tag}", f"DMARC {dmarc_tag}"]
+        dkim = r.get("dkim") or {}
+        if dkim.get("found"):
+            lines.append("DKIM key found")
+        cards.append(card("Email authentication", value,
+                          "glance-good" if worst in ("pass", "low") else "glance-bad",
+                          lines, "#section-email"))
+    return cards
 
 
-# ── Executive summary ────────────────────────────────────────────────────────
+# ── All findings ────────────────────────────────────────────────────────────
 
 def _render_executive_summary_html(data):
-    """Severity-grouped finding rows. Reads data._finding_rows directly.
+    """Every finding, one collapsible block per severity. Issue blocks start
+    open; informational and passing start closed to keep first paint short."""
+    ranked = data.issues_ranked()
+    infos  = [r for r in data.finding_rows if r["severity"] == "info"]
+    passes = [r for r in data.finding_rows if r["severity"] == "pass"]
 
-    Each row is a (severity, category, display_text, earned, possible)
-    tuple. We group fail+warn into "Possible Issues" sorted by
-    criticality (most consequential first, regardless of category —
-    see audit_txt_report._CRITICALITY_RANK_TABLE).
-
-    Disclosure defaults:
-      - Possible Issues: open. The reason a vendor opened the report.
-      - Informational:   closed. Useful context but not actionable on
-        its own; collapsing it keeps the page short on first paint.
-      - Passing:         closed. Evidence the vendor is doing the right
-        thing — worth showing, not worth pushing in their face.
-
-    The expand-all/collapse-all controls above the Detail section don't
-    touch these blocks; they're scoped to the Detail section only.
-    These three blocks are independently clickable.
-    """
-    rows = getattr(data, 'finding_rows', None)
-    if rows is None:
-        # ReportData stores it as _finding_rows in the txt report's actual
-        # structure. Fall back to that name.
-        rows = getattr(data, '_finding_rows', [])
-
-    # Group by severity
-    by_sev = {"fail": [], "warn": [], "info": [], "pass": []}
-    for r in rows:
-        sev = r.get("severity", "info")
-        if sev in by_sev:
-            by_sev[sev].append(r)
-
-    # Sort possible issues by criticality, then severity within same rank.
-    sev_order = {"fail": 0, "warn": 1}
-    issues = sorted(
-        by_sev["fail"] + by_sev["warn"],
-        key=lambda r: (audit_txt_report._criticality_rank(r.get("label", "")),
-                       sev_order.get(r.get("severity"), 99)),
-    )
-
-    out = ['<section class="exec-summary" aria-label="Executive summary">']
-    out.append('  <h2>Findings</h2>')
-
-    if issues:
-        out.append(_findings_block_html("Possible Issues", issues, open_=True))
-    if by_sev["info"]:
-        out.append(_findings_block_html("Informational", by_sev["info"],
-                                        open_=False))
-    if by_sev["pass"]:
-        out.append(_findings_block_html(
-            "Passing", by_sev["pass"], open_=False,
-        ))
-
-    if not (issues or by_sev["info"] or by_sev["pass"]):
+    out = ['<section class="exec-summary" id="findings" aria-label="All findings">']
+    out.append('  <h2>All findings</h2>')
+    for sev in ISSUE_SEVERITIES:
+        rows = [r for r in ranked if r["severity"] == sev]
+        if rows:
+            out.append(_findings_block_html(_SEV_WORD[sev], rows, sev, open_=True))
+    if infos:
+        out.append(_findings_block_html("Informational", infos, "info", open_=False))
+    if passes:
+        out.append(_findings_block_html("Passing", passes, "pass", open_=False))
+    if not data.finding_rows:
         out.append('  <p class="empty">No findings to display.</p>')
-
     out.append('</section>')
     return "\n".join(out)
 
 
-def _findings_block_html(title, rows, *, open_=False):
+def _findings_block_html(title, rows, sev, *, open_=False):
     """One <details> block of findings."""
     open_attr = " open" if open_ else ""
-    out = [f'  <details class="findings-block"{open_attr}>']
+    marker = audit_txt_report._MARKERS.get(sev, "·")
+    cls = _SEVERITY_CLASS.get(sev, "sev-info")
+    out = [f'  <details class="findings-block" id="findings-{sev}"{open_attr}>']
     out.append(f'    <summary>{_h(title)} <span class="count">({len(rows)})</span></summary>')
     out.append('    <ul class="findings-list">')
     for r in rows:
-        sev = r.get("severity", "info")
-        cat = r.get("category", "")
-        display = r.get("display", "")
-        earned = r.get("earned", 0)
-        possible = r.get("possible", 0)
-        cls = _SEVERITY_CLASS.get(sev, "sev-info")
-        marker = {"pass": "✓", "warn": "!", "fail": "✗", "info": "·"}.get(sev, "·")
-        frac = f"{_fmt_score_number(earned)} / {_fmt_score_number(possible)}"
+        badge = (f'<span class="sev-badge sev-{sev}">{_SEV_WORD[sev]}</span>'
+                 if sev in ISSUE_SEVERITIES else '')
         out.append(
             f'      <li class="finding {cls}">'
             f'<span class="finding-marker" aria-hidden="true">{_h(marker)}</span>'
-            f'<span class="finding-cat">{_h(cat)}</span>'
-            f'<span class="finding-text">{_h(display)}</span>'
-            f'<span class="finding-frac">{_h(frac)}</span>'
+            f'<span class="finding-cat">{_h(r.get("category", ""))}</span>'
+            f'<span class="finding-text">{_h(r.get("display", ""))}</span>'
+            f'<span class="finding-frac">{badge}</span>'
             f'</li>'
         )
     out.append('    </ul>')
@@ -1119,64 +1306,6 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
 
 # ── Footer ───────────────────────────────────────────────────────────────────
 
-def _render_action_bar_html(data, domain):
-    """Render the top-of-report action bar.
-
-    Two things in this row:
-      1. Download as .txt
-      2. Inline audit-another-domain form: a domain input, Deep
-         checkbox, and Audit button. The user types the domain
-         they want; submission goes through the loading page just
-         like submitting from the home page. The Deep checkbox
-         defaults to whatever the current report ran with.
-
-    The slowest-checks panel and version line stay in the footer.
-    """
-    deep = bool(data.results.get("_scan", {}).get("deep", False))
-    txt_href = f"/audit/{_h(domain)}.txt"
-    if deep:
-        txt_href += "?deep=1"
-
-    deep_checkbox_attrs = ' checked' if deep else ''
-
-    out = ['<aside class="top-action-bar">']
-    out.append('  <div class="footer-actions">')
-    out.append(
-        f'    <a class="download-link" href="{txt_href}" '
-        f'download>Download as .txt</a>'
-    )
-    out.append('  </div>')
-
-    # Inline audit form. Submits to /audit (the loading-page entry),
-    # same as the home form. The Deep checkbox defaults to the current
-    # report's deep state — reading a deep-mode report and want
-    # another deep audit? Already checked.
-    #
-    # The hidden `from` field carries the currently-displayed domain.
-    # The /audit handler compares it against the submitted `domain`
-    # and, if they match, promotes the request to fresh=1 so the
-    # cache is bypassed. Without this, typing the same domain that's
-    # already on screen and clicking Audit would just return the
-    # cached page.
-    out.append('  <form class="inline-audit-form" method="get" action="/audit"'
-               ' aria-label="Audit another domain">')
-    out.append(f'    <input type="hidden" name="from" value="{_h(domain)}">')
-    out.append(
-        '    <input type="text" name="domain" placeholder="example.com"'
-        ' required autocomplete="off" autocapitalize="off" autocorrect="off"'
-        ' spellcheck="false" data-1p-ignore data-lpignore="true"'
-        ' data-form-type="other">'
-    )
-    out.append('    <label class="inline-deep">'
-               f'<input type="checkbox" name="deep" value="1"{deep_checkbox_attrs}>'
-               '<span>Deep</span></label>')
-    out.append('    <button type="submit">Audit</button>')
-    out.append('  </form>')
-
-    out.append('</aside>')
-    return "\n".join(out)
-
-
 def _render_footer_html(data, domain):
     timings = data.results.get("_scan", {}).get("check_timings", {})
     slow = sorted(
@@ -1190,7 +1319,7 @@ def _render_footer_html(data, domain):
     if deep:
         txt_href += "?deep=1"
 
-    out = ['<footer class="report-footer">']
+    out = ['<footer class="report-footer" id="scan">']
     out.append('  <div class="footer-actions">')
     out.append(
         f'    <a class="download-link" href="{txt_href}" '
@@ -1296,8 +1425,26 @@ _RESULT_JS = """\
     }
   }
 
+  // ── Open the section a navigation link points at ──────────────────
+  // Detail sections are closed <details>. Following "#section-tls" should
+  // show it, so open the target and any <details> around it.
+  function openTarget() {
+    var id = decodeURIComponent((window.location.hash || '').slice(1));
+    if (!id) { return; }
+    var el = document.getElementById(id);
+    if (!el) { return; }
+    var node = el;
+    while (node) {
+      if (node.tagName === 'DETAILS') { node.setAttribute('open', ''); }
+      node = node.parentElement;
+    }
+    el.scrollIntoView();
+  }
+
   function init() {
     initExpandCollapse();
+    openTarget();
+    window.addEventListener('hashchange', openTarget);
   }
 
   // Script tag is at the end of <body> so the DOM is already parsed
@@ -2079,6 +2226,181 @@ a:hover { color: var(--accent-hover); }
     display: none;  /* expand/collapse buttons are screen-only */
   }
   a { color: inherit; text-decoration: none; }
+}
+
+/* ── 2.0 layout: top bar, side navigation, overview ──────────────────────
+   One server-rendered page. Nothing here loads a file: the ring and bars
+   are plain elements sized with percentages computed on the server. */
+:root {
+  --critical: #f87171;  --critical-bg: #4a2626;
+  --high:     #fb923c;  --high-bg:     #4a2f14;
+  --medium:   #fbbf24;  --medium-bg:   #4a3a14;
+  --low:      #93c5fd;  --low-bg:      #1f3350;
+}
+.top-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.55rem 1.2rem;
+  border-bottom: 1px solid var(--border-soft);
+  background: rgb(38, 38, 37);
+}
+.top-bar .brand-link { display: flex; align-items: center; gap: 0.55rem; min-height: 44px; }
+.top-bar .logo { width: 28px; height: 28px; margin: 0; }
+.top-bar .brand {
+  font-size: 1.05rem; font-weight: 700; letter-spacing: 0;
+  text-transform: none; color: var(--fg); margin: 0;
+}
+.top-domain {
+  font: 600 0.95rem ui-monospace, Menlo, Consolas, monospace;
+  padding-left: 1rem;
+  border-left: 1px solid var(--border-soft);
+  overflow-wrap: anywhere;
+}
+.top-bar .top-action-bar {
+  margin: 0 0 0 auto; padding: 0; border: none;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+}
+.top-bar .inline-audit-form input[type="text"] { flex: 0 1 240px; min-width: 0; }
+.top-bar .download-link { white-space: nowrap; }
+
+.shell { display: flex; align-items: flex-start; max-width: 1280px; margin: 0 auto; }
+.shell .report { flex: 1 1 0; min-width: 0; max-width: 1040px; margin: 0; padding: 1.5rem 2rem 4rem; }
+.side-nav {
+  flex: 0 0 216px;
+  position: sticky; top: 0;
+  max-height: 100vh; overflow-y: auto;
+  padding: 1.2rem 0.7rem 2rem;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.nav-group {
+  padding: 0.9rem 0.7rem 0.3rem;
+  font: 0.68rem ui-monospace, Menlo, Consolas, monospace;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+}
+.nav-group:first-child { padding-top: 0; }
+.nav-link {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  min-height: 36px; padding: 0 0.7rem; border-radius: 7px;
+  color: var(--fg); text-decoration: none; font-size: 0.92rem;
+}
+.nav-link:hover { background: var(--surface-hover); color: var(--fg); }
+.nav-count { font: 0.8rem ui-monospace, Menlo, Consolas, monospace; color: var(--muted); }
+.nav-count-issues { color: var(--critical); }
+
+.overview { margin-bottom: 2rem; }
+.overview .scan-meta { justify-content: flex-start; margin: 0 0 0.5rem; }
+.headline { margin: 0 0 0.5rem; font-size: 1.7rem; line-height: 1.2; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.verdict { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.6rem; font-weight: 600; }
+.verdict-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: var(--pass); }
+.verdict-critical .verdict-dot { background: var(--critical); }
+.verdict-high .verdict-dot { background: var(--high); }
+.verdict-medium .verdict-dot { background: var(--medium); }
+.verdict-low .verdict-dot { background: var(--low); }
+.overview .redirect-notice { text-align: left; margin: 0 0 0.6rem; }
+.summary-line { margin: 0 0 1.3rem; color: var(--muted); max-width: 46rem; }
+
+.sev-cards, .glance-cards, .panels { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem; }
+.sev-card, .glance-card {
+  flex: 1 1 190px; min-width: 0;
+  display: flex; flex-direction: column; gap: 0.35rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--border-soft); border-radius: 12px;
+  background: var(--surface); color: var(--fg); text-decoration: none;
+}
+.sev-card:hover, .glance-card:hover, .cat-row:hover, .fix-row:hover { background: var(--surface-hover); color: var(--fg); }
+.sev-card { border-top: 3px solid var(--border); }
+.sev-card.sev-critical { border-top-color: var(--critical); }
+.sev-card.sev-high     { border-top-color: var(--high); }
+.sev-card.sev-medium   { border-top-color: var(--medium); }
+.sev-card.sev-low      { border-top-color: var(--low); }
+.sev-card-label, .glance-title { color: var(--muted); font-size: 0.86rem; }
+.sev-card-count { font-size: 2rem; font-weight: 700; line-height: 1; }
+.sev-card-items { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.84rem; }
+.sev-card-item { overflow-wrap: anywhere; }
+.sev-card-more, .sev-card-none { color: var(--muted); font-size: 0.84rem; }
+.glance-value { font-size: 1.25rem; font-weight: 700; line-height: 1.2; }
+.glance-bad  { color: var(--critical); }
+.glance-good { color: var(--pass); }
+.glance-line { color: var(--muted); font-size: 0.84rem; overflow-wrap: anywhere; }
+
+.panel {
+  flex: 1 1 340px; min-width: 0;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface);
+}
+.panel-title { margin: 0 0 0.9rem; font-size: 1.02rem; }
+.stacked-bar { display: flex; gap: 2px; height: 10px; width: 100%; border-radius: 5px; overflow: hidden; background: var(--surface-2); }
+.seg { display: block; height: 100%; min-width: 3px; }
+.seg-critical { background: var(--critical); }
+.seg-high     { background: var(--high); }
+.seg-medium   { background: var(--medium); }
+.seg-low      { background: var(--low); }
+.seg-info     { background: #8a8a84; }
+.seg-pass     { background: var(--pass); }
+.legend { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.55rem 1rem; font-size: 0.9rem; color: var(--muted); }
+.legend-n { color: var(--fg); font-weight: 700; margin-right: 0.15rem; }
+.dot { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; margin-right: 0.45rem; }
+.cat-rows { display: flex; flex-direction: column; }
+.cat-row {
+  display: grid; grid-template-columns: 4.6rem minmax(60px, 1fr) minmax(0, 1.6fr) auto;
+  align-items: center; gap: 0.8rem;
+  padding: 0.42rem 0.4rem; margin: 0 -0.4rem; border-radius: 7px;
+  color: var(--fg); text-decoration: none; font-size: 0.88rem;
+}
+.cat-name { font-weight: 600; }
+.cat-desc, .cat-passed { color: var(--muted); }
+.cat-passed { white-space: nowrap; }
+
+.fix-first { margin-top: 1.5rem; }
+.fix-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 0.6rem; }
+.fix-head h2 { margin: 0; font-size: 1.15rem; }
+.fix-head a { font-size: 0.9rem; text-decoration: none; }
+.fix-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.fix-list li + li { border-top: 1px solid var(--border-soft); }
+.fix-row { display: flex; align-items: center; gap: 1rem; padding: 0.8rem 1.1rem; color: var(--fg); text-decoration: none; }
+.fix-n { font: 0.82rem ui-monospace, Menlo, Consolas, monospace; color: var(--muted); }
+.fix-text { flex: 1 1 auto; min-width: 0; font-weight: 600; }
+.fix-cat { display: block; font-weight: 400; font-size: 0.84rem; color: var(--muted); }
+.fix-note { margin: 0.6rem 0 0; color: var(--muted); font-size: 0.84rem; }
+
+.sev-badge {
+  display: inline-block; padding: 0.12rem 0.55rem; border-radius: 6px;
+  font: 600 0.78rem system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  white-space: nowrap;
+}
+.sev-badge.sev-critical { background: var(--critical-bg); color: #ffb4b4; }
+.sev-badge.sev-high     { background: var(--high-bg);     color: #ffc48a; }
+.sev-badge.sev-medium   { background: var(--medium-bg);   color: #ffd978; }
+.sev-badge.sev-low      { background: var(--low-bg);      color: #c3dcff; }
+.sev-critical .finding-marker { color: var(--critical); }
+.sev-high .finding-marker     { color: var(--high); }
+.sev-medium .finding-marker   { color: var(--medium); }
+.sev-low .finding-marker      { color: var(--low); }
+
+@media (max-width: 900px) {
+  .shell { display: block; }
+  .side-nav {
+    position: static; max-height: none;
+    flex-direction: row; overflow-x: auto; white-space: nowrap;
+    padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border-soft);
+  }
+  .nav-group { display: none; }
+  .nav-link { flex: 0 0 auto; min-height: 44px; }
+  .shell .report { max-width: none; padding: 1.2rem 1rem 3rem; }
+  .top-bar .top-action-bar { margin-left: 0; width: 100%; }
+  .top-bar .inline-audit-form input[type="text"] { flex: 1 1 140px; }
+  .headline { font-size: 1.35rem; }
+  .cat-row { grid-template-columns: 4.6rem minmax(0, 1fr) auto; }
+  .cat-desc { display: none; }
+  .legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fix-row { flex-wrap: wrap; gap: 0.4rem 0.8rem; }
+}
+@media print {
+  .side-nav, .top-bar .top-action-bar { display: none; }
+  .shell { display: block; }
+  .shell .report { max-width: none; padding: 0; }
 }
 </style>
 </head>

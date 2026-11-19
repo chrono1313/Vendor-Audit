@@ -23,14 +23,14 @@ The project is split into seven files:
     audit_checks.py        — network primitives, all check_* functions, scoring
     audit_render.py        — terminal report and CSV output
     audit_txt_report.py    — detailed plain-text report
-    scoring_rubric.json    — score weights, thresholds, label maps
+    rubric.json    — severity per check outcome, wording, thresholds
     library_eol.json       — end-of-life data for client-side libraries
     os_eol.json            — end-of-life data for server operating systems
 
 VERSIONING POLICY
 -----------------
 The four .py files (vendor_audit, audit_checks, audit_render, audit_txt_report)
-and scoring_rubric.json SHARE a single MAJOR.MINOR.BUGFIX version number,
+and rubric.json SHARE a single MAJOR.MINOR.BUGFIX version number,
 displayed by --version and enforced at startup (mismatched versions refuse
 to run). Every change to ANY of these five components bumps the version in
 ALL of them, so __version__ stays identical across the codebase. Choose the
@@ -45,7 +45,7 @@ bump level according to the change:
                              changed CLI semantics.
 
 Always update __version__ in all four .py files and rubric_version in
-scoring_rubric.json in the same commit.
+rubric.json in the same commit.
 
 The two EOL data files (library_eol.json, os_eol.json) are versioned by
 their own _verified_on date field and updated independently of the code
@@ -78,7 +78,7 @@ Minimum Python version: 3.8+
 """
 from __future__ import annotations
 
-__version__ = "1.6.0"
+__version__ = "2.0.0"
 
 import os
 import sys
@@ -162,7 +162,7 @@ from .audit_render import (
 )
 
 # ── Cross-module version sanity check ─────────────────────────────────────────
-# All four files (this one, audit_checks, audit_render, scoring_rubric.json)
+# All four files (this one, audit_checks, audit_render, rubric.json)
 # carry their own version. If they're out of sync — usually because someone
 # updated one file but not the others — fail loudly at startup rather than
 # producing subtly wrong scores.
@@ -176,7 +176,7 @@ _VERSIONS = {
     "audit_checks.py":      audit_checks.__version__,
     "audit_render.py":      audit_render.__version__,
     "audit_txt_report.py":  audit_txt_report.__version__,
-    "scoring_rubric.json":  _RUBRIC_VERSION,
+    "rubric.json":          _RUBRIC_VERSION,
 }
 if len(set(_VERSIONS.values())) > 1:
     print("[!] Version mismatch across audit modules:")
@@ -196,8 +196,7 @@ DOMAIN_WORKERS = 10  # domains audited concurrently; all checks are I/O-bound
 # rubric here rather than importing the underscore-prefixed constants from
 # audit_render — the rubric is the source of truth, audit_render is just
 # another consumer.
-_BULK_SCORE_GREEN  = audit_checks.RUBRIC["thresholds"]["score_color_green_pct"]
-_BULK_SCORE_YELLOW = audit_checks.RUBRIC["thresholds"]["score_color_yellow_pct"]
+
 
 # Sentinel used by argparse when --outcsv is passed without a value. Resolved
 # by _resolve_outcsv() into a real filename.
@@ -1021,28 +1020,24 @@ def cmd_ssl_scan(domain, email, publish=False, from_cache=True, max_age=24):
 def _bulk_progress_line(domain, row):
     """Format a per-domain progress line for bulk runs from a row dict.
 
-    Pulls the score directly from the row that results_to_csv_row() has
+    Pulls the severity counts from the row that results_to_csv_row() has
     already produced, so this is bookkeeping only — no scoring is
     re-computed. Returns an empty string if the row has no score
     populated (errored audits, which take a different code path
     anyway).
     """
-    earned = row.get("score_total_earned", "")
-    possible = row.get("score_total_possible", "")
-    pct_str = row.get("score_total_pct", "")
-    if not (earned and possible and pct_str):
+    counts = {s: row.get(f"findings_{s}", "") for s in ("critical", "high", "medium", "low")}
+    if all(v == "" for v in counts.values()):
         return ""
     try:
-        pct = int(pct_str)
+        n = {s: int(v or 0) for s, v in counts.items()}
     except (TypeError, ValueError):
         return ""
-    color = (GREEN if pct >= _BULK_SCORE_GREEN
-             else YELLOW if pct >= _BULK_SCORE_YELLOW
-             else RED)
-    # The whole line is color-coded by score band, so no [OK]/[FAIL] tag —
-    # the color carries the verdict and a tag would be redundant (or
-    # misleading at 15%, which technically "completed" but isn't OK).
-    return f"  {c(color, '•')} {domain}: {c(BOLD, f'{earned}/{possible}')} ({c(color, f'{pct}%')})"
+    color = RED if (n["critical"] or n["high"]) else YELLOW if (n["medium"] or n["low"]) else GREEN
+    summary = " · ".join(f"{v} {s}" for s, v in n.items() if v) or "no issues"
+    # The line is color-coded by the worst severity present, so no
+    # [OK]/[FAIL] tag is needed.
+    return f"  {c(color, '•')} {domain}: {c(color, summary)}"
 
 
 def run_bulk(domains, outcsv_path, ssl_args=None, concurrency=None, report_dir=None):
@@ -1203,7 +1198,7 @@ def run_bulk(domains, outcsv_path, ssl_args=None, concurrency=None, report_dir=N
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Lightweight passive security health check for a domain or list of domains.",
+        description="Lightweight passive best-practice audit for a domain or list of domains.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1251,7 +1246,7 @@ WHAT IS CHECKED
 
   Redirect       Detects HTTP → HTTPS redirects at the domain level.
   (email split)  When a website redirects to a different domain, SPF,
-                 DMARC, and MX are fully audited and scored for both the
+                 DMARC, and MX are fully audited and assessed for both the
                  source domain and the redirect target independently.
                  Both appear as separate sections in the report.
 
@@ -1399,8 +1394,8 @@ SWITCHES
                    python3 vendor_audit.py --sslregistration
 
   --ssl EMAIL    Run a Qualys SSL Labs assessment for the domain using the given
-                 registered email address. The grade is incorporated into the
-                 score (5 points), and the report includes a Findings list
+                 registered email address. The grade becomes a finding with its
+                 own severity, and the report includes a Findings list
                  explaining the conditions affecting the grade (vulnerable
                  protocols, missing forward secrecy, chain issues, etc.).
                  Cached reports up to 24 hours old are accepted by default;

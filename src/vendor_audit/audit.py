@@ -28,7 +28,7 @@ VERSIONING
 This file participates in the cross-module version sanity check enforced
 by cli.py at startup. __version__ here must equal __version__ in cli.py,
 audit_checks.py, audit_render.py, and audit_txt_report.py, and must equal
-rubric_version in scoring_rubric.json. See the docstring in cli.py for the
+rubric_version in rubric.json. See the docstring in cli.py for the
 versioning policy.
 """
 from __future__ import annotations
@@ -97,7 +97,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "1.6.0"
+__version__ = "2.0.0"
 
 log = logging.getLogger(__name__)
 

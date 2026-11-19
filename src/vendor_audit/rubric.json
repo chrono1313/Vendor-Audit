@@ -1,0 +1,1043 @@
+{
+  "rubric_version": "2.0.0",
+  "compatible_with": "vendor_audit 2.x",
+  "_comment": "Severity rubric. There are no points and nothing is added up. 'findings' maps each check label to its possible outcomes, and each outcome to [severity, text]. Severities: critical = broken or unsupported today; high = an important protection is missing or weak; medium = an expected practice is missing; low = a refinement; info = optional, or could not be determined (listed, never counted); pass = the practice is met. audit_checks.assess_results() decides WHICH outcome applies; this file decides how serious it is and how it reads. An outcome that is not listed produces no finding. One cause, one finding: HSTS, DNSSEC and clickjacking protection are each a single check. End-of-life findings carry a dynamic label ('EOL OS: ubuntu 18.04') and take their severity from 'eol_severity'.",
+  "severities": [
+    "critical",
+    "high",
+    "medium",
+    "low",
+    "info",
+    "pass"
+  ],
+  "thresholds": {
+    "spf_lookup_limit": 10,
+    "cert_lifetime_max_days": 91,
+    "cert_renewal_min_remaining_pct": 10,
+    "hsts_max_age_min_seconds": 15552000,
+    "min_nameservers": 2,
+    "clock_skew_warn_seconds": 30,
+    "clock_skew_bad_seconds": 300,
+    "csp_nonce_min_bytes": 8,
+    "response_slow_ms": 1000,
+    "response_fast_ms": 200
+  },
+  "dkim_common_selectors": [
+    "google",
+    "default",
+    "selector1",
+    "selector2",
+    "mail",
+    "k1"
+  ],
+  "strong_referrer_policies": [
+    "no-referrer",
+    "same-origin",
+    "strict-origin",
+    "strict-origin-when-cross-origin"
+  ],
+  "good_proxies": [
+    "cloudflare",
+    "fastly",
+    "varnish",
+    "squid",
+    "envoy",
+    "awselb",
+    "amazon",
+    "akamai",
+    "cdn",
+    "nginx"
+  ],
+  "origin_servers": [
+    "apache",
+    "iis",
+    "microsoft-iis",
+    "lighttpd",
+    "tomcat",
+    "jetty",
+    "gunicorn",
+    "uwsgi",
+    "kestrel",
+    "cherokee",
+    "litespeed",
+    "openresty"
+  ],
+  "ssl_grade_order": [
+    "F",
+    "E",
+    "T",
+    "D",
+    "M",
+    "C",
+    "B",
+    "A-",
+    "A",
+    "A+"
+  ],
+  "ssl_grade_colors": {
+    "A+": "GREEN",
+    "A": "GREEN",
+    "A-": "GREEN",
+    "B": "YELLOW",
+    "C": "YELLOW",
+    "D": "RED",
+    "E": "RED",
+    "F": "RED",
+    "M": "RED",
+    "T": "RED"
+  },
+  "categories": {
+    "Email": [
+      "SPF policy",
+      "SPF lookup count",
+      "DMARC policy",
+      "DMARC sp",
+      "DMARC pct",
+      "DMARC rua reporting",
+      "MX target hygiene",
+      "MTA-STS",
+      "TLS-RPT",
+      "DANE TLSA on MX",
+      "STARTTLS-MX",
+      "DKIM (common selectors)",
+      "DKIM key strength",
+      "BIMI"
+    ],
+    "DNS": [
+      "DNSSEC",
+      "DNSSEC TLD signed",
+      "CAA records",
+      "Nameserver count",
+      "Authoritative delegation",
+      "NS not open resolver"
+    ],
+    "Routing": [
+      "IPv6",
+      "IPv4 RPKI",
+      "IPv4 IRR/RIS",
+      "IPv6 RPKI",
+      "IPv6 IRR/RIS"
+    ],
+    "TLS": [
+      "TLS connection",
+      "TLS 1.3",
+      "Certificate lifetime",
+      "Certificate renewal",
+      "Certificate name match",
+      "Cert covers www variant",
+      "Cert chain completeness",
+      "HSTS",
+      "HSTS preload",
+      "SSL Labs grade"
+    ],
+    "HTTP": [
+      "HTTP version",
+      "HTTP→HTTPS redirect",
+      "Redirect first-hop hygiene",
+      "www and apex unified"
+    ],
+    "Website": [
+      "Server header",
+      "X-Powered-By absent",
+      "Clickjacking protection",
+      "X-Content-Type-Options",
+      "Referrer-Policy",
+      "Permissions-Policy",
+      "CSP script-src safety",
+      "Cross-Origin-Opener-Policy",
+      "Cross-Origin-Resource-Policy",
+      "X-XSS-Protection deprecated",
+      "Cookie Secure",
+      "Cookie HttpOnly",
+      "Cookie SameSite",
+      "Cookie name prefixes",
+      "security.txt",
+      "Default error page",
+      "CORS configuration",
+      "Server clock accuracy",
+      "Subresource Integrity",
+      "Mixed content (in-page)"
+    ]
+  },
+  "eol_severity": {
+    "EOL OS": "critical",
+    "EOL tech": "critical",
+    "EOL library": "high"
+  },
+  "findings": {
+    "SPF policy": {
+      "null_sender": [
+        "pass",
+        "SPF declares that the domain sends no mail (v=spf1 -all)"
+      ],
+      "hardfail": [
+        "pass",
+        "SPF policy enforced (-all)"
+      ],
+      "softfail": [
+        "low",
+        "SPF soft fail only (~all) — not fully enforcing"
+      ],
+      "neutral": [
+        "high",
+        "SPF neutral (?all) — no enforcement"
+      ],
+      "no_all_mechanism": [
+        "high",
+        "SPF record has no 'all' mechanism — no enforcement"
+      ],
+      "redirect_no_all": [
+        "high",
+        "SPF redirect target has no 'all' mechanism — no enforcement"
+      ],
+      "redirect_target_no_spf": [
+        "high",
+        "SPF redirect target has no SPF record (broken redirect)"
+      ],
+      "pass_all_DANGEROUS": [
+        "critical",
+        "SPF ends in +all — every server on the internet is authorised to send as this domain"
+      ],
+      "missing": [
+        "critical",
+        "SPF not published — any server can send mail as this domain"
+      ]
+    },
+    "SPF lookup count": {
+      "within_limit": [
+        "pass",
+        "SPF lookup count within limit"
+      ],
+      "exceeds_limit": [
+        "high",
+        "SPF needs more than 10 DNS lookups — receivers treat the record as broken (RFC 7208)"
+      ]
+    },
+    "DMARC policy": {
+      "reject": [
+        "pass",
+        "DMARC policy enforced (p=reject)"
+      ],
+      "quarantine": [
+        "low",
+        "DMARC policy: quarantine — not yet at reject"
+      ],
+      "none": [
+        "high",
+        "DMARC policy p=none — monitoring only, not enforced"
+      ],
+      "missing": [
+        "critical",
+        "DMARC not published — domain can be spoofed"
+      ]
+    },
+    "DMARC sp": {
+      "enforced": [
+        "pass",
+        "DMARC subdomain policy set"
+      ],
+      "none": [
+        "medium",
+        "DMARC sp=none — subdomains are not protected"
+      ]
+    },
+    "DMARC pct": {
+      "full": [
+        "pass",
+        "DMARC applies to 100% of mail"
+      ],
+      "partial": [
+        "low",
+        "DMARC pct= not at 100%"
+      ]
+    },
+    "DMARC rua reporting": {
+      "present": [
+        "pass",
+        "DMARC rua= aggregate reporting set"
+      ],
+      "missing": [
+        "low",
+        "DMARC rua= aggregate reporting not configured"
+      ]
+    },
+    "MX target hygiene": {
+      "clean": [
+        "pass",
+        "MX targets are hostnames (not IP literals) and resolve directly to A/AAAA (no CNAME) (RFC 2181 §10.3)"
+      ],
+      "cname_target": [
+        "medium",
+        "At least one MX target is a CNAME (RFC 2181 §10.3 violation — some receivers may bounce)"
+      ],
+      "ip_literal": [
+        "medium",
+        "At least one MX target is an IP literal (RFC 5321 §5.1 violation — MX RDATA must be a hostname)"
+      ],
+      "cname_and_ip": [
+        "medium",
+        "MX targets include both an IP literal and a CNAME target (RFC 2181 §10.3 / RFC 5321 §5.1 violations)"
+      ]
+    },
+    "MTA-STS": {
+      "enforce": [
+        "pass",
+        "MTA-STS policy published and enforcing"
+      ],
+      "published": [
+        "pass",
+        "MTA-STS record published (the policy mode is read in a deep check)"
+      ],
+      "testing": [
+        "low",
+        "MTA-STS in testing mode (not enforced)"
+      ],
+      "none": [
+        "medium",
+        "MTA-STS policy mode is none — nothing is enforced"
+      ],
+      "missing": [
+        "medium",
+        "MTA-STS policy not published — sending servers have no policy preventing fallback to plaintext"
+      ]
+    },
+    "TLS-RPT": {
+      "present": [
+        "pass",
+        "TLS-RPT reporting endpoint published"
+      ],
+      "missing": [
+        "low",
+        "TLS-RPT reporting endpoint not published"
+      ]
+    },
+    "DANE TLSA on MX": {
+      "all_mx": [
+        "pass",
+        "DANE/TLSA records on MX hosts"
+      ],
+      "some_mx": [
+        "info",
+        "DANE/TLSA on some but not all MX hosts"
+      ],
+      "no_mx": [
+        "info",
+        "No DANE/TLSA records on MX hosts (optional; needs DNSSEC)"
+      ]
+    },
+    "STARTTLS-MX": {
+      "tls_1_3": [
+        "pass",
+        "STARTTLS negotiated on MX hosts (TLS 1.3)"
+      ],
+      "tls_1_2": [
+        "low",
+        "STARTTLS on MX negotiates TLS 1.2 (TLS 1.3 not offered)"
+      ],
+      "tls_legacy": [
+        "medium",
+        "STARTTLS on MX negotiates TLS 1.0/1.1"
+      ],
+      "no_starttls": [
+        "high",
+        "STARTTLS not offered on at least one MX host — mail can travel in plaintext"
+      ],
+      "unprobed": [
+        "info",
+        "STARTTLS on MX could not be probed (port 25 likely blocked)"
+      ]
+    },
+    "DKIM (common selectors)": {
+      "found": [
+        "pass",
+        "DKIM key found at common selector(s)"
+      ],
+      "not_found": [
+        "info",
+        "DKIM key not found at common selectors (the domain may use a custom selector)"
+      ]
+    },
+    "DKIM key strength": {
+      "good": [
+        "pass",
+        "DKIM key strength acceptable (Ed25519 or RSA ≥2048)"
+      ],
+      "weak": [
+        "high",
+        "DKIM key uses RSA-1024 (deprecated by RFC 8301 — upgrade to RSA-2048+ or Ed25519)"
+      ],
+      "broken": [
+        "critical",
+        "DKIM key uses RSA under 1024 bits (broken)"
+      ],
+      "unparseable": [
+        "info",
+        "DKIM key found but could not be parsed"
+      ],
+      "revoked": [
+        "info",
+        "DKIM key explicitly revoked (p= empty) — deliberate operator action"
+      ]
+    },
+    "BIMI": {
+      "present": [
+        "pass",
+        "BIMI brand indicator published (logo eligible to display)"
+      ],
+      "dmarc_weak": [
+        "low",
+        "BIMI logo published but DMARC is not at enforcement (p=quarantine or p=reject) — mailbox providers will not display the logo"
+      ],
+      "malformed": [
+        "low",
+        "BIMI record is malformed"
+      ],
+      "missing": [
+        "info",
+        "BIMI brand indicator not published (optional)"
+      ]
+    },
+    "DNSSEC": {
+      "ok": [
+        "pass",
+        "DNSSEC enabled and chain validated"
+      ],
+      "not_enabled": [
+        "medium",
+        "DNSSEC not enabled (no DNSKEY published)"
+      ],
+      "chain_incomplete": [
+        "medium",
+        "DNSSEC key published but the chain does not validate (AD flag not set)"
+      ]
+    },
+    "DNSSEC TLD signed": {
+      "unsigned": [
+        "info",
+        "The TLD is not DNSSEC signed, so this domain cannot enable DNSSEC"
+      ]
+    },
+    "CAA records": {
+      "with_iodef": [
+        "pass",
+        "CAA records restrict certificate issuance"
+      ],
+      "present": [
+        "pass",
+        "CAA records restrict certificate issuance (no iodef= reporting contact)"
+      ],
+      "missing": [
+        "medium",
+        "No Certification Authority Authorization (CAA) records"
+      ]
+    },
+    "Nameserver count": {
+      "two_or_more": [
+        "pass",
+        "Two or more authoritative nameservers (RFC 1034)"
+      ],
+      "single": [
+        "high",
+        "Only one authoritative nameserver (RFC 1034 calls for at least two)"
+      ]
+    },
+    "Authoritative delegation": {
+      "all_authoritative": [
+        "pass",
+        "All authoritative nameservers respond authoritatively (RFC 1034)"
+      ],
+      "some_lame": [
+        "high",
+        "At least one nameserver listed at the parent registry is lame — it does not answer authoritatively for this zone (RFC 1034)"
+      ]
+    },
+    "NS not open resolver": {
+      "all_closed": [
+        "pass",
+        "Authoritative nameservers do not also serve open recursion (RFC 5358 / BCP 140)"
+      ],
+      "some_open": [
+        "high",
+        "At least one authoritative nameserver also serves open recursion — abusable for DNS amplification attacks (RFC 5358 / BCP 140)"
+      ]
+    },
+    "IPv6": {
+      "present": [
+        "pass",
+        "IPv6 reachable"
+      ],
+      "missing": [
+        "medium",
+        "IPv6 not configured"
+      ]
+    },
+    "IPv4 RPKI": {
+      "valid": [
+        "pass",
+        "IPv4 (legacy IP) RPKI valid"
+      ],
+      "not-found": [
+        "medium",
+        "IPv4 (legacy IP) prefix has no Route Origin Authorization (RPKI)"
+      ],
+      "invalid": [
+        "high",
+        "IPv4 (legacy IP) route conflicts with its Route Origin Authorization (RPKI invalid)"
+      ],
+      "lookup_failed": [
+        "info",
+        "IPv4 (legacy IP) RPKI check could not run (RIPEstat lookup failed)"
+      ]
+    },
+    "IPv4 IRR/RIS": {
+      "in_ris": [
+        "pass",
+        "IPv4 (legacy IP) route registered in IRR"
+      ],
+      "not_in_ris": [
+        "low",
+        "IPv4 (legacy IP) route not registered in IRR / RIS"
+      ],
+      "lookup_failed": [
+        "info",
+        "IPv4 (legacy IP) IRR/RIS check could not run (RIPEstat lookup failed)"
+      ]
+    },
+    "IPv6 RPKI": {
+      "valid": [
+        "pass",
+        "IPv6 RPKI valid"
+      ],
+      "not-found": [
+        "medium",
+        "IPv6 prefix has no Route Origin Authorization (RPKI)"
+      ],
+      "invalid": [
+        "high",
+        "IPv6 route conflicts with its Route Origin Authorization (RPKI invalid)"
+      ],
+      "lookup_failed": [
+        "info",
+        "IPv6 RPKI check could not run (RIPEstat lookup failed)"
+      ]
+    },
+    "IPv6 IRR/RIS": {
+      "in_ris": [
+        "pass",
+        "IPv6 route registered in IRR"
+      ],
+      "not_in_ris": [
+        "low",
+        "IPv6 route not registered in IRR / RIS"
+      ],
+      "lookup_failed": [
+        "info",
+        "IPv6 IRR/RIS check could not run (RIPEstat lookup failed)"
+      ]
+    },
+    "TLS connection": {
+      "ok": [
+        "pass",
+        "TLS connection successful"
+      ],
+      "cert_error": [
+        "critical",
+        "TLS certificate is not trusted (self-signed, expired, or wrong chain)"
+      ],
+      "no_tls": [
+        "critical",
+        "No HTTPS — the TLS connection failed"
+      ]
+    },
+    "TLS 1.3": {
+      "negotiated": [
+        "pass",
+        "TLS 1.3 negotiated"
+      ],
+      "tls_1_2": [
+        "low",
+        "TLS 1.2 only — TLS 1.3 not negotiated"
+      ],
+      "older": [
+        "high",
+        "TLS 1.0/1.1 negotiated — obsolete protocol version"
+      ]
+    },
+    "Certificate lifetime": {
+      "short_lived": [
+        "pass",
+        "Certificate auto-renewed (short-lived)"
+      ],
+      "long_lived": [
+        "medium",
+        "TLS certificate lifetime exceeds 91 days — may indicate manual renewal"
+      ]
+    },
+    "Certificate renewal": {
+      "on_schedule": [
+        "pass",
+        "Certificate renewed on schedule"
+      ],
+      "overdue": [
+        "medium",
+        "Certificate renewal overdue — under 10% of its lifetime left"
+      ]
+    },
+    "Certificate name match": {
+      "match": [
+        "pass",
+        "Certificate name matches domain"
+      ],
+      "no_match": [
+        "critical",
+        "TLS certificate does not cover this domain"
+      ]
+    },
+    "Cert covers www variant": {
+      "covers": [
+        "pass",
+        "Certificate covers www / apex variant"
+      ],
+      "missing_variant": [
+        "medium",
+        "Certificate does not cover the www / apex variant"
+      ]
+    },
+    "Cert chain completeness": {
+      "complete": [
+        "pass",
+        "Server sends complete certificate chain (no AIA fallback needed)"
+      ],
+      "incomplete": [
+        "medium",
+        "Server does not send its intermediate certificate (incomplete chain)"
+      ]
+    },
+    "HSTS": {
+      "ok_preloaded": [
+        "pass",
+        "HSTS set with a long max-age and includeSubDomains; domain is preloaded"
+      ],
+      "ok": [
+        "pass",
+        "HSTS set with a long max-age and includeSubDomains"
+      ],
+      "weak_max_age": [
+        "low",
+        "HSTS max-age is under 180 days"
+      ],
+      "weak_subdomains": [
+        "low",
+        "HSTS is missing the includeSubDomains directive"
+      ],
+      "weak_both": [
+        "low",
+        "HSTS max-age is under 180 days and includeSubDomains is missing"
+      ],
+      "missing": [
+        "high",
+        "HTTP Strict Transport Security (HSTS) not set"
+      ]
+    },
+    "HSTS preload": {
+      "pending": [
+        "info",
+        "HSTS preload submission pending — accepted by hstspreload.org, waiting for the next Chrome release"
+      ],
+      "preload_directive": [
+        "info",
+        "HSTS preload directive present but the domain has not been submitted to hstspreload.org"
+      ],
+      "not_preloaded": [
+        "info",
+        "Domain is not on the HSTS preload list (optional)"
+      ]
+    },
+    "SSL Labs grade": {
+      "A+": [
+        "pass",
+        "SSL Labs grade: A+"
+      ],
+      "A": [
+        "pass",
+        "SSL Labs grade: A"
+      ],
+      "A-": [
+        "low",
+        "SSL Labs grade: A-"
+      ],
+      "B": [
+        "low",
+        "SSL Labs grade: B"
+      ],
+      "C": [
+        "medium",
+        "SSL Labs grade: C"
+      ],
+      "D": [
+        "high",
+        "SSL Labs grade: D"
+      ],
+      "E": [
+        "high",
+        "SSL Labs grade: E"
+      ],
+      "F": [
+        "critical",
+        "SSL Labs grade: F"
+      ],
+      "M": [
+        "critical",
+        "SSL Labs grade: M (certificate name mismatch)"
+      ],
+      "T": [
+        "critical",
+        "SSL Labs grade: T (certificate not trusted)"
+      ]
+    },
+    "HTTP version": {
+      "http3": [
+        "pass",
+        "HTTP/3 supported"
+      ],
+      "http2": [
+        "low",
+        "HTTP/2 only — HTTP/3 not supported"
+      ],
+      "http1": [
+        "medium",
+        "HTTP/1.1 only — server does not support HTTP/2 or HTTP/3 (http1mustdie.com)"
+      ]
+    },
+    "HTTP→HTTPS redirect": {
+      "https_only": [
+        "pass",
+        "Plaintext HTTP not serving content"
+      ],
+      "http_error": [
+        "pass",
+        "Plaintext HTTP not serving content"
+      ],
+      "http_available": [
+        "high",
+        "Port 80 serves content without redirecting to HTTPS"
+      ]
+    },
+    "Redirect first-hop hygiene": {
+      "https_same_host": [
+        "pass",
+        "First redirect hop goes to HTTPS on same host"
+      ],
+      "off_host_first": [
+        "low",
+        "First redirect hop goes to a different host before HTTPS"
+      ]
+    },
+    "www and apex unified": {
+      "unified": [
+        "pass",
+        "Apex and www variants unified (one redirects to the other)"
+      ],
+      "split": [
+        "low",
+        "Apex and www both serve content but neither redirects to the other (split-brain site)"
+      ],
+      "half_missing": [
+        "medium",
+        "Only one of apex / www has DNS records — users typing the other form get a DNS error"
+      ],
+      "half_missing_apex": [
+        "medium",
+        "Apex has no A/AAAA records — users typing the bare domain get a DNS error"
+      ],
+      "half_missing_www": [
+        "medium",
+        "www variant has no A/AAAA records — users typing www get a DNS error"
+      ]
+    },
+    "Server header": {
+      "absent_or_proxy": [
+        "pass",
+        "Server header not leaking origin"
+      ],
+      "origin_no_version": [
+        "info",
+        "Server header discloses software name (no version)"
+      ],
+      "origin_with_version": [
+        "low",
+        "Server header discloses software / version"
+      ]
+    },
+    "X-Powered-By absent": {
+      "absent": [
+        "pass",
+        "X-Powered-By not disclosed"
+      ],
+      "present": [
+        "low",
+        "X-Powered-By header reveals technology"
+      ]
+    },
+    "Clickjacking protection": {
+      "set": [
+        "pass",
+        "Clickjacking protection set (X-Frame-Options or CSP frame-ancestors)"
+      ],
+      "missing": [
+        "medium",
+        "No clickjacking protection — neither X-Frame-Options nor CSP frame-ancestors is set"
+      ]
+    },
+    "X-Content-Type-Options": {
+      "nosniff": [
+        "pass",
+        "X-Content-Type-Options: nosniff"
+      ],
+      "missing": [
+        "medium",
+        "X-Content-Type-Options not set"
+      ]
+    },
+    "Referrer-Policy": {
+      "strong": [
+        "pass",
+        "Referrer-Policy set"
+      ],
+      "weak": [
+        "low",
+        "Referrer-Policy present but using a weak value"
+      ],
+      "missing": [
+        "low",
+        "Referrer-Policy not set"
+      ]
+    },
+    "Permissions-Policy": {
+      "set": [
+        "pass",
+        "Permissions-Policy set"
+      ],
+      "missing": [
+        "low",
+        "Permissions-Policy not set"
+      ]
+    },
+    "CSP script-src safety": {
+      "strict": [
+        "pass",
+        "CSP script-src is strict (nonce/hash, strict-dynamic, or 'none')"
+      ],
+      "none": [
+        "pass",
+        "CSP script-src is strict (nonce/hash, strict-dynamic, or 'none')"
+      ],
+      "nonce_or_hash": [
+        "pass",
+        "CSP script-src uses nonce/hash (strict-dynamic would be stronger)"
+      ],
+      "host_allowlist": [
+        "low",
+        "CSP script-src uses a host allowlist (weaker than nonce/hash)"
+      ],
+      "unsafe_inline": [
+        "high",
+        "CSP allows inline scripts ('unsafe-inline')"
+      ],
+      "wildcard_or_scheme": [
+        "high",
+        "CSP script-src allows a wildcard or a whole scheme"
+      ],
+      "missing": [
+        "high",
+        "No Content-Security-Policy restricting scripts"
+      ]
+    },
+    "Cross-Origin-Opener-Policy": {
+      "same_origin": [
+        "pass",
+        "Cross-Origin-Opener-Policy set"
+      ],
+      "same_origin_allow_popups": [
+        "pass",
+        "Cross-Origin-Opener-Policy set (same-origin-allow-popups)"
+      ],
+      "missing": [
+        "low",
+        "Cross-Origin-Opener-Policy not set"
+      ]
+    },
+    "Cross-Origin-Resource-Policy": {
+      "same_origin_or_site": [
+        "pass",
+        "Cross-Origin-Resource-Policy set"
+      ],
+      "cross_origin": [
+        "low",
+        "Cross-Origin-Resource-Policy is cross-origin (no isolation)"
+      ],
+      "missing": [
+        "low",
+        "Cross-Origin-Resource-Policy not set"
+      ]
+    },
+    "X-XSS-Protection deprecated": {
+      "absent_or_zero": [
+        "pass",
+        "X-XSS-Protection correctly absent (deprecated header)"
+      ],
+      "set_dangerous": [
+        "low",
+        "X-XSS-Protection is set to a filtering mode (deprecated; can introduce flaws)"
+      ]
+    },
+    "Cookie Secure": {
+      "all_secure": [
+        "pass",
+        "All cookies set the Secure flag"
+      ],
+      "some_insecure": [
+        "medium",
+        "Some cookies are missing the Secure flag"
+      ]
+    },
+    "Cookie HttpOnly": {
+      "all_httponly": [
+        "pass",
+        "All cookies set HttpOnly"
+      ],
+      "some_not": [
+        "medium",
+        "Some cookies are missing HttpOnly"
+      ]
+    },
+    "Cookie SameSite": {
+      "strict_or_lax": [
+        "pass",
+        "Cookies set SameSite=Lax or Strict"
+      ],
+      "none_with_secure": [
+        "info",
+        "Some cookies use SameSite=None (cross-site embed)"
+      ],
+      "missing_or_bad": [
+        "low",
+        "Some cookies have no usable SameSite attribute"
+      ]
+    },
+    "Cookie name prefixes": {
+      "valid": [
+        "pass",
+        "Cookies use __Host-/__Secure- prefixes correctly"
+      ],
+      "invalid_prefix": [
+        "low",
+        "A cookie uses a __Host-/__Secure- prefix without meeting its rules"
+      ]
+    },
+    "security.txt": {
+      "present_with_expiry": [
+        "pass",
+        "Security contact published (security.txt, RFC 9116)"
+      ],
+      "present_no_expiry": [
+        "info",
+        "security.txt present but Expires: field missing or expired"
+      ],
+      "missing": [
+        "low",
+        "security.txt not published (RFC 9116)"
+      ]
+    },
+    "Default error page": {
+      "custom_404": [
+        "pass",
+        "Default error page customised (no server disclosure)"
+      ],
+      "default_no_version": [
+        "info",
+        "Default error page detected (server software disclosed, no version)"
+      ],
+      "default_with_version": [
+        "low",
+        "Default error page detected with version disclosure"
+      ],
+      "spa_or_2xx": [
+        "info",
+        "Default error page check did not run (probe returned 2xx/3xx — SPA shell, wildcard route, or WAF redirect)"
+      ],
+      "error": [
+        "info",
+        "Default error page check could not run (probe failed)"
+      ]
+    },
+    "CORS configuration": {
+      "no_cors": [
+        "pass",
+        "No CORS headers — secure default"
+      ],
+      "weak_wildcard_with_credentials": [
+        "high",
+        "CORS — wildcard origin combined with credentials"
+      ],
+      "weak_null_origin": [
+        "high",
+        "CORS — server trusts the 'null' origin"
+      ],
+      "weak_reflective": [
+        "high",
+        "CORS — server reflects arbitrary Origin: header (any origin trusted)"
+      ],
+      "error": [
+        "info",
+        "CORS check could not run"
+      ]
+    },
+    "Server clock accuracy": {
+      "in_sync": [
+        "pass",
+        "Server clock in sync with UTC"
+      ],
+      "minor_skew": [
+        "info",
+        "Server clock skew is small but noticeable"
+      ],
+      "bad_skew": [
+        "medium",
+        "Server clock is more than 5 minutes off — can break HSTS, OAuth and certificate validation"
+      ]
+    },
+    "Subresource Integrity": {
+      "all_external_have_sri": [
+        "pass",
+        "External scripts use Subresource Integrity"
+      ],
+      "no_external_scripts": [
+        "pass",
+        "No external scripts that need Subresource Integrity"
+      ],
+      "some_external_have_sri": [
+        "low",
+        "Some external scripts have Subresource Integrity, but not all"
+      ],
+      "external_without_sri": [
+        "medium",
+        "External scripts have no Subresource Integrity (SRI)"
+      ]
+    },
+    "Mixed content (in-page)": {
+      "none": [
+        "pass",
+        "No mixed content in page body"
+      ],
+      "passive_only": [
+        "low",
+        "Passive mixed content present (images/media over HTTP)"
+      ],
+      "active": [
+        "high",
+        "Mixed content: scripts or styles loaded over HTTP on an HTTPS page"
+      ]
+    }
+  }
+}

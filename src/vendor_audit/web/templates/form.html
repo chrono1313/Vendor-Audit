@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vendor Audit — passive domain security audit</title>
+<title>Vendor Audit — passive domain best-practice check</title>
+<meta name="description" content="A passive check of a domain's best-practice alignment: email, DNS, TLS and web delivery, measured against published standards.">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
   /* ── Palette — kept in sync with render_html.py's _DOC_HEAD. If you
@@ -210,7 +211,7 @@
 </div>
 <h1>Vendor Audit</h1>
 </a>
-<p class="lede">A passive check of a domain's security and best-practice posture.</p>
+<p class="lede">A passive check of a domain's best-practice alignment.</p>
 
 <form method="get" action="/audit">
   <input type="text" name="domain" placeholder="example.com"
@@ -234,21 +235,23 @@
 <section class="what">
   <h2>How this is meant to be used</h2>
 
-  <p>Vendor Audit is a due-diligence tool. Run it on a vendor's domain before purchasing a product or service to get a quick, evidence-based read on how their configuration aligns with current best practices. A weak score isn't a deal-breaker on its own, but it's a useful conversation starter and a data point alongside everything else you're evaluating.</p>
+  <p>Vendor Audit is a due-diligence tool. Run it on a vendor's domain before purchasing a product or service, or on your own, to get a quick, evidence-based read on how the configuration aligns with current best practices. Findings aren't a deal-breaker on their own, but they're a useful conversation starter and a data point alongside everything else you're evaluating.</p>
+
+  <p>Vendor Audit measures how closely a domain follows published best practices for email, DNS, TLS, and web delivery. Many of these practices are security controls, but this is not a security assessment: it doesn't look for vulnerabilities, and a clean report doesn't mean a vendor is secure. It shows how a domain's public configuration compares with current published standards.</p>
 
   <p><strong>Please share the .txt report with the vendor.</strong> Every section cites the RFC, W3C spec, OWASP guidance, or CA/Browser Forum baseline it's measured against — so the report reads as feedback, not as an accusation. Most vendors appreciate a heads-up they can act on; the .txt gives them one in a form they can take straight to the people who can address it. When more than one prospect shares these reports with the same vendor, they're more likely to prioritize the issues raised.</p>
 
   <h2>What this checks</h2>
 
-  <p>The audit covers SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS configuration, HSTS, HTTP/2 and HTTP/3 support, security headers, cookie attributes, end-of-life operating systems, server software and libraries, and more — about 60 scored checks against published standards.</p>
+  <p>The audit covers SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS configuration, HSTS, HTTP/2 and HTTP/3 support, security headers, cookie attributes, end-of-life operating systems, server software and libraries, and more — about 60 checks against published standards. Each finding is rated Critical, High, Medium or Low. Optional practices are listed as informational and are never counted.</p>
 
-  <p>This service is passive: it reads what the domain voluntarily publishes (DNS, a single HTTPS GET, public APIs). It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, SSL Labs integration, and bulk audits.</p>
+  <p>This service is passive: it reads what the domain voluntarily publishes — DNS records, a handful of ordinary web requests, and public routing data. With Deep checks it also connects to the domain's mail servers. It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, SSL Labs integration, and bulk audits.</p>
 </section>
 
-<p class="privacy"><strong>Privacy.</strong> Visitor IP and submitted domain are logged for 30 days for abuse prevention. Audit results are not retained. No cookies, no analytics, no trackers, no data sold or shared. Cloudflare's privacy policy applies to traffic in transit.</p>
+<p class="privacy"><strong>Privacy.</strong> Visitor IP and submitted domain are logged for 30 days for abuse prevention. Traffic passes through Cloudflare, whose privacy policy also applies.</p>
 
 <footer>
-  Vendor Audit
+  Vendor Audit v{{ version }}
 </footer>
 </main>
 </body>

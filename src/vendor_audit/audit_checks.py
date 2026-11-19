@@ -25,18 +25,18 @@ This module owns:
   - Network primitives (DNS resolver, HTTP session, TLS context, watchdog timer)
   - All check_* functions that interrogate a domain
   - The classifiers and parsers those checks rely on
-  - score_results(), which interprets a result dict per the JSON rubric
+  - assess_results(), which turns a result dict into severity findings per rubric.json
 
 It is deliberately free of presentation logic — no print(), no ANSI colors,
 no rendering. Every public function returns a plain dict.
 
 The four .py files (vendor_audit, audit_checks, audit_render, audit_txt_report)
-and scoring_rubric.json share a single version number that is enforced
+and rubric.json share a single version number that is enforced
 at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.6.0"
+__version__ = "2.0.0"
 
 import os
 import re
@@ -81,7 +81,7 @@ _tld_extractor = _tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 # changes require a process restart, which is what we want — the rubric is
 # config, not runtime state.
 
-_RUBRIC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scoring_rubric.json")
+_RUBRIC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rubric.json")
 
 try:
     with open(_RUBRIC_PATH, encoding="utf-8") as _fh:
@@ -93,7 +93,7 @@ except (OSError, json.JSONDecodeError) as _exc:
     ) from _exc
 
 # Convenience accessors — keep call sites readable
-_W = RUBRIC["weights"]
+_FINDINGS = RUBRIC["findings"]
 _THRESH = RUBRIC["thresholds"]
 STRONG_REFERRER_POLICIES = frozenset(RUBRIC["strong_referrer_policies"])
 GOOD_PROXIES   = frozenset(RUBRIC["good_proxies"])
@@ -3299,7 +3299,7 @@ def _parse_csp_header(header):
 def analyze_csp(csp_header, csp_report_only=False):
     """Return a dict with per-directive findings and outcome keys for scoring.
 
-    Outcome keys returned (for use by score_results):
+    Outcome keys returned (for use by assess_results):
       script_src_outcome    — strict / nonce_or_hash / host_allowlist / unsafe_inline / wildcard_or_scheme / missing
       object_src_outcome    — none_or_self / unrestricted / missing
       base_uri_outcome      — set / missing
@@ -5151,32 +5151,41 @@ def check_starttls_mx(mx_entries):
     return {"mx_count": len(hosts), "results": results}
 
 
-# ── Scoring ───────────────────────────────────────────────────────────────────
-# All weights and outcome→points mappings live in scoring_rubric.json.
-# This module owns the BRANCHING — deciding which outcome key applies for a
-# given result dict — and reads weights from RUBRIC.
+# ── Findings ──────────────────────────────────────────────────────────────────
+# There are no points. Every check resolves to one OUTCOME, and rubric.json maps
+# each (check, outcome) to a severity and the sentence shown in reports:
+#
+#   critical  broken or unsupported today
+#   high      an important protection is missing or weak
+#   medium    an expected practice is missing
+#   low       a refinement
+#   info      optional, or could not be determined — listed, never counted
+#   pass      the practice is met
+#
+# This module owns the BRANCHING — deciding which outcome applies for a given
+# result dict. Nothing is added up, so there is no denominator for a row to
+# fall out of: a check either produces a finding or it does not.
 
-def _w(label, outcome):
-    """Return (earned, possible) for a label/outcome from the rubric, or
-    (0, 0) if the combo is missing. Logs the missing case so rubric drift
-    surfaces in tests rather than silently zeroing scores."""
-    table = _W.get(label)
-    if not table:
-        return (0, 0)
-    entry = table.get(outcome)
+SEVERITIES = ("critical", "high", "medium", "low", "info", "pass")
+ISSUE_SEVERITIES = ("critical", "high", "medium", "low")
+_REDIRECT_PREFIX = "redirect target: "
+
+
+def _finding_entry(label, outcome):
+    """(severity, text) for a check outcome, or None when rubric.json does not
+    list it (the outcome then produces no finding)."""
+    base = label[len(_REDIRECT_PREFIX):] if label.startswith(_REDIRECT_PREFIX) else label
+    entry = (_FINDINGS.get(base) or {}).get(outcome)
     if not entry:
-        # Missing outcome — return zeros, but make this visible. Don't raise:
-        # a misconfigured rubric should not crash a bulk scan.
-        return (0, 0)
-    return (entry["earned"], entry["possible"])
+        return None
+    return entry[0], entry[1]
 
 
 def _score_email(spf, dmarc, mx, pts, prefix=""):
     """Score SPF, DMARC, and MX for one domain, appending to `pts` list.
     `prefix` is prepended to label names to distinguish source vs redirect target."""
     def _p(label, outcome):
-        e, p = _w(label, outcome)
-        pts.append((f"{prefix}{label}", e, p))
+        pts.append((f"{prefix}{label}", outcome))
 
     spf_s   = spf.get("status", "")
     has_spf = spf_s not in ("error", "missing", "", None)
@@ -5195,7 +5204,7 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
         # Direct lookup: the rubric's outcome keys match the spf_s values
         # for the eight non-null-sender outcomes. Default to 'missing' for
         # an unrecognised status to keep the denominator stable.
-        if spf_s in _W["SPF policy"]:
+        if spf_s in _FINDINGS["SPF policy"]:
             _p("SPF policy", spf_s)
         else:
             _p("SPF policy", "missing")
@@ -5210,8 +5219,6 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
                 _p("SPF lookup count",
                    "within_limit" if lc <= _THRESH["spf_lookup_limit"] else "exceeds_limit")
 
-            if spf_s != "redirect_target_no_spf":
-                _p("SPF redirect", "resolves")
 
     if not dmarc.get("error"):
         present = dmarc.get("present")
@@ -5251,7 +5258,6 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
             _p("DMARC rua reporting", "present" if rua else "missing")
 
     if not mx.get("error") and mx.get("entries"):
-        _p("MX records", "present")
         # MX target hygiene (1.2). Two RFC 2181 §10.3 / RFC 5321 §5.1
         # violations: MX targets that are IP literals, and MX targets that
         # are CNAMEs. Either is a finding; both is a worst-of outcome with
@@ -5268,18 +5274,17 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
             _p("MX target hygiene", "clean")
 
 
-def score_results(results):
-    """Return (earned, possible, breakdown).
+def _collect_outcomes(results):
+    """Walk the audit results and return [(check label, outcome), ...].
 
-    earned   — float (0.5 / 1.0 / 2.0 etc as defined in the rubric)
-    possible — int   (denominator; only countable items, errors excluded)
-    breakdown — list of (label, earned, possible) for each scoreable item
+    This is the branching: which checks apply to this domain and which
+    outcome each one reached. Severity and wording are applied afterwards
+    by assess_results().
     """
     pts = []
 
     def _p(label, outcome):
-        e, p = _w(label, outcome)
-        pts.append((label, e, p))
+        pts.append((label, outcome))
 
     def _was_skipped(check_dict):
         """True when a check was skipped by the audit-level wall-clock deadline.
@@ -5375,8 +5380,8 @@ def score_results(results):
             # _severity_for_score; the rubric doesn't define an "error"
             # outcome for these labels, so _w returns (0,0) on the
             # unknown outcome and we get the same effect explicitly.
-            pts.append(("IPv4 RPKI",    0, 0))
-            pts.append(("IPv4 IRR/RIS", 0, 0))
+            pts.append(("IPv4 RPKI",    "lookup_failed"))
+            pts.append(("IPv4 IRR/RIS", "lookup_failed"))
 
     # ── IPv6 routing — only scored when IPv6 present ─────────────────────────
     if v6_present:
@@ -5387,8 +5392,8 @@ def score_results(results):
         else:
             # Same fall-through as v4: lookup failed, surface as info
             # rather than silently drop.
-            pts.append(("IPv6 RPKI",    0, 0))
-            pts.append(("IPv6 IRR/RIS", 0, 0))
+            pts.append(("IPv6 RPKI",    "lookup_failed"))
+            pts.append(("IPv6 IRR/RIS", "lookup_failed"))
 
     # ── DNSSEC ────────────────────────────────────────────────────────────────
     tld_d = dnssec.get("tld", {})
@@ -5475,13 +5480,10 @@ def score_results(results):
             # tls_cert_error=True → port 443 open, cert is self-signed/untrusted.
             # tls_cert_error=False → no port 443 at all.
             cert_err = tls.get("tls_cert_error", False)
-            _p("TLS connection",         "cert_error" if cert_err else "no_tls")
-            _p("TLS 1.3",                "older")
-            _p("Certificate lifetime",   "long_lived")
-            _p("Certificate renewal",    "no_cert")
-            _p("Certificate name match", "cert_error" if cert_err else "no_match")
-            _p("HTTP/2",                 "not_supported")
-            _p("HTTP version",           "http1")
+            # One cause, one finding: with no working TLS there is no
+            # protocol version, certificate lifetime or HTTP version to
+            # judge, so those checks produce nothing.
+            _p("TLS connection", "cert_error" if cert_err else "no_tls")
 
     # ── HTTP→HTTPS redirect ──────────────────────────────────────────────────
     hr = results.get("http_redirect", {})
@@ -5607,7 +5609,7 @@ def score_results(results):
     ssl_result = results.get("ssl_labs")
     if ssl_result is not None and not no_web_presence:
         grade = ssl_result.get("worst_grade")
-        if grade in _W["SSL Labs grade"]:
+        if grade in _FINDINGS["SSL Labs grade"]:
             _p("SSL Labs grade", grade)
         # grade=None / unknown → excluded
 
@@ -5671,7 +5673,10 @@ def score_results(results):
                 if mode in ("enforce", "testing", "none"):
                     _p("MTA-STS", mode)
                 else:
-                    _p("MTA-STS", "testing")
+                    # Record exists but the policy file was not fetched
+                    # (default mode), so the mode is unknown. Report it as
+                    # published — not as "testing", which it may not be.
+                    _p("MTA-STS", "published")
             else:
                 _p("MTA-STS", "missing")
 
@@ -5917,6 +5922,8 @@ def score_results(results):
     wau = results.get("www_apex_unified", {})
     wau_outcome = wau.get("outcome")
     if wau_outcome in ("unified", "split", "half_missing") and not no_web_presence:
+        if wau_outcome == "half_missing" and wau.get("missing_side") in ("apex", "www"):
+            wau_outcome = f"half_missing_{wau['missing_side']}"
         _p("www and apex unified", wau_outcome)
     # "not_scored" (or absent) → 0/0, no rubric row emitted.
 
@@ -5952,7 +5959,7 @@ def score_results(results):
         for lib in vlibs:
             if lib.get("eol_status") == "eol":
                 label = f"EOL library: {lib.get('library', '?')} {lib.get('version', '?')}"
-                pts.append((label, 0, 12))
+                pts.append((label, "eol"))
 
     # ── EOL operating system (2.9.0) ──────────────────────────────────────────
     # Big penalty: each detected EOL OS contributes 0/3 to the score. This
@@ -5979,7 +5986,7 @@ def score_results(results):
                     label = f"EOL OS: {os_name}"
                 else:
                     label = f"EOL OS: {os_name} {ver}"
-                pts.append((label, 0, 20))
+                pts.append((label, "eol"))
 
     # ── EOL server-side tech (PHP / ASP.NET) ──────────────────────────────────
     # Each disclosed EOL runtime/framework version is its own 0/16 penalty.
@@ -6002,8 +6009,119 @@ def score_results(results):
                 tech_name = t.get("tech", "?")
                 ver       = t.get("version") or ""
                 label = f"EOL tech: {tech_name} {ver}".rstrip()
-                pts.append((label, 0, 16))
+                pts.append((label, "eol"))
 
-    earned   = sum(e for _, e, _ in pts)
-    possible = sum(p for _, _, p in pts)
-    return earned, possible, pts
+    return pts
+
+
+def _merge_outcomes(raw):
+    """One cause, one finding. Several raw checks describe the same thing and
+    are folded into a single check here:
+
+      HSTS present / includeSubDomains / max-age / preloaded → HSTS (+ an
+          info-only "HSTS preload" row when the header is good but the
+          domain is not on the preload list)
+      DNSSEC DNSKEY + AD flag → DNSSEC
+      X-Frame-Options + CSP frame-ancestors → Clickjacking protection
+    """
+    by = dict(raw)
+    drop = set()
+    extra = []   # (label, outcome, insert_after_label)
+
+    if "HSTS present" in by:
+        drop |= {"HSTS present", "HSTS includeSubDomains", "HSTS max-age strength", "HSTS preloaded"}
+        if by["HSTS present"] != "present":
+            extra.append(("HSTS", "missing", "HSTS present"))
+        else:
+            short = by.get("HSTS max-age strength") in ("less_than_six", "missing")
+            nosub = by.get("HSTS includeSubDomains") == "unset"
+            pre   = by.get("HSTS preloaded")
+            if short and nosub:
+                outcome = "weak_both"
+            elif short:
+                outcome = "weak_max_age"
+            elif nosub:
+                outcome = "weak_subdomains"
+            else:
+                outcome = "ok_preloaded" if pre == "preloaded" else "ok"
+            extra.append(("HSTS", outcome, "HSTS present"))
+            if pre in ("pending", "preload_directive", "not_preloaded"):
+                extra.append(("HSTS preload", pre, "HSTS present"))
+
+    if "DNSSEC DNSKEY" in by:
+        drop |= {"DNSSEC DNSKEY", "DNSSEC AD flag"}
+        if by["DNSSEC DNSKEY"] != "present":
+            outcome = "not_enabled"
+        elif by.get("DNSSEC AD flag") == "set":
+            outcome = "ok"
+        else:
+            outcome = "chain_incomplete"
+        extra.append(("DNSSEC", outcome, "DNSSEC DNSKEY"))
+
+    if "X-Frame-Options" in by or "CSP frame-ancestors" in by:
+        anchor = "X-Frame-Options" if "X-Frame-Options" in by else "CSP frame-ancestors"
+        drop |= {"X-Frame-Options", "CSP frame-ancestors"}
+        protected = by.get("X-Frame-Options") == "set" or by.get("CSP frame-ancestors") == "set"
+        extra.append(("Clickjacking protection", "set" if protected else "missing", anchor))
+
+    out = []
+    for label, outcome in raw:
+        for new_label, new_outcome, anchor in extra:
+            if anchor == label:
+                out.append((new_label, new_outcome))
+        if label not in drop:
+            out.append((label, outcome))
+    return out
+
+
+def _category_for_label(label):
+    """Report category for a check label."""
+    if label.startswith(_REDIRECT_PREFIX):
+        label = label[len(_REDIRECT_PREFIX):]
+    if label.startswith("EOL "):
+        return "Website"
+    for cat, labels in (RUBRIC.get("categories") or {}).items():
+        if label in labels:
+            return cat
+    return "Website"
+
+
+def assess_results(results):
+    """Return the findings for an audit: a list of dicts, one per check that
+    applied, in assessment order.
+
+        {"label": "DMARC policy", "outcome": "missing", "severity": "critical",
+         "category": "Email", "text": "DMARC not published — domain can be spoofed"}
+
+    severity is one of SEVERITIES. 'text' is the rubric's sentence for the
+    outcome; renderers refine it where the sentence carries live values
+    (end-of-life names and dates, certificate time left). Outcomes the
+    rubric does not list produce no finding.
+    """
+    eol_sev = RUBRIC.get("eol_severity") or {}
+    findings = []
+    for label, outcome in _merge_outcomes(_collect_outcomes(results)):
+        if label.startswith("EOL "):
+            kind = label.split(":", 1)[0]
+            entry = (eol_sev.get(kind, "high"), label)
+        else:
+            entry = _finding_entry(label, outcome)
+        if not entry:
+            continue
+        findings.append({
+            "label":    label,
+            "outcome":  outcome,
+            "severity": entry[0],
+            "category": _category_for_label(label),
+            "text":     entry[1],
+        })
+    return findings
+
+
+def severity_counts(findings):
+    """{severity: count} over every severity, zero-filled."""
+    counts = {s: 0 for s in SEVERITIES}
+    for f in findings:
+        if f.get("severity") in counts:
+            counts[f["severity"]] += 1
+    return counts

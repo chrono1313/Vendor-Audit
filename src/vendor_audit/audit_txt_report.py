@@ -35,13 +35,13 @@ Single public entry point:
 Returns None on success; raises OSError on filesystem errors.
 
 The four .py files (vendor_audit, audit_checks, audit_render, audit_txt_report)
-and scoring_rubric.json share a single version number that is enforced
+and rubric.json share a single version number that is enforced
 at startup. See vendor_audit.py for the full versioning policy.
 
 Layout
 ======
 1.  Header — domain, timestamp, version (heavy ═ rule).
-2.  Score panel — overall score bar + per-category bars.
+2.  Findings panel — severity counts, verdict, per-category counts.
 3.  Executive summary — severity-grouped findings (Failing / Partial /
     Passing) with category prefix and score fraction.
 4.  Detailed sections — Email, DNS, Routing, TLS, HTTP, HSTS, Server &
@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "1.6.0"
+__version__ = "2.0.0"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -70,8 +70,6 @@ RULE_LIGHT = "─" * WIDTH
 
 # ── Severity classification ──────────────────────────────────────────────────
 
-_SCORE_GREEN_PCT  = 80
-_SCORE_YELLOW_PCT = 60
 
 # Status markers — one symbol per severity. The plain-text report relies
 # on these instead of color, which doesn't survive copy-paste or email.
@@ -80,7 +78,41 @@ _MARKERS = {
     "warn": "!",
     "fail": "✗",
     "info": "·",
+    # Finding severities share the four markers: critical and high read as
+    # ✗, medium and low as !. The severity word itself is printed beside
+    # every finding, so the marker never carries the meaning alone.
+    "critical": "✗",
+    "high":     "✗",
+    "medium":   "!",
+    "low":      "!",
 }
+
+# Severity order and display labels for findings.
+SEVERITY_ORDER = ("critical", "high", "medium", "low", "info", "pass")
+ISSUE_SEVERITIES = ("critical", "high", "medium", "low")
+SEVERITY_TITLES = {
+    "critical": "CRITICAL", "high": "HIGH", "medium": "MEDIUM", "low": "LOW",
+    "info": "INFORMATIONAL", "pass": "PASSING",
+}
+
+
+def severity_summary(counts, sep=" · "):
+    """'2 critical · 4 high · 11 medium · 10 low' — zero counts left out."""
+    bits = [f"{counts.get(s, 0)} {s}" for s in ISSUE_SEVERITIES if counts.get(s, 0)]
+    return sep.join(bits) if bits else "no issues"
+
+
+def verdict_for(counts):
+    """One-line verdict. A rule on the counts, not arithmetic."""
+    if counts.get("critical"):
+        return "Critical issues found"
+    if counts.get("high"):
+        return "High-severity issues found"
+    if counts.get("medium"):
+        return "Medium-severity issues found"
+    if counts.get("low"):
+        return "Minor issues only"
+    return "No issues found"
 
 
 # Address-family subheading labels with RFC citations. Used in the
@@ -234,6 +266,8 @@ _CRITICALITY_RANK_TABLE = {
     "SPF lookup count":             28,
     "SPF redirect":                 29,
     "HSTS present":                 30,
+    "HSTS":                         30,
+    "HSTS preload":                 34,
     "HSTS includeSubDomains":       32,
     "HSTS max-age strength":        33,
     "HSTS preloaded":               34,
@@ -244,6 +278,7 @@ _CRITICALITY_RANK_TABLE = {
     "CAA records":                  42,   # any CA can issue for the domain
     "DNSSEC TLD signed":            43,
     "DNSSEC DNSKEY":                44,
+    "DNSSEC":                       44,
     "Cert chain completeness":      45,
     "Cert covers www variant":      46,
     "Certificate lifetime":         47,
@@ -264,6 +299,7 @@ _CRITICALITY_RANK_TABLE = {
     "CSP frame-ancestors":          62,
     "CSP enforcement mode":         63,
     "X-Frame-Options":              65,
+    "Clickjacking protection":      62,
     "X-Content-Type-Options":       66,
     "Subresource Integrity":        67,
     "Mixed content (in-page)":      68,
@@ -402,7 +438,7 @@ EXPLANATIONS = {
             "BIMI is a standard for showing a verified brand logo next to messages that pass authentication. It's published as a TXT record at default._bimi.<domain> in the form v=BIMI1; l=https://example.com/logo.svg; a=https://example.com/vmc.pem. The l= tag points at the logo — an SVG in the restrictive 'Tiny PS' profile (no scripts, no external references, square aspect). The a= tag points at a Verified Mark Certificate (VMC) or Common Mark Certificate (CMC), a cryptographic proof that the brand owns the trademark on the logo.",
             "BIMI's single hard prerequisite is DMARC at enforcement. Mailbox providers will not display a BIMI logo for a domain whose DMARC policy is p=none — the whole point is that the logo only appears on mail that's provably authentic, and p=none means the domain isn't yet asking receivers to act on authentication failures. A BIMI record on a p=none domain is published but inert: it will never render. This is the most common BIMI misconfiguration, and Vendor Audit flags it specifically by cross-referencing your DMARC policy.",
             "The VMC is where BIMI gets expensive and slow. Gmail and Apple Mail both require a VMC (issued by a handful of CAs after a trademark-verification process that can take weeks and costs on the order of a thousand dollars a year) before they'll show the logo. Some other providers display the logo from the l= SVG alone. So there are three tiers: no BIMI, BIMI with logo only (renders in some clients), and BIMI with logo + VMC (renders in Gmail and Apple Mail). The audit reports which tier you're in.",
-            "BIMI is scored as an email-authentication feature (1 point). A domain with MX but no BIMI record loses the point; a domain with a logo published and DMARC at enforcement earns it in full. The 'published but DMARC not enforcing' case earns half — the operator did the BIMI work, and the remaining fix is on the DMARC side. The value of surfacing it is both the nudge to publish and, more usefully, a clear explanation for operators who published a BIMI record but haven't reached DMARC enforcement and are wondering why their logo never appears.",
+            "BIMI is optional, so a domain with no BIMI record gets an informational note, never a finding. A domain that has published a logo but has not reached DMARC enforcement gets a Low finding: the BIMI work is done, the logo will not display, and the remaining fix is on the DMARC side.",
         ],
     },
     "mx": {
@@ -730,25 +766,6 @@ def _section_explanation_lines(explanation_key):
 
 # ── Generic helpers ──────────────────────────────────────────────────────────
 
-def _severity_for_score(earned, possible):
-    """Map (earned, possible) → 'pass' / 'warn' / 'fail' / 'info'."""
-    if possible == 0:
-        return "info"
-    if earned == possible:
-        return "pass"
-    if earned == 0:
-        return "fail"
-    return "warn"
-
-
-def _strip_ansi(s):
-    """Strip ANSI escape codes from a string. Belt-and-braces — the report
-    builder consumes structured data, not the rendered terminal output."""
-    if not s:
-        return s
-    return re.sub(r"\x1b\[[0-9;]*m", "", str(s))
-
-
 def _fmt_int_or_float(v):
     """Render a points value as int when integer-valued, else as-is."""
     try:
@@ -826,7 +843,7 @@ def _wrap_at_words(text, width):
 
 
 # Certificate lifetime at or under this many days reads as automated issuance.
-# Mirrors thresholds.cert_lifetime_max_days in scoring_rubric.json.
+# Mirrors thresholds.cert_lifetime_max_days in rubric.json.
 _CERT_LIFETIME_MAX_DAYS = 91
 # Under this share of its lifetime left, a certificate's renewal is overdue.
 # Mirrors thresholds.cert_renewal_min_remaining_pct.
@@ -942,7 +959,7 @@ def _raw_value(label, value, indent=4):
 
 class _ReportData:
     """Aggregate everything the renderer needs in one place. Computed once
-    from the results dict + score breakdown so the rendering can be a
+    from the results dict + assessed findings so the rendering can be a
     straight transformation."""
 
     def __init__(self, original_domain, audit_domain, results, timestamp,
@@ -956,138 +973,80 @@ class _ReportData:
         # Defer import to runtime to avoid a circular dependency at module
         # load time. audit_checks imports nothing from this file, so this
         # cycle exists only because the report needs the score function.
-        from .audit_checks import score_results, RUBRIC
+        from .audit_checks import assess_results, severity_counts, RUBRIC
 
-        earned, possible, breakdown = score_results(results)
-        self.earned        = earned
-        self.possible      = possible
-        self.breakdown     = breakdown
-        self.rubric        = RUBRIC
-        self.pct           = round((earned / possible * 100)) if possible else 0
-        self.score_severity = (
-            "pass" if self.pct >= _SCORE_GREEN_PCT
-            else "warn" if self.pct >= _SCORE_YELLOW_PCT
-            else "fail"
-        )
+        self.rubric   = RUBRIC
+        self.findings = assess_results(results)
+        self.counts   = severity_counts(self.findings)
+        self.issue_count = sum(self.counts[s] for s in ISSUE_SEVERITIES)
+        self.verdict  = verdict_for(self.counts)
+        # Colour class for the headline: the worst severity present.
+        self.worst_severity = next(
+            (s for s in ISSUE_SEVERITIES if self.counts[s]), "pass")
 
-        self._build_category_subscores()
         self._build_finding_rows()
+        self._build_category_rows()
 
-    def _category_for(self, score_label):
-        """Mirror audit_render._category_for_score_label."""
-        if not score_label:
-            return "Website"
-        # BIMI is an email-authentication-adjacent feature and belongs in the
-        # Email category, but it's an info-only row not present in the
-        # rubric's category map, so classify it here.
-        if score_label == "BIMI":
-            return "Email"
-        cat_map = self.rubric.get("categories", {}) or {}
-        for cat, labels in cat_map.items():
-            if score_label in labels:
-                return cat
-        return "Website"
-
-    def _build_category_subscores(self):
-        """Group breakdown rows by category, sum earned/possible per cat."""
-        by_cat_pts = defaultdict(list)
-        for label, e, p in self.breakdown:
-            by_cat_pts[self._category_for(label)].append((e, p))
-
+    def _build_category_rows(self):
+        """Per-category severity counts, in report order."""
         order = ["Email", "DNS", "Routing", "TLS", "HTTP", "Website"]
         rows = []
         for cat in order:
-            pts = by_cat_pts.get(cat, [])
-            if not pts:
+            in_cat = [r for r in self.finding_rows if r["category"] == cat]
+            if not in_cat:
                 continue
-            ce = sum(e for e, _ in pts)
-            cp = sum(p for _, p in pts)
-            if cp == 0:
-                continue
-            cpct = round(ce / cp * 100)
-            sev = (
-                "pass" if cpct >= _SCORE_GREEN_PCT
-                else "warn" if cpct >= _SCORE_YELLOW_PCT
-                else "fail"
-            )
+            counts = {s: 0 for s in SEVERITY_ORDER}
+            for r in in_cat:
+                counts[r["severity"]] += 1
             rows.append({
                 "category": cat,
-                "earned":   ce,
-                "possible": cp,
-                "pct":      cpct,
-                "severity": sev,
+                "counts":   counts,
+                "issues":   sum(counts[s] for s in ISSUE_SEVERITIES),
+                "passed":   counts["pass"],
+                "total":    len(in_cat),
+                "worst":    next((s for s in ISSUE_SEVERITIES if counts[s]), "pass"),
             })
         self.category_rows = rows
 
     def _build_finding_rows(self):
-        """Convert breakdown into a list of finding dicts grouped by
-        severity. Order shown in report is fail → warn → info → pass."""
-        score_label_display = self.rubric.get("score_label_display", {}) or {}
-        partial_label       = self.rubric.get("partial_label", {}) or {}
+        """One row per finding, with the sentence shown in reports.
 
-        eol_os_lookup  = self._build_eol_os_lookup()
-        eol_lib_lookup = self._build_eol_lib_lookup()
-        eol_tech_lookup = self._build_eol_tech_lookup()
-
-        # SSL Labs grade gets a dynamic label — the actual letter grade is
-        # informative on every severity, not just on a fail. The rubric's
-        # static labels for this row are too bare ("SSL Labs grade") to be
-        # useful in the executive summary.
-        ssl_grade = None
-        ssl_result = self.results.get("ssl_labs") or {}
-        if ssl_result:
-            ssl_grade = ssl_result.get("worst_grade")
+        The sentence comes from rubric.json. It is refined here only where it
+        carries live values: end-of-life names and dates, and the time left
+        on the certificate."""
+        eol_lookup = {}
+        eol_lookup.update(self._build_eol_os_lookup())
+        eol_lookup.update(self._build_eol_lib_lookup())
+        eol_lookup.update(self._build_eol_tech_lookup())
 
         rows = []
-        for label, e, p in self.breakdown:
-            sev = _severity_for_score(e, p)
-            cat = self._category_for(label)
-
-            if label in eol_os_lookup:
-                display = eol_os_lookup[label]
-            elif label in eol_lib_lookup:
-                display = eol_lib_lookup[label]
-            elif label in eol_tech_lookup:
-                display = eol_tech_lookup[label]
-            elif label == "SSL Labs grade" and ssl_grade:
-                display = f"SSL Labs grade: {ssl_grade}"
-            elif sev == "pass":
-                display = score_label_display.get(label, label)
-            elif sev == "warn":
-                display = (
-                    self._resolve_partial_label(partial_label.get(label), label)
-                    or f"{score_label_display.get(label, label)} — partial"
-                )
-            elif sev == "fail":
-                base = score_label_display.get(label, label)
-                display = self._failure_phrasing(label, base)
-            else:  # info / 0/0
-                display = self._info_phrasing(
-                    label, self._resolve_partial_label(partial_label.get(label), label))
-
-            # Reinforce the "IPv4 is the legacy protocol" framing on every
-            # finding row whose display string leads with bare "IPv4 ".
-            # The rubric's partial_label and score_label_display strings
-            # (in scoring_rubric.json) carry phrasings like "IPv4 RPKI
-            # not-found" or "IPv4 route registered in IRR" that we don't
-            # rewrite at the rubric level (rubric is the system-of-record
-            # for scoring keys; we don't modify it). Patch the displayed
-            # text instead. Only triggers on the bare-leading form so we
-            # don't double-label something that's already been qualified
-            # (e.g. "IPv4 (legacy IP) prefix has no..." from
-            # _failure_phrasing).
-            if display and display.startswith("IPv4 ") and "IPv4 (legacy IP)" not in display:
-                display = "IPv4 (legacy IP) " + display[len("IPv4 "):]
-
+        for f in self.findings:
+            label, display = f["label"], f["text"]
+            if label in eol_lookup:
+                display = eol_lookup[label]
+            elif label == "Certificate renewal":
+                live = _cert_renewal_text(self.results.get("tls") or {})
+                if live:
+                    display = live[1]
+            if label.startswith("redirect target: "):
+                display = f"{display} (redirect target)"
             rows.append({
-                "label":     label,
-                "display":   display,
-                "category":  cat,
-                "earned":    e,
-                "possible":  p,
-                "severity":  sev,
+                "label":    label,
+                "outcome":  f["outcome"],
+                "display":  display,
+                "category": f["category"],
+                "severity": f["severity"],
             })
         self.finding_rows = rows
+
+    def issues_ranked(self):
+        """Critical → low, and within a severity by how much the practice
+        matters (_CRITICALITY_RANK_TABLE)."""
+        order = {s: i for i, s in enumerate(ISSUE_SEVERITIES)}
+        return sorted(
+            (r for r in self.finding_rows if r["severity"] in order),
+            key=lambda r: (order[r["severity"]], _criticality_rank(r["label"])),
+        )
 
     def _build_eol_os_lookup(self):
         """Map EOL OS breakdown labels → vendor-friendly display strings."""
@@ -1150,310 +1109,6 @@ class _ReportData:
             out[key] = f"End-of-life server software: {disp} {ver} ({msg})"
         return out
 
-    def _failure_phrasing(self, label, base_display):
-        """Synthesised phrasing for a fail row when the rubric's labels.fail
-        map doesn't have a more specific entry."""
-        per_label = {
-            "DMARC policy":            {
-                "_default": "DMARC policy not enforced",
-                "missing":  "DMARC not published — domain can be spoofed",
-                "none":     "DMARC policy p=none — monitoring only, not enforced",
-            },
-            "SPF policy":              {
-                "_default": "SPF policy not enforced",
-                "missing":  "SPF not published — any server can send mail as this domain",
-                "pass_all_DANGEROUS": "SPF ends in +all — every server on the internet is authorised to send as this domain",
-                "redirect_target_no_spf": "SPF redirect target has no SPF record (broken redirect)",
-            },
-            "DMARC pct":               "DMARC pct= not at 100%",
-            "DMARC sp":                "DMARC sp= not aligned with main policy",
-            "DMARC rua reporting":     "DMARC rua= aggregate reporting not configured",
-            "MX records":              "No MX records published",
-            # MTA-STS — clarified that the SENDER falls back, not the receiver.
-            "MTA-STS":                 "MTA-STS policy not published — sending servers have no policy preventing fallback to plaintext",
-            "TLS-RPT":                 "TLS-RPT reporting endpoint not published",
-            # DANE — fixed: the old wording read like a clean assessment.
-            "DANE TLSA on MX":         "No DANE/TLSA records on any MX host — vulnerable to STARTTLS downgrade attacks",
-            "STARTTLS-MX":             "STARTTLS not negotiated successfully on at least one MX host",
-            "CAA records":             "No Certification Authority Authorization (CAA) records",
-            "DNSSEC TLD signed":       "TLD is not DNSSEC signed",
-            "DNSSEC DNSKEY":           "DNSKEY missing on this zone",
-            "DNSSEC AD flag":          "DNSSEC validation chain not authenticated (AD flag unset)",
-            "Nameserver count":        "Fewer than two authoritative nameservers (RFC 1034)",
-            "Authoritative delegation":  "At least one nameserver listed at the parent registry is lame \u2014 it does not answer authoritatively for this zone (RFC 1034)",
-            "NS not open resolver":      "At least one authoritative nameserver also serves open recursion \u2014 abusable for DNS amplification attacks (RFC 5358 / BCP 140)",
-            "MX target hygiene":         {
-                "_default":     "MX target hygiene problem (RFC 2181 \u00a710.3)",
-                "cname_target": "At least one MX target is a CNAME (RFC 2181 \u00a710.3 violation \u2014 some receivers may bounce)",
-                "ip_literal":   "At least one MX target is an IP literal (RFC 5321 \u00a75.1 violation \u2014 MX RDATA must be a hostname)",
-                "cname_and_ip": "MX targets include both an IP literal and a CNAME target (RFC 2181 \u00a710.3 / RFC 5321 \u00a75.1 violations)"
-            },
-            "IPv6":                    "IPv6 not configured",
-            "IPv4 RPKI":               "IPv4 (legacy IP) prefix has no Route Origin Authorization (RPKI)",
-            "IPv6 RPKI":               "IPv6 prefix has no Route Origin Authorization (RPKI)",
-            "IPv4 IRR/RIS":            "IPv4 (legacy IP) route not registered in IRR / RIS",
-            "IPv6 IRR/RIS":            "IPv6 route not registered in IRR / RIS",
-            "TLS connection":          "TLS connection failed",
-            "TLS 1.3":                 "TLS 1.3 not supported",
-            "Certificate name match":  "TLS certificate does not match domain",
-            "Certificate lifetime":    f"TLS certificate lifetime exceeds {_CERT_LIFETIME_MAX_DAYS} days — may indicate manual renewal",
-            "HSTS present":            "HTTP Strict Transport Security (HSTS) not set",
-            "HSTS includeSubDomains":  "HSTS missing includeSubDomains directive",
-            "HSTS preloaded":          "HSTS not on the preload list",
-            "HSTS max-age strength":   "HSTS max-age below 180 days",
-            "HTTP version":            {
-                "http1":     "HTTP/1.1 only \u2014 server does not support HTTP/2 or HTTP/3 (http1mustdie.com)",
-                "http2":     "HTTP/3 not supported (HTTP/2 only)",
-                "_default":  "HTTP/3 not supported"
-            },
-            "HTTP\u2192HTTPS redirect": "Plain HTTP does not redirect to HTTPS",
-            "Server header":           "Server header discloses software / version",
-            "X-Powered-By absent":     "X-Powered-By header reveals technology",
-            "CSP":                     "Content Security Policy not set",
-            "CSP script-src safety":   "CSP script-src is missing, wildcard, or allows inline scripts",
-            "CSP object-src":          "CSP object-src not restricted — plugin XSS possible",
-            "CSP base-uri":            "CSP base-uri not restricted — <base> tag injection possible",
-            "CSP frame-ancestors":     "CSP frame-ancestors not restricted — clickjacking possible",
-            "CSP enforcement mode":    "CSP in Report-Only mode — violations logged but not blocked",
-            "X-Frame-Options":         "X-Frame-Options not set",
-            "X-Content-Type-Options":  "X-Content-Type-Options not set",
-            "Referrer-Policy":         "Referrer-Policy not set",
-            "Permissions-Policy":      "Permissions-Policy not set",
-            "Cross-Origin-Opener-Policy":   "Cross-Origin-Opener-Policy not set",
-            "Cross-Origin-Resource-Policy": "Cross-Origin-Resource-Policy not set",
-            "X-XSS-Protection deprecated":  "X-XSS-Protection set to a dangerous value",
-            "security.txt":            "security.txt not published (RFC 9116)",
-            "Subresource Integrity":   "External scripts have no Subresource Integrity (SRI)",
-            "Mixed content (in-page)": "Mixed content detected on HTTPS page",
-            "Cookie name prefixes":    "Cookies use __Host-/__Secure- prefix incorrectly",
-            "Redirect first-hop hygiene":  "First redirect hop is off-host or HTTP",
-            "www and apex unified":    {
-                "_default":     "Apex and www variants are not unified",
-                "split":        "Apex and www both serve content but neither redirects to the other (Mozilla deployment guidance: one canonical host)",
-                "half_missing_apex": "Apex has no A/AAAA records \u2014 users typing the bare domain get a DNS error",
-                "half_missing_www":  "www variant has no A/AAAA records \u2014 users typing www get a DNS error"
-            },
-            "Cert covers www variant": "TLS certificate doesn't cover www / apex variant",
-            "Server clock accuracy":   "Server clock is significantly skewed from UTC",
-            "SSL Labs grade":          "SSL Labs grade indicates serious TLS issues",
-            "Cert chain completeness": "Server sends incomplete certificate chain — clients fall back to AIA fetching",
-            "DKIM key strength":       "DKIM key uses RSA <1024 (broken)",
-            "BIMI":                    {
-                "_default":  "BIMI brand indicator not published",
-                "missing":   "BIMI brand indicator not published (no logo will display beside your mail)",
-                "malformed": "BIMI record present but malformed — no logo (l=) URL, so no logo can display"
-            },
-            "Default error page":      {
-                "_default":             "Default error page detected",
-                "default_with_version": "Default error page detected with version disclosure",
-                "default_no_version":   "Default error page detected (server software disclosed, no version)"
-            },
-            "CORS configuration":      {
-                "_default":                       "CORS configuration is unsafe",
-                "weak_wildcard_with_credentials": "CORS — wildcard ACAO combined with Allow-Credentials=true",
-                "weak_null_origin":               "CORS — Allow-Origin set to 'null' (sandboxed origins trusted)",
-                "weak_reflective":                "CORS — server reflects arbitrary Origin: header (any origin trusted)"
-            },
-        }
-        if label == "Certificate renewal":
-            tls = self.results.get("tls") or {}
-            text = _cert_renewal_text(tls)
-            if text:
-                return text[1]
-            return "No trusted certificate presented — renewal could not be assessed"
-        if label in per_label:
-            entry = per_label[label]
-            # Most entries are plain strings. A few (HTTP version) are
-            # dicts keyed by outcome — same shape as the rubric's
-            # partial_label entries — to differentiate fail-cases like
-            # "HTTP/1.1 only" from partial-cases like "HTTP/2 only".
-            if isinstance(entry, dict):
-                resolved = self._resolve_partial_label(entry, label)
-                if resolved:
-                    return resolved
-                return entry.get("_default") or f"{label} — failed"
-            return entry
-        if base_display and base_display != label:
-            return f"{base_display} — failed"
-        return f"{label} — failed"
-
-    def _info_phrasing(self, label, partial_label):
-        """Phrasing for 0/0 rows (checks that didn't apply)."""
-        if partial_label:
-            return partial_label
-
-        per_label = {
-            "DKIM (common selectors)": "DKIM key not found at common selectors (operator may use a custom selector)",
-            "STARTTLS-MX":             "STARTTLS-MX could not be probed (port 25 likely blocked egress)",
-            # RIPEstat lookup failures — emitted as 0/0 rows when the
-            # prefix-overview call to RIPEstat returns an error or
-            # times out, so the row appears in the executive summary
-            # rather than silently disappearing. See score_results in
-            # audit_checks for the emission point.
-            "IPv4 RPKI":      "IPv4 (legacy IP) RPKI check could not run (RIPEstat lookup failed)",
-            "IPv4 IRR/RIS":   "IPv4 (legacy IP) IRR/RIS check could not run (RIPEstat lookup failed)",
-            "IPv6 RPKI":      "IPv6 RPKI check could not run (RIPEstat lookup failed)",
-            "IPv6 IRR/RIS":   "IPv6 IRR/RIS check could not run (RIPEstat lookup failed)",
-        }
-        if label in per_label:
-            return per_label[label]
-        return f"{label} — not evaluated"
-
-    def _resolve_partial_label(self, entry, label):
-        """Pick the right partial_label text for a check.
-
-        partial_label entries can be one of:
-          - str:  one partial state, use the string as-is
-          - dict: multiple partial outcomes (e.g. CSP script-src safety has
-                  both nonce_or_hash and host_allowlist as partial outcomes
-                  with different scores). Uses the per-check outcome from
-                  results to pick the right text. _default is the fallback.
-
-        Returns None if entry is None or doesn't resolve — caller should
-        provide a fallback.
-        """
-        if entry is None:
-            return None
-        if isinstance(entry, str):
-            return entry
-        if isinstance(entry, dict):
-            # CSP script-src safety: outcome stored at csp_analysis.script_src_outcome
-            if label == "CSP script-src safety":
-                csp_a = self.results.get("csp_analysis") or {}
-                outcome = csp_a.get("script_src_outcome")
-                if outcome and outcome in entry:
-                    return entry[outcome]
-            # HTTP version: outcome derived from http_version and server_header.
-            # Mirrors the scoring logic in audit_checks.score_results.
-            if label == "HTTP version":
-                hv      = self.results.get("http_version") or {}
-                srv_h   = self.results.get("server_header") or {}
-                hv_ver  = hv.get("version")
-                http3   = srv_h.get("http3_advertised")
-                if http3:
-                    outcome = "http3"
-                elif hv_ver == "HTTP/2":
-                    outcome = "http2"
-                elif hv_ver:
-                    outcome = "http1"
-                else:
-                    outcome = None
-                if outcome and outcome in entry:
-                    return entry[outcome]
-            # Default error page: outcome stored on the error_page check itself.
-            if label == "Default error page":
-                ep = self.results.get("error_page") or {}
-                outcome = ep.get("outcome")
-                if outcome and outcome in entry:
-                    return entry[outcome]
-            # DKIM key strength: worst observed strength across found selectors.
-            if label == "DKIM key strength":
-                dkim = self.results.get("dkim") or {}
-                outcome = dkim.get("worst_strength")
-                if outcome and outcome in entry:
-                    return entry[outcome]
-            # CORS configuration: outcome stored on cors result itself.
-            # Used by _failure_phrasing's dict-form lookup; the actual partial
-            # case (no_cors → 0/0) is rendered via _info_phrasing instead.
-            if label == "CORS configuration":
-                cors = self.results.get("cors") or {}
-                outcome = cors.get("outcome")
-                if outcome and outcome in entry:
-                    return entry[outcome]
-            # DMARC policy: the combined present+policy check. Derive the same
-            # outcome the scorer used so the fail text distinguishes "no record
-            # at all" (missing) from "record exists but p=none" (none).
-            if label == "SPF policy":
-                spf_status = (self.results.get("spf") or {}).get("status") or "missing"
-                if spf_status in entry:
-                    return entry[spf_status]
-            if label == "DMARC policy":
-                dmarc = self.results.get("dmarc") or {}
-                if not dmarc.get("present"):
-                    outcome = "missing"
-                else:
-                    pol = (dmarc.get("policy") or "").lower()
-                    outcome = pol if pol in ("reject", "quarantine") else "none"
-                if outcome in entry:
-                    return entry[outcome]
-            # BIMI: re-derive the same outcome the scorer computed from the
-            # bimi result + DMARC policy, so the finding text agrees with
-            # the score row. Outcomes: present / dmarc_weak / malformed /
-            # missing (see score_results).
-            if label == "BIMI":
-                bimi = self.results.get("bimi") or {}
-                dmarc = self.results.get("dmarc") or {}
-                pol = (dmarc.get("policy") or "").lower()
-                enforcing = pol in ("quarantine", "reject")
-                if not bimi.get("present"):
-                    outcome = "missing"
-                elif not bimi.get("has_logo"):
-                    outcome = "malformed"
-                elif not enforcing:
-                    outcome = "dmarc_weak"
-                else:
-                    outcome = "present"
-                if outcome in entry:
-                    return entry[outcome]
-            # www/apex unification: outcome can be 'unified', 'split',
-            # 'half_missing', or 'not_scored'. For half_missing we
-            # synthesize a key like 'half_missing_apex' or
-            # 'half_missing_www' from results['www_apex_unified'].missing_side
-            # so the finding text can name the missing variant. Falls
-            # back to _default if missing_side isn't set or the key
-            # isn't present in the entry.
-            if label == "www and apex unified":
-                wau = self.results.get("www_apex_unified") or {}
-                outcome = wau.get("outcome")
-                if outcome == "half_missing":
-                    side = wau.get("missing_side")
-                    key = f"half_missing_{side}" if side else "half_missing"
-                    if key in entry:
-                        return entry[key]
-                    if "half_missing" in entry:
-                        return entry["half_missing"]
-                elif outcome and outcome in entry:
-                    return entry[outcome]
-            # HSTS preloaded: two partial outcomes ('pending' and
-            # 'preload_directive') need different finding text. The
-            # scoring code maps preload_status=='pending' to outcome
-            # 'pending' and (header has preload, no API confirmation)
-            # to outcome 'preload_directive'. We re-derive the same
-            # mapping here from the hsts result so the partial-label
-            # text agrees with the score row.
-            if label == "HSTS preloaded":
-                hsts = self.results.get("hsts") or {}
-                if hsts.get("preload_status") == "pending":
-                    outcome = "pending"
-                elif hsts.get("preload_directive"):
-                    outcome = "preload_directive"
-                else:
-                    outcome = None
-                if outcome and outcome in entry:
-                    return entry[outcome]
-            # MX target hygiene: outcome derived from which of
-            # mx_targets_ip / mx_targets_cname is non-empty. Mirrors
-            # the scoring code in _score_email_block.
-            if label == "MX target hygiene":
-                mx = self.results.get("mx") or {}
-                has_cname = bool(mx.get("mx_targets_cname"))
-                has_ip    = bool(mx.get("mx_targets_ip"))
-                if has_cname and has_ip:
-                    outcome = "cname_and_ip"
-                elif has_cname:
-                    outcome = "cname_target"
-                elif has_ip:
-                    outcome = "ip_literal"
-                else:
-                    outcome = None
-                if outcome and outcome in entry:
-                    return entry[outcome]
-            # Future multi-tier checks would add their lookups here.
-            return entry.get("_default")
-        return None
-
-
-# ── Top-level visual blocks ──────────────────────────────────────────────────
 
 def _render_header(data):
     """Title block with heavy ═ rule."""
@@ -1476,44 +1131,24 @@ def _render_header(data):
 
 
 def _render_score_panel(data):
-    """Overall score bar + per-category bars.
+    """Findings headline + per-category counts.
 
-    Format:
-      OVERALL SCORE      62 / 74      █████████████████░░░    84%
+      FINDINGS    2 critical · 4 high · 11 medium · 10 low
+                  Critical issues found
 
-        Email           13 / 18       ██████████████░░░░░░    72%
-        DNS              8 /  9       █████████████████░░░    89%
-        ...
-
-    Fractions are right-aligned within their column width so eye-scan
-    works cleanly regardless of single- vs double-digit values."""
-    earned_disp   = _fmt_int_or_float(data.earned)
-    possible_disp = _fmt_int_or_float(data.possible)
-
-    # Build the list of rows (overall first, then categories) so we can
-    # compute consistent column widths across all of them.
+        Email     1 critical · 1 medium · 2 low                  8 passed
+        DNS       2 medium                                       3 passed
+    """
+    out = [f"FINDINGS    {severity_summary(data.counts)}",
+           f"            {data.verdict}"]
     cat_rows = data.category_rows or []
-    all_earned = [data.earned] + [r["earned"]   for r in cat_rows]
-    all_poss   = [data.possible] + [r["possible"] for r in cat_rows]
-
-    earned_w = max(len(str(_fmt_int_or_float(e))) for e in all_earned)
-    poss_w   = max(len(str(_fmt_int_or_float(p))) for p in all_poss)
-
-    def fmt_row(name_col, earned, possible, pct, name_width=14):
-        e_disp = _fmt_int_or_float(earned)
-        p_disp = _fmt_int_or_float(possible)
-        frac = f"{str(e_disp).rjust(earned_w)} / {str(p_disp).rjust(poss_w)}"
-        bar = _bar(pct, width=30)
-        return f"{name_col.ljust(name_width)}  {frac}      {bar}    {pct:>3}%"
-
-    out = []
-    out.append(fmt_row("OVERALL SCORE", data.earned, data.possible, data.pct,
-                       name_width=14))
     if cat_rows:
         out.append("")
-        for r in cat_rows:
-            out.append("  " + fmt_row(r["category"], r["earned"], r["possible"],
-                                       r["pct"], name_width=12))
+        summaries = [severity_summary(r["counts"]) for r in cat_rows]
+        sum_w = max(len(x) for x in summaries)
+        for r, summ in zip(cat_rows, summaries):
+            out.append(f"  {r['category'].ljust(10)}{summ.ljust(sum_w)}    "
+                       f"{r['passed']} passed")
     return "\n".join(out)
 
 
@@ -1550,11 +1185,11 @@ def _render_findings_group(title, rows):
     LEAD = 4 + 1 + 2  # before category
 
     # Compute frac strings up-front so we can size the column.
-    fracs = []
-    for r in rows:
-        e_disp = _fmt_int_or_float(r["earned"])
-        p_disp = _fmt_int_or_float(r["possible"])
-        fracs.append(f"{e_disp} / {p_disp}")
+    # The right-hand column carries the severity word on issue rows, so a
+    # grep for CRITICAL or HIGH lists the findings themselves. Informational
+    # and passing rows leave it empty.
+    fracs = [r["severity"].upper() if r["severity"] in ISSUE_SEVERITIES else ""
+             for r in rows]
     frac_w = max(len(f) for f in fracs)
 
     # Categories are padded to a uniform 8 chars (Email, DNS, Routing,
@@ -1570,7 +1205,7 @@ def _render_findings_group(title, rows):
         label_w = LINE - LEAD - CAT_W - 1 - 2 - frac_w
         if len(label) <= label_w:
             line = (f"    {marker}  {cat} {label}"
-                    f"{' ' * (label_w - len(label))}  {frac.rjust(frac_w)}")
+                    f"{' ' * (label_w - len(label))}  {frac.rjust(frac_w)}").rstrip()
         else:
             # Label longer than fits — wrap on word boundaries onto
             # continuation line(s). The frac column stays on line 1.
@@ -1596,7 +1231,7 @@ def _render_findings_group(title, rows):
 
             line1_label = " ".join(line1_words)
             line = (f"    {marker}  {cat} {line1_label}"
-                    f"{' ' * (label_w - len(line1_label))}  {frac.rjust(frac_w)}")
+                    f"{' ' * (label_w - len(line1_label))}  {frac.rjust(frac_w)}").rstrip()
             cont_indent = " " * (LEAD + CAT_W + 1)
 
             # Soft-wrap continuation by words.
@@ -1618,38 +1253,29 @@ def _render_findings_group(title, rows):
 
 
 def _render_executive_summary(data):
-    """Executive summary: heading + severity-grouped finding lists.
+    """Executive summary: one block per severity, most serious first.
 
-    Fails and warns are folded into a single "POSSIBLE ISSUES" block,
-    sorted by criticality (most consequential issues first, regardless
-    of category — see _CRITICALITY_RANK_TABLE). The marker symbol
-    (✗ vs !) still distinguishes severity within the list. "Not
-    evaluated" and "Passing" stay as their own separate blocks.
+    Within a severity, findings are ordered by how much the practice
+    matters (_CRITICALITY_RANK_TABLE), regardless of category.
+    Informational rows (optional practices, or checks that could not be
+    determined) and passing rows follow in their own blocks.
     """
-    fails  = [r for r in data.finding_rows if r["severity"] == "fail"]
-    warns  = [r for r in data.finding_rows if r["severity"] == "warn"]
     infos  = [r for r in data.finding_rows if r["severity"] == "info"]
     passes = [r for r in data.finding_rows if r["severity"] == "pass"]
-
-    # Combined Possible Issues: fails + warns sorted by criticality (a flat
-    # priority list, not grouped by category — most consequential issue
-    # first, whether it's email, TLS, or website). Within the same
-    # criticality rank, fails come before warns so the sharper signal leads.
-    sev_order = {"fail": 0, "warn": 1}
-    issues = sorted(
-        fails + warns,
-        key=lambda r: (_criticality_rank(r["label"]),
-                       sev_order.get(r["severity"], 99)),
-    )
+    ranked = data.issues_ranked()
 
     out = [_heading("EXECUTIVE SUMMARY"), ""]
     blocks = []
-    if issues:
-        blocks.append(_render_findings_group("POSSIBLE ISSUES", issues))
+    for sev in ISSUE_SEVERITIES:
+        rows = [r for r in ranked if r["severity"] == sev]
+        if rows:
+            blocks.append(_render_findings_group(SEVERITY_TITLES[sev], rows))
     if infos:
-        blocks.append(_render_findings_group("NOT EVALUATED", infos))
+        blocks.append(_render_findings_group(SEVERITY_TITLES["info"], infos))
     if passes:
-        blocks.append(_render_findings_group("PASSING", passes))
+        blocks.append(_render_findings_group(SEVERITY_TITLES["pass"], passes))
+    if not ranked:
+        blocks.insert(0, "  No issues found.")
     out.append("\n\n".join(b for b in blocks if b))
     return "\n".join(out)
 
@@ -3212,21 +2838,10 @@ def _render_ssl_labs_section(data):
         else:
             sev = "fail"
 
-        # Score the grade using the same rubric the breakdown uses, so
-        # the detail line displays "Grade: B (3/5)" — matching the
-        # breakdown row in the executive summary.
-        grade_table = data.rubric.get("weights", {}).get("SSL Labs grade", {}) or {}
-        grade_entry = grade_table.get(worst)
-        score_str   = ""
-        if grade_entry:
-            e = _fmt_int_or_float(grade_entry.get("earned"))
-            p = _fmt_int_or_float(grade_entry.get("possible"))
-            score_str = f"  ({e}/{p})"
-
         # Wording fix (3.1.0): include the grade in the label so the
         # reader sees the verdict without scrolling to find a fraction.
         parts.append(_status(sev,
-            f"Grade: {worst}{score_str}{ep_str}",
+            f"Grade: {worst}{ep_str}",
             note_lines=[
                 f"Re-run anytime: https://www.ssllabs.com/ssltest/analyze.html?d={data.audit_domain}",
             ]))
@@ -3414,7 +3029,7 @@ def _render_page_analysis_section(data):
                 "No empty <a> elements"))
 
         parts.append("")
-        para = ("A11y signals are not scored — they are reported for "
+        para = ("A11y signals are not rated as findings — they are reported for "
                 "awareness only. For a full audit use WebAIM WAVE, "
                 "Axe DevTools, or pa11y.")
         for ln in _wrap_at_words(para, WIDTH - 2):

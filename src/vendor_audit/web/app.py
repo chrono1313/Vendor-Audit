@@ -385,7 +385,7 @@ templates = Jinja2Templates(directory=_TEMPLATE_DIR)
 
 app = FastAPI(
     title="Vendor Audit",
-    description="Passive domain security and maturity audit.",
+    description="Passive domain best-practice audit.",
     version=audit.__version__,
     docs_url=None,        # no public OpenAPI docs
     redoc_url=None,
@@ -926,18 +926,19 @@ async def _run_audit_and_render(request: Request, domain: str, *,
 
 
 @app.get("/audit/{domain}.txt", response_class=PlainTextResponse)
+@limiter.limit(LIMIT_AUDIT)
 async def download_txt(request: Request, domain: str, deep: int = 0):
     """Plain-text report. Serves from the unified result cache on hit;
     runs the audit on miss (and populates both HTML and txt entries
     so a subsequent HTML view of the same domain returns the page that
     matches this txt).
 
-    No rate-limit decorator on this endpoint. The cache makes repeat
-    downloads free, and the audit endpoint (which is rate-limited) is
-    the only other path that triggers an audit. A determined attacker
-    could enumerate distinct domains here, but the worker pool naturally
-    serializes that work, and the per-client form-page limit catches
-    obvious flooding.
+    Rate-limited under LIMIT_AUDIT, the same limit as /audit/result,
+    because a cache miss here runs a full audit. Without it this URL was
+    an unmetered way to make the service audit arbitrary domains.
+    Cloudflare applies its own limits in front, but the application does
+    not rely on them. A normal download follows a page view, is a cache
+    hit, and stays far under the limit.
 
     Cache: shared with the HTML serve path. Same TTL, same key. Deep
     and non-deep audits use distinct cache keys so the .txt always
