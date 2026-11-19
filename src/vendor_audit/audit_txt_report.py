@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "1.5.8"
+__version__ = "1.6.0"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -247,6 +247,7 @@ _CRITICALITY_RANK_TABLE = {
     "Cert chain completeness":      45,
     "Cert covers www variant":      46,
     "Certificate lifetime":         47,
+    "Certificate renewal":          47,   # about to lapse — same tier as lifetime
     "DKIM key strength":            48,
     "Authoritative delegation":     49,   # lame NS = some users get NODATA/SERVFAIL
     "NS not open resolver":         50,   # DDoS-amp risk; not a takeover but real
@@ -466,7 +467,7 @@ EXPLANATIONS = {
             "Transport Layer Security (TLS) is the encryption layer underneath HTTPS. TLS 1.3 (RFC 8446, 2018) is the current standard — it removed every cipher suite the older versions had cryptographic weaknesses in, simplified the handshake to a single round-trip, and made forward secrecy mandatory. TLS 1.2 (RFC 5246) is still widely deployed and acceptable; TLS 1.0 and 1.1 are formally deprecated by RFC 8996 and should be disabled.",
             "Vendor Audit verifies the TLS version negotiated during the handshake, the certificate's name match against the requested host, the certificate lifetime, and chain completeness. Specific cipher-suite probing (which suites the server accepts, key-exchange parameters, named-CVE conditions like POODLE or ROBOT) is not part of this audit by design — that's what the Qualys SSL Labs assessment is for.",
             "If you want a comprehensive TLS configuration review, run the SSL Labs assessment at https://ssllabs.com/ssltest/. It probes every cipher suite the server accepts, reports forward-secrecy support, flags named vulnerabilities, and gives a letter grade. Modern stacks (recent nginx, Apache, Cloudflare, Caddy, AWS ALB) configured with the Mozilla Intermediate or Modern profile typically score A or A+ without further tuning.",
-            "Certificate lifetime is now an enforcement point in its own right. Under the CA/Browser Forum's Ballot SC081v3, the maximum lifetime stepped down from 398 days to 200 days on March 15, 2026; it drops to 100 days on March 15, 2027 and to 47 days on March 15, 2029. Short-lived certificates with automated renewal (ACME / Let's Encrypt) are the only path that scales at the 47-day endpoint; manually-renewed certificates are already strained at 200 days and won't be viable at 100. Operators still on annual-renewal workflows should plan automation now rather than during the next squeeze.",
+            "Certificate lifetime is now an enforcement point in its own right. Under the CA/Browser Forum's Ballot SC081v3, the maximum lifetime stepped down from 398 days to 200 days on March 15, 2026; it drops to 100 days on March 15, 2027 and to 47 days on March 15, 2029. Short-lived certificates with automated renewal (ACME / Let's Encrypt) are the only path that scales at the 47-day endpoint; manually-renewed certificates are already strained at 200 days and won't be viable at 100. Vendor Audit reads a lifetime of 91 days or less as automated issuance — ACME certificates run 90 days or shorter, down to about six days — and anything longer as a sign of manual renewal. It also checks renewal headroom: a certificate with under 10% of its lifetime left should already have been replaced, whatever its length, because automated clients renew with a third to a half of the lifetime remaining.",
         ],
     },
     "hsts": {
@@ -573,9 +574,9 @@ EXPLANATIONS = {
         "fix":  "Upgrade to a supported OS version. If business constraints require staying on this version, isolate it heavily and document the risk.",
         "details": [
             "Operating systems have defined support lifecycles after which their vendors stop releasing security updates. Once an OS is end-of-life, every newly-discovered kernel, library, or service vulnerability is permanent — no patch will ever be issued, and any exploit becomes a zero-day for the lifetime of the deployment.",
-            "Vendor Audit infers the OS from the Server response header and matches against a hand-curated list of EOL versions: CentOS 6/7/8, RHEL 5/6/7 (without ELS), Ubuntu LTS releases past their support window, Debian past oldoldstable, FreeBSD older than the supported branches, and old IIS / Windows Server combinations. The library_eol.json and os_eol.json files in the repo carry the support floor for each, with citations.",
+            "Vendor Audit infers the OS from what the web server volunteers. An IIS version maps to one Windows Server release. A distro named in the Server header (\"Apache/2.4.29 (Ubuntu)\") is resolved to a release from the package version, because distributions freeze the upstream version for the life of a release: Apache 2.4.29 shipped in Ubuntu 18.04 and nowhere else. A distro-packaged PHP version (\"PHP/7.3.31-1~deb10u5\") names the release outright. The release is then compared with its end-of-support date; those dates come from endoflife.date and are checked against today's date on every audit, so a release is flagged from the day its support ends.",
             "Detection is best-effort. Sites behind Cloudflare, Akamai, or AWS CloudFront usually return the CDN's Server header, masking the origin entirely — the audit can't see what's running underneath. Some operators set the Server header to a custom string for the same reason. A clean EOL OS check on a CDN-fronted site means the audit couldn't determine the origin OS, not that the origin is supported.",
-            "If business or compliance reasons prevent immediate upgrade, the practical mitigation is to put the EOL system behind aggressive WAF rules, restrict its network exposure, and accelerate the migration plan. Extended Support Subscriptions (RHEL ELS, Ubuntu ESM) are a paid path to keep getting security updates for one or two years past the standard EOL — useful as a bridge while migrating, not as a permanent strategy.",
+            "The date used is the end of free security support: Ubuntu standard support, Debian LTS, RHEL maintenance support, Windows extended support. Paid extensions (Ubuntu Pro / ESM, RHEL ELS, Debian ELTS, Windows ESU) keep patches flowing for a few more years, and the audit cannot see from outside whether a server has one. Where one is still on sale the finding says so. If this server is covered, the finding does not apply; a paid extension is a bridge while migrating, not a permanent position.",
         ],
     },
     "eol_libraries": {
@@ -584,20 +585,20 @@ EXPLANATIONS = {
         "fix":  "Upgrade to the current major version of the library, or migrate to a supported alternative.",
         "details": [
             "Client-side JavaScript libraries have their own support lifecycles — usually shorter than operating systems, often 18-36 months from a major release. jQuery, Bootstrap, Angular, Vue, Ember, the WordPress / Drupal / Joomla CMSes, and many smaller libraries publish a support policy that names which majors still receive security fixes.",
-            "Vendor Audit recognises about 185 client-side libraries via static HTML inspection — script src attributes, inline version markers, well-known global object signatures. Of those, 28 have curated EOL dates (jQuery 1.x and 2.x, Bootstrap 2.x and 3.x, AngularJS, Angular versions before the current LTS, etc.). The remaining ~150 are reported with their version but not flagged as EOL — version detection is reliable, but EOL judgments require maintenance and citation.",
+            "Vendor Audit recognises about 185 client-side libraries and CMSes via static HTML inspection — script src attributes, inline version markers, generator tags. About 50 of them have end-of-life data: release dates from endoflife.date where the project publishes a support policy (jQuery UI, Bootstrap, Angular, Vue, Ember, Drupal, Joomla, TYPO3, MediaWiki and others), and projects whose own maintainers have declared them discontinued (Moment.js, AngularJS, CryptoJS, oidc-client-js and others). Dates are checked against today's date on every audit. The remaining libraries are reported with their version but not judged — an end-of-life claim needs a source to cite.",
             "Upgrading client-side libraries is sometimes a small change (a single CDN URL update) and sometimes a months-long migration. AngularJS to Angular is the canonical hard case: different framework, complete rewrite. jQuery 1.x to 3.x is mostly mechanical but breaks in subtle ways with custom plugins. Regardless, an EOL library is a known-fragile dependency and the cost of replacement only goes up over time.",
             "If immediate upgrade is impossible, the next-best step is to add Subresource Integrity (SRI) attributes to the library's <script> tag and pin the version — at least preventing a CDN compromise from substituting a malicious version. But SRI doesn't fix vulnerabilities in the library itself; it just keeps the library you have from being silently swapped out.",
         ],
     },
     "eol_tech": {
-        "what": "An end-of-life server-side runtime (PHP, ASP.NET, etc.) disclosed in your HTTP headers no longer receives security patches.",
-        "why":  "Attackers scan for outdated runtime versions specifically because their CVEs are public and permanently unpatched — and your headers are advertising exactly which one you run.",
-        "fix":  "Upgrade to a supported runtime version. For PHP, move to 8.3+ (8.2 is in security-only support until Dec 31 2026). Also suppress the version disclosure (expose_php = Off in php.ini).",
+        "what": "End-of-life server software (web server, runtime, TLS library, application platform) disclosed in your HTTP headers no longer receives security patches.",
+        "why":  "Fixes for newly found flaws are no longer released for this version, and the headers state exactly which version is running.",
+        "fix":  "Upgrade to a release that is still supported, then stop advertising versions (ServerTokens Prod, server_tokens off, expose_php = Off).",
         "details": [
-            "Server-side runtimes have fixed support lifecycles just like operating systems. PHP follows a four-year cycle: two years of active support, two more of security-only fixes, then end of life with zero patches. PHP 8.1 reached end of life on December 31, 2025; 8.0 on November 26, 2023; the entire 7.x line is long dead. PHP 8.2 is in its security-only phase and reaches EOL on December 31, 2026. ASP.NET's classic Framework versions (1.x–3.5) are similarly dead, and the X-AspNet-Version header that discloses them usually indicates an old WebForms application.",
-            "This finding is distinct from the plain X-Powered-By disclosure. Revealing 'PHP' at all is a minor information leak; revealing 'PHP/8.1.34' when 8.1 is end-of-life is a specific, actionable target. An attacker doesn't need to probe — the version string in your headers tells them precisely which CVE list applies. PHP sees roughly a dozen new CVEs a year, and once a version is EOL, none of them will ever be fixed on it.",
-            "Vendor Audit reads the disclosed version from three headers already collected during the audit: X-Powered-By (the usual PHP carrier, e.g. 'PHP/8.1.34'), the Server header (some configurations append the PHP version there), and X-AspNet-Version. Detection is keyed on major.minor because runtime lifecycles differ by minor version — PHP 8.1 is EOL while 8.2 is still supported. If your stack is behind a CDN or reverse proxy that strips these headers, the check can't see the version and won't flag it — which is also, incidentally, the cleanest mitigation.",
-            "The fix has two halves. First, upgrade the runtime: for PHP, 8.3 or 8.4 are the current supported lines, and PHP upgrades within the 8.x series are usually low-friction compared to the old 5.x-to-7.x jump. Second, stop advertising the version at all — set expose_php = Off in php.ini to drop the X-Powered-By header, and remove any X-AspNet-Version / X-AspNetMvc-Version headers via web.config or your reverse proxy. Suppressing the header doesn't patch anything, but it removes the free reconnaissance you're currently handing attackers.",
+            "Server software has a fixed support lifecycle just like an operating system. PHP releases get two years of active support and two of security fixes. Apache httpd maintains only the 2.4 branch. OpenSSL, Tomcat, Python, Ruby and Perl each publish end-of-life dates per release. Past that date no fixes are issued.",
+            "This finding is distinct from plain version disclosure. Revealing \"PHP\" is a minor leak; revealing \"PHP/8.1.34\" after 8.1 has reached end of life tells a reader both what is running and that it is no longer maintained.",
+            "Vendor Audit reads versions the server already volunteers: the Server and X-Powered-By headers (Apache, nginx, OpenSSL, PHP, Python, Ruby, Perl, Jetty), X-AspNet-Version and X-AspNetMvc-Version, the MicrosoftSharePointTeamServices header, and the footer of a default error page (Apache, nginx, Tomcat). Each is compared with its end-of-life date from endoflife.date, checked against today's date. Linux distributions keep patching the versions they ship long after upstream stops, so for software distributions backport (nginx, OpenSSL, Tomcat, Jetty, Python, Ruby, Perl) only versions old enough that every distribution that shipped them is itself unsupported are flagged, and a PHP version carrying an Ubuntu or Debian package suffix is judged by that distro release instead of by php.net. If a CDN or reverse proxy strips these headers the check sees nothing and flags nothing.",
+            "The fix has two halves. First, upgrade to a supported release. Second, stop advertising versions: ServerTokens Prod and ServerSignature Off for Apache, server_tokens off for nginx, expose_php = Off for PHP, and remove X-AspNet-Version / X-AspNetMvc-Version in web.config. Hiding the version patches nothing, so do it after the upgrade, not instead of it.",
         ],
     },
     "error_page": {
@@ -822,6 +823,46 @@ def _wrap_at_words(text, width):
     if buf:
         out.append(buf)
     return out
+
+
+# Certificate lifetime at or under this many days reads as automated issuance.
+# Mirrors thresholds.cert_lifetime_max_days in scoring_rubric.json.
+_CERT_LIFETIME_MAX_DAYS = 91
+# Under this share of its lifetime left, a certificate's renewal is overdue.
+# Mirrors thresholds.cert_renewal_min_remaining_pct.
+_CERT_RENEWAL_MIN_PCT = 10
+
+
+def _humanize_seconds(seconds):
+    """'16 hours', '9 days' — hours under three days, so short-lived
+    certificates read sensibly."""
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError):
+        return ""
+    if seconds < 0:
+        return "already expired"
+    if seconds < 3 * 86400:
+        hours = max(1, round(seconds / 3600))
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    days = round(seconds / 86400)
+    return f"{days} days"
+
+
+def _cert_renewal_text(tls):
+    """(severity, text) for the certificate-renewal line, or None when the
+    audit has no remaining-lifetime figure."""
+    pct = (tls or {}).get("cert_remaining_pct")
+    if pct is None:
+        return None
+    left = _humanize_seconds((tls or {}).get("cert_remaining_seconds"))
+    pct_txt = f"{max(pct, 0):.0f}%"
+    if pct >= _CERT_RENEWAL_MIN_PCT:
+        return ("pass", f"Certificate renewal on schedule — {pct_txt} of its lifetime left"
+                        + (f" (expires in {left})" if left else ""))
+    return ("fail", f"Certificate renewal overdue — {pct_txt} of its lifetime left"
+                    + (f" (expires in {left})" if left else "")
+                    + "; automated renewal replaces a certificate well before this point")
 
 
 def _status(severity, body, sub_lines=None, note_lines=None):
@@ -1061,7 +1102,7 @@ class _ReportData:
                 key = f"EOL OS: {os_key}"
             else:
                 key = f"EOL OS: {os_key} {ver}"
-            display    = _OS_DISPLAY_NAMES.get(os_key, os_key)
+            display    = finding.get("name") or _OS_DISPLAY_NAMES.get(os_key, os_key)
             ver_disp   = "" if ver in ("", "?") else ver
             stack_label = f"{display} {ver_disp}".rstrip()
             underlying = finding.get("underlying_os")
@@ -1087,7 +1128,7 @@ class _ReportData:
             ver  = lib.get("version", "?")
             key  = f"EOL library: {name} {ver}"
             msg  = lib.get("eol_message") or "version is end-of-life"
-            display_name = _LIB_DISPLAY_NAMES.get(name, name)
+            display_name = _LIB_DISPLAY_NAMES.get(name) or lib.get("name") or name
             out[key] = f"End-of-life library: {display_name} {ver} ({msg})"
         return out
 
@@ -1101,7 +1142,7 @@ class _ReportData:
             tech = t.get("tech", "?")
             ver  = t.get("version", "?")
             key  = f"EOL tech: {tech} {ver}".rstrip()
-            disp = _TECH_DISPLAY_NAMES.get(tech, tech.upper())
+            disp = t.get("name") or _TECH_DISPLAY_NAMES.get(tech, tech.upper())
             msg  = t.get("eol_message") or "version is end-of-life"
             # eol_message already includes the tech name + version; use it
             # directly for the parenthetical detail but lead with a clear
@@ -1117,6 +1158,12 @@ class _ReportData:
                 "_default": "DMARC policy not enforced",
                 "missing":  "DMARC not published — domain can be spoofed",
                 "none":     "DMARC policy p=none — monitoring only, not enforced",
+            },
+            "SPF policy":              {
+                "_default": "SPF policy not enforced",
+                "missing":  "SPF not published — any server can send mail as this domain",
+                "pass_all_DANGEROUS": "SPF ends in +all — every server on the internet is authorised to send as this domain",
+                "redirect_target_no_spf": "SPF redirect target has no SPF record (broken redirect)",
             },
             "DMARC pct":               "DMARC pct= not at 100%",
             "DMARC sp":                "DMARC sp= not aligned with main policy",
@@ -1149,7 +1196,7 @@ class _ReportData:
             "TLS connection":          "TLS connection failed",
             "TLS 1.3":                 "TLS 1.3 not supported",
             "Certificate name match":  "TLS certificate does not match domain",
-            "Certificate lifetime":    "TLS certificate lifetime exceeds 199 days — may indicate manual renewal",
+            "Certificate lifetime":    f"TLS certificate lifetime exceeds {_CERT_LIFETIME_MAX_DAYS} days — may indicate manual renewal",
             "HSTS present":            "HTTP Strict Transport Security (HSTS) not set",
             "HSTS includeSubDomains":  "HSTS missing includeSubDomains directive",
             "HSTS preloaded":          "HSTS not on the preload list",
@@ -1208,6 +1255,12 @@ class _ReportData:
                 "weak_reflective":                "CORS — server reflects arbitrary Origin: header (any origin trusted)"
             },
         }
+        if label == "Certificate renewal":
+            tls = self.results.get("tls") or {}
+            text = _cert_renewal_text(tls)
+            if text:
+                return text[1]
+            return "No trusted certificate presented — renewal could not be assessed"
         if label in per_label:
             entry = per_label[label]
             # Most entries are plain strings. A few (HTTP version) are
@@ -1310,6 +1363,10 @@ class _ReportData:
             # DMARC policy: the combined present+policy check. Derive the same
             # outcome the scorer used so the fail text distinguishes "no record
             # at all" (missing) from "record exists but p=none" (none).
+            if label == "SPF policy":
+                spf_status = (self.results.get("spf") or {}).get("status") or "missing"
+                if spf_status in entry:
+                    return entry[spf_status]
             if label == "DMARC policy":
                 dmarc = self.results.get("dmarc") or {}
                 if not dmarc.get("present"):
@@ -1643,8 +1700,11 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 out.append(_status("fail",
                     "No SPF record — domain receives mail (MX present); spoofing trivially easy"))
             else:
-                out.append(_status("info",
-                    "No SPF record — no MX present, not scored"))
+                out.append(_status("fail",
+                    "No SPF record — any server can send mail as this domain",
+                    note_lines=["No MX records, so the domain appears to send no mail. "
+                                "Publish \"v=spf1 -all\" to say so; receivers will then "
+                                "reject mail claiming to come from it."]))
 
         lc = spf.get("lookup_count")
         if lc is not None and s != "null_sender":
@@ -2290,7 +2350,7 @@ def _render_tls_section(data):
         expires  = tls.get("cert_expires", "")
         if lifetime is not None:
             date_note = [f"Issued:  {issued}", f"Expires: {expires}"]
-            if lifetime <= 199:
+            if lifetime <= _CERT_LIFETIME_MAX_DAYS:
                 parts.append(_status("pass",
                     f"Certificate lifetime: {lifetime} days — automated issuance likely",
                     note_lines=date_note))
@@ -2298,6 +2358,10 @@ def _render_tls_section(data):
                 parts.append(_status("warn",
                     f"Certificate lifetime: {lifetime} days — may indicate manual renewal",
                     note_lines=date_note))
+
+        renewal = _cert_renewal_text(tls)
+        if renewal:
+            parts.append(_status(renewal[0], renewal[1]))
 
         cv_outcome = cert_var.get("outcome")
         if cv_outcome == "covers":
@@ -2624,7 +2688,7 @@ def _render_server_disclosure_section(data):
             os_name = finding.get("os", "?")
             ver     = finding.get("version") or ""
             ver_display = "" if ver in ("", "?") else ver
-            display     = _OS_DISPLAY_NAMES.get(os_name, os_name)
+            display     = finding.get("name") or _OS_DISPLAY_NAMES.get(os_name, os_name)
             stack_label = f"{display} {ver_display}".rstrip()
             underlying  = finding.get("underlying_os")
             tls_note    = finding.get("tls_capability_note")
@@ -2635,21 +2699,30 @@ def _render_server_disclosure_section(data):
             else:
                 head = stack_label
 
+            # Notes carried on the finding: how the release was inferred, and
+            # whether paid extended support is still on sale.
+            extra_notes = list(finding.get("notes") or [])
+            if tls_note:
+                extra_notes.append(tls_note)
             if eol_status == "eol":
                 date     = finding.get("eol_last_release", "")
-                date_str = f" — EOL {date}" if date else ""
+                date_str = f" — EOL {date}" if date else " — end of life"
                 via_str  = ""
                 if underlying and stack_label != underlying:
                     via_str = f" (detected via {stack_label})"
                 parts.append(_status("fail", f"{head}{date_str}{via_str}",
-                                     note_lines=[tls_note] if tls_note else None))
+                                     note_lines=extra_notes or None))
             elif eol_status == "unknown":
-                hint = " — version not exposed in Server header" if not ver else ""
+                cands = finding.get("candidates") or []
+                if cands:
+                    hint = f" — release not determined (could be {' or '.join(cands)})"
+                else:
+                    hint = " — version not exposed in Server header" if not ver else ""
                 parts.append(_status("info", f"{head}{hint}",
-                                     note_lines=[tls_note] if tls_note else None))
+                                     note_lines=extra_notes or None))
             else:
                 parts.append(_status("info", head,
-                                     note_lines=[tls_note] if tls_note else None))
+                                     note_lines=extra_notes or None))
 
         if tls_old_stack and tls_signals:
             parts.append(_status("warn",
@@ -2671,13 +2744,21 @@ def _render_server_disclosure_section(data):
         parts.extend(_subheading_with_explanation(
             "End-of-life server software", "eol_tech"))
         for t in eol_techs:
-            disp = _TECH_DISPLAY_NAMES.get(t.get("tech", ""), (t.get("tech") or "?").upper())
+            disp = t.get("name") or _TECH_DISPLAY_NAMES.get(t.get("tech", ""), (t.get("tech") or "?").upper())
             ver  = t.get("version", "?")
             msg  = t.get("eol_message") or ""
             date = t.get("eol_last_release", "")
-            detail = f" — EOL {date}" if date else ""
+            detail = f" — EOL {date}" if date else " — end of life"
+            src_label = {"error_page": "seen on the default error page",
+                         "server_header": "disclosed in the Server header",
+                         "x_powered_by": "disclosed in X-Powered-By",
+                         "x_aspnet_version": "disclosed in X-AspNet-Version",
+                         "x_aspnetmvc_version": "disclosed in X-AspNetMvc-Version",
+                         "sharepoint_header": "from the MicrosoftSharePointTeamServices header",
+                         }.get(t.get("source") or "")
             parts.append(_status("fail",
-                f"{disp} {ver}{detail} — unsupported runtime, no security patches"))
+                f"{disp} {ver}{detail} — no longer receives security patches",
+                note_lines=[src_label[0].upper() + src_label[1:]] if src_label else None))
 
     # Technology stack
     stack = srv.get("stack", []) or []
@@ -2716,8 +2797,8 @@ def _render_versioned_libraries_section(data):
     parts.append("")
 
     # Compute column widths from the data.
-    name_w = max(len(_LIB_DISPLAY_NAMES.get(l.get("library", ""),
-                                             l.get("library", "")))
+    name_w = max(len(_LIB_DISPLAY_NAMES.get(l.get("library", ""))
+                     or l.get("name") or l.get("library", ""))
                  for l in vlibs)
     ver_w = max(len(str(l.get("version", "?"))) for l in vlibs)
     name_w = max(name_w, len("Library"))
@@ -2726,8 +2807,8 @@ def _render_versioned_libraries_section(data):
     parts.append(f"    {'Library'.ljust(name_w)}   {'Version'.ljust(ver_w)}   Status     Notes")
     parts.append(f"    {'─' * name_w}   {'─' * ver_w}   ──────     ─────")
     for lib in vlibs:
-        name = _LIB_DISPLAY_NAMES.get(lib.get("library", ""),
-                                       lib.get("library", ""))
+        name = (_LIB_DISPLAY_NAMES.get(lib.get("library", ""))
+                or lib.get("name") or lib.get("library", ""))
         ver  = str(lib.get("version", "?"))
         if lib.get("eol_status") == "eol":
             msg = lib.get("eol_message") or "version is end-of-life"

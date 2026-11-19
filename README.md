@@ -93,8 +93,9 @@ nameserver count. SOA serial is reported for change tracking but not scored.
 **Routing** — IPv6 reachability, IPv4 / IPv6 RPKI ROA coverage, IPv4 / IPv6
 IRR/RIS presence (via RIPEstat). ASN is reported for context but not scored.
 
-**TLS** — Cert validity, SAN coverage, lifetime, name match, `www`-variant
-coverage, TLS 1.3 support, HSTS (presence, `includeSubDomains`, preload list,
+**TLS** — Cert validity, SAN coverage, lifetime (91 days or less reads as
+automated issuance), renewal headroom (under 10% of the lifetime left is
+overdue), name match, `www`-variant coverage, TLS 1.3 support, HSTS (presence, `includeSubDomains`, preload list,
 `max-age` strength), and an optional SSL Labs grade with per-condition
 findings (`--ssl`).
 
@@ -108,8 +109,8 @@ analyzed Google-Evaluator-style with sub-scoring for `script-src`,
 X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy,
 Cross-Origin-Opener-Policy, Cross-Origin-Resource-Policy, X-XSS-Protection
 deprecation), cookie attributes (Secure, HttpOnly, SameSite, `__Host-` /
-`__Secure-` prefixes), security.txt, server-side EOL OS detection from
-headers, client-side EOL library detection, and under `--deep` a regex-light
+`__Secure-` prefixes), security.txt, end-of-life detection for the operating
+system, server software and client-side libraries, and under `--deep` a regex-light
 page parse for Subresource Integrity, mixed content, third-party origins,
 and a basic accessibility subset.
 
@@ -242,20 +243,44 @@ Three output formats, used independently or together:
 
 ## End-of-life data
 
-`library_eol.json` and `os_eol.json` carry hand-curated end-of-life dates for
-client-side libraries and server operating systems. The detector recognises
-~185 client-side libraries; 28 of those (jQuery, Bootstrap, Angular, Vue,
-Drupal, etc.) have curated EOL annotations and are flagged with their last-
-release dates when an old major is detected. The remaining ~150 are reported
-with their version but no EOL judgment.
+Three data files carry end-of-life **dates**, and every audit compares them
+with today's date. A release is flagged from the day its support ends; nobody
+has to remember to bump a version floor.
 
-OS detection covers RHEL, Ubuntu, CentOS, Debian, FreeBSD, IIS / Windows
-Server, etc. — best-effort, from the `Server` HTTP header.
+| File | Covers | Read from |
+| --- | --- | --- |
+| `os_eol.json` | CentOS, CentOS Stream, RHEL, AlmaLinux, Rocky, Oracle Linux, Scientific Linux, Ubuntu, Debian / Raspbian, FreeBSD, IIS → Windows Server | `Server` header, PHP package suffix, default error page |
+| `tech_eol.json` | Apache httpd, nginx, OpenSSL, PHP, Tomcat, Jetty, Python, Ruby, Perl, ASP.NET, ASP.NET MVC, SharePoint Server | `Server`, `X-Powered-By`, `X-AspNet*`, `MicrosoftSharePointTeamServices`, default error page |
+| `library_eol.json` | ~50 of the ~185 client-side libraries and CMSes the detector recognises | page HTML |
 
-Both JSON files have a `_verified_on` field and `_note` entries explaining
-how each support floor was set. Periodic review is recommended — projects
-that ship a new major every six months (Angular, Ionic, Vuetify) move their
-support floor frequently.
+Most dates come from [endoflife.date](https://endoflife.date). Nothing is
+fetched while auditing; the files are refreshed by a maintainer script:
+
+```bash
+python3 tools/update_eol_data.py --check   # show what would change
+python3 tools/update_eol_data.py           # rewrite the three files
+```
+
+Releases already in the files expire on schedule without a refresh. The
+refresh is what teaches the audit about releases published since, so run it
+every few months (`tests/test_eol_data.py` fails once the data is a year old).
+Entries without an `endoflife` block are curated by hand and cite a `source`:
+projects with no published policy, and projects whose own maintainers have
+declared them discontinued (Moment.js, CryptoJS, oidc-client-js and others).
+
+Two rules keep the findings defensible:
+
+- **Free support is the yardstick.** Ubuntu standard support, Debian LTS,
+  RHEL maintenance support, Windows extended support. Where a paid extension
+  is still on sale the finding says so, because the audit cannot see from
+  outside whether a server has one.
+- **Distro packages are not judged by upstream's date.** Debian, Ubuntu and
+  RHEL patch the nginx / OpenSSL / Python / PHP they ship for years after
+  upstream stops. Those products are flagged only when the version is old
+  enough that every distribution that shipped it is itself unsupported, or
+  on a Windows build, where no distribution is involved. A distro named without a version
+  (`Apache/2.4.29 (Ubuntu)`) is resolved to a release from the exact package
+  version and judged as that release.
 
 ## Limitations
 

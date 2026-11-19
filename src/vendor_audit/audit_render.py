@@ -32,7 +32,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.5.8"
+__version__ = "1.6.0"
 
 import sys
 from collections import defaultdict
@@ -263,7 +263,9 @@ def _render_email_section(domain_label, spf, dmarc, mx, warn, bad, err, ok):
             print(bad("No SPF record — domain receives mail (MX present) but has no sending policy; spoofing trivially easy",
                       "SPF — missing with MX present (critical)", "SPF policy"))
         else:
-            print(f"  {c(GREY, '–')} No SPF record — no MX present, not scored")
+            print(bad("No SPF record — any server can send mail as this domain  "
+                      + c(GREY, '(no MX: publish "v=spf1 -all")'),
+                      "SPF — missing (publish v=spf1 -all if the domain sends no mail)", "SPF policy"))
 
     if spf.get("redirect_target"):
         rr = c(GREY, f"  ({spf['redirect_record']})") if spf.get("redirect_record") else ""
@@ -906,6 +908,23 @@ def render(original_domain, audit_domain, r, dns_server):
             if issuer:
                 print(f"  {c(GREY,'·')} Issuer: {c(GREY, issuer)}")
 
+        # ── Certificate renewal headroom ─────────────────────────────────────
+        rem_pct = tls.get("cert_remaining_pct")
+        if rem_pct is not None:
+            rem_s = tls.get("cert_remaining_seconds") or 0
+            if rem_s < 0:
+                left = "already expired"
+            elif rem_s < 3 * 86400:
+                left = f"{max(1, round(rem_s / 3600))} hours left"
+            else:
+                left = f"{round(rem_s / 86400)} days left"
+            pct_txt = f"{max(rem_pct, 0):.0f}% of lifetime remaining, {left}"
+            if rem_pct >= RUBRIC["thresholds"]["cert_renewal_min_remaining_pct"]:
+                print(ok(f"Certificate renewal on schedule {c(GREY, '(' + pct_txt + ')')}"))
+            else:
+                print(warn(f"Certificate renewal overdue {c(GREY, '(' + pct_txt + ')')}",
+                           f"TLS — certificate renewal overdue ({pct_txt})", "Certificate renewal"))
+
         # ── Cert covers redirect-target variant ──────────────────────────────
         # When the user types example.com but the site redirects to
         # www.example.com, both names need cert coverage so the first hop
@@ -1189,7 +1208,7 @@ def render(original_domain, audit_domain, r, dns_server):
         # Don't surface it to the user — the stack label should just
         # read "CentOS Linux", not "CentOS Linux ?".
         ver_display = "" if ver in ("", "?") else ver
-        display    = _OS_DISPLAY_NAMES.get(os_name, os_name)
+        display    = finding.get("name") or _OS_DISPLAY_NAMES.get(os_name, os_name)
         stack_label = f"{display} {ver_display}".rstrip()
         underlying = finding.get("underlying_os")
         tls_note   = finding.get("tls_capability_note")
@@ -1272,6 +1291,10 @@ def render(original_domain, audit_domain, r, dns_server):
         # present, regardless of EOL status, since it's actionable
         # detail (e.g. "supported TLS 1.3 requires upgrading to Server
         # 2022 or later").
+        # Notes carried on the finding: how the release was inferred, and
+        # whether paid extended support is still on sale.
+        for note in (finding.get("notes") or []):
+            print(f"      {c(GREY, '↳ ' + note)}")
         if tls_note:
             print(f"      {c(GREY, '↳ ' + tls_note)}")
 
@@ -1284,6 +1307,24 @@ def render(original_domain, audit_domain, r, dns_server):
         sigs = ", ".join(os_eol.get("tls_signals") or [])
         print(f"  {c(YELLOW, '⚠')} Legacy TLS still negotiated: {sigs}  "
               f"{c(GREY, '(corroborates old-stack hypothesis)')}")
+
+    # ── End-of-life server software ──────────────────────────────────────────
+    # Versions disclosed in Server / X-Powered-By / X-AspNet* headers or a
+    # default error page, judged against tech_eol.json. score_label matches
+    # the "EOL tech: <tech> <version>" breakdown key from score_results so
+    # the 0/N annotation renders next to the finding.
+    for t in ((r.get("tech_eol") or {}).get("techs") or []):
+        if t.get("eol_status") != "eol":
+            continue
+        t_name = t.get("name") or (t.get("tech") or "?").upper()
+        t_ver  = t.get("version") or ""
+        t_date = t.get("eol_last_release") or ""
+        t_tail = f"EOL {t_date}" if t_date else "end of life"
+        print(warn(
+            f"{c(RED, f'{t_name} {t_ver}'.rstrip())}  {c(GREY, '(' + t_tail + ')')}",
+            f"EOL server software — {t_name} {t_ver}".rstrip(),
+            f"EOL tech: {t.get('tech', '?')} {t_ver}".rstrip(),
+        ))
 
     # ── Technology stack ──────────────────────────────────────────────────────
     stack = srv.get("stack", [])
@@ -1502,7 +1543,7 @@ def render(original_domain, audit_domain, r, dns_server):
             "woocommerce":   "WooCommerce",
         }
         for lib in vlibs:
-            name = _LIB_DISPLAY_NAMES.get(lib["library"], lib["library"])
+            name = _LIB_DISPLAY_NAMES.get(lib["library"]) or lib.get("name") or lib["library"]
             ver  = lib.get("version", "?")
             label = f"{name} {ver}"
             if lib.get("eol_status") == "eol":
@@ -3123,14 +3164,14 @@ CSV_FIELDS = [
     # 2.8.0: versioned library detection. Both columns are semicolon-
     # separated for in-cell readability ("jquery 1.12.4;bootstrap 4.6.2").
     # tech_libs_detected is every match; tech_libs_eol is the subset that
-    # was flagged EOL (i.e. major below library_eol.json's floor or
-    # explicitly listed in eol_majors). tech_libs_eol_count gives a numeric
+    # was flagged EOL (i.e. retired, below a curated floor, or
+    # past its end-of-life date). tech_libs_eol_count gives a numeric
     # column for spreadsheet sorting / filtering.
     "tech_libs_detected", "tech_libs_eol", "tech_libs_eol_count",
     # 2.9.0: same shape for server OS detection. tech_os_detected lists
     # every detected OS as "<key> <version>" (semicolon-separated);
-    # tech_os_eol lists only those flagged EOL (below floor or in
-    # eol_majors); tech_os_eol_count is a numeric for filtering;
+    # tech_os_eol lists only those flagged EOL (i.e.
+    # past its end-of-life date); tech_os_eol_count is a numeric for filtering;
     # tech_os_tls_old_stack is "yes"/"no" for whether TLS 1.0/1.1/SSLv3
     # was still negotiated, which corroborates the OS finding but is
     # recorded separately so it can be reasoned about on its own.

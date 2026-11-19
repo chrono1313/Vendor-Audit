@@ -976,8 +976,19 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
             #     remarks (e.g. "· Upgrade to RSA-2048+"). Kept as their own
             #     lines in the sub box.
             #   - SUB-LINES (9-space): raw values (URLs, records) in the box.
+            #   - NOTE CONTINUATIONS (9-space): word-wrap overflow of a long
+            #     note. A note line is itself parsed as a "·" finding, and
+            #     its overflow shares the 9-space indent with raw sub-values.
+            #     The two are told apart by replaying the wrap decision: the
+            #     txt writer breaks a line only when the next word would not
+            #     fit, so an indented line is overflow exactly when its first
+            #     word could not have fitted on the line before it.
             cont_parts: list[str] = []
             sub_lines: list[str] = []
+            is_note = (m.group("marker") == "·"
+                       and len(m.group("indent")) >= 7)
+            wrap_width = audit_txt_report.WIDTH - 7
+            prev_len = len(lines[i].strip())
             j = i + 1
             while j < len(lines):
                 nxt = lines[j]
@@ -993,9 +1004,16 @@ def _txt_to_html(block: str, *, suppress_first_heading: bool = False) -> str:
                 if s.startswith("· "):
                     sub_lines.append(s[2:].strip())      # note line
                 elif indent >= 9:
-                    sub_lines.append(s)                  # raw sub-value
+                    first_word = s.split()[0]
+                    if (is_note and not sub_lines
+                            and prev_len + 1 + len(first_word) > wrap_width):
+                        cont_parts.append(s)             # note overflow
+                        prev_len = len(s)
+                    else:
+                        sub_lines.append(s)              # raw sub-value
                 else:
                     cont_parts.append(s)                 # wrap continuation
+                    prev_len = len(s)
                 j += 1
 
             if cont_parts:

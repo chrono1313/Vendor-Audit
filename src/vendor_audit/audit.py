@@ -97,7 +97,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "1.5.8"
+__version__ = "1.6.0"
 
 log = logging.getLogger(__name__)
 
@@ -609,7 +609,8 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                 pp_ex.shutdown(wait=False, cancel_futures=True)
 
     # ── OS EOL detection (default mode) ──────────────────────────────────
-    # Pure CPU on data already collected (Server header + TLS result), so
+    # Pure CPU on data already collected (Server and X-Powered-By headers,
+    # error-page banner, TLS result), so
     # we run it synchronously after the post-pool join. No network I/O, no
     # thread pool needed. Robust against missing inputs: check_os_eol takes
     # an empty header and a None tls_result.
@@ -617,7 +618,11 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
     tls_result = results.get("tls") or {}
     os_t0 = time.monotonic()
     try:
-        results["os_eol"] = check_os_eol(server_hdr, tls_result)
+        results["os_eol"] = check_os_eol(
+            server_hdr, tls_result,
+            x_powered_by=(results.get("server_header") or {}).get("x_powered_by") or "",
+            error_banner=(results.get("error_page") or {}).get("banner") or "",
+        )
     except Exception as exc:
         results["os_eol"] = {
             "os_findings":   [],
@@ -629,13 +634,15 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
     check_timings["os_eol"] = round(time.monotonic() - os_t0, 3)
 
     # ── Server-side tech EOL detection ───────────────────────────────────
-    # Pure CPU on the already-collected server_header result (X-Powered-By /
-    # Server / X-AspNet-Version). No network I/O. Flags EOL PHP / ASP.NET
-    # versions disclosed in headers. Robust against a missing/errored
-    # server_header result (check_tech_eol returns empty in that case).
+    # Pure CPU on the already-collected server_header and error_page results.
+    # No network I/O. Flags end-of-life server software disclosed in headers
+    # or a default error page (Apache httpd, nginx, OpenSSL, PHP, Tomcat,
+    # ASP.NET, SharePoint, ...). Robust against missing/errored inputs
+    # (check_tech_eol returns empty in that case).
     tech_t0 = time.monotonic()
     try:
-        results["tech_eol"] = check_tech_eol(results.get("server_header") or {})
+        results["tech_eol"] = check_tech_eol(results.get("server_header") or {},
+                                             results.get("error_page") or {})
     except Exception as exc:
         results["tech_eol"] = {"techs": [], "any_eol": False, "error": str(exc)}
     check_timings["tech_eol"] = round(time.monotonic() - tech_t0, 3)

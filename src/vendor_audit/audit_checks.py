@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "1.5.8"
+__version__ = "1.6.0"
 
 import os
 import re
@@ -101,15 +101,14 @@ ORIGIN_SERVERS = frozenset(RUBRIC["origin_servers"])
 SSL_GRADE_ORDER = list(RUBRIC["ssl_grade_order"])
 
 # ── Library EOL data loader ───────────────────────────────────────────────────
-# library_eol.json sits next to this module. Hand-curated end-of-life data for
-# common client-side libraries. Used by check_versioned_libraries() to annotate
-# detected libraries as EOL based on their major version.
+# library_eol.json sits next to this module. End-of-life DATES for client-side
+# libraries and CMSes; check_versioned_libraries() compares them with today's
+# date (see _eol_judge). Refreshed from endoflife.date by
+# tools/update_eol_data.py — never fetched at audit time.
 #
 # The file is OPTIONAL — if it's missing or malformed, library detection still
-# runs but no EOL annotations are produced. We chose not to make this a hard
-# dependency because the rubric is fundamental to scoring (and a missing rubric
-# means we can't score at all), but missing EOL data just means slightly less
-# helpful output. Different criticality, different failure mode.
+# runs but no EOL annotations are produced. A missing rubric means we can't
+# score at all; missing EOL data just means less helpful output.
 
 _LIBRARY_EOL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "library_eol.json")
 
@@ -123,13 +122,11 @@ except (OSError, json.JSONDecodeError):
     LIBRARY_EOL = {}
 
 # ── OS EOL data loader (2.9.0) ────────────────────────────────────────────────
-# os_eol.json sits next to this module. Hand-curated EOL data for server
-# operating systems detected via Server header annotations and IIS version
-# strings. Same load semantics as LIBRARY_EOL: optional file, malformed →
-# detection runs but no annotation. The detection is intentionally
-# conservative — we only annotate signals we have high confidence in,
-# because false-positive "your OS is EOL" findings are much more painful
-# for an operator than false-positive "your jQuery is EOL" findings.
+# os_eol.json sits next to this module. End-of-life dates for server operating
+# systems, plus the package-version → release hints used to resolve a distro
+# named without a version. Same load semantics and schema as LIBRARY_EOL.
+# Detection is intentionally conservative: a wrong "your OS is end of life"
+# is far more painful for an operator than a wrong "your jQuery is".
 
 _OS_EOL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "os_eol.json")
 
@@ -141,14 +138,10 @@ except (OSError, json.JSONDecodeError):
     OS_EOL = {}
 
 # ── Server-side tech EOL data loader ──────────────────────────────────────────
-# tech_eol.json sits next to this module. Hand-curated EOL data for server-side
-# runtimes and frameworks disclosed in HTTP response headers (X-Powered-By,
-# Server, X-AspNet-Version) — PHP, ASP.NET, etc. Distinct from LIBRARY_EOL
-# (client-side JS/CSS in page HTML) and OS_EOL (operating systems). Same load
-# semantics: optional file, malformed → no annotations. Same schema shape as
-# LIBRARY_EOL, so _annotate_eol() consumes both. Server-runtime lifecycles are
-# keyed major.minor (PHP 8.1 vs 8.2 differ), which the shared annotator handles
-# via min_supported_major_minor.
+# tech_eol.json sits next to this module. End-of-life dates for server software
+# disclosed in response headers or a default error page (Apache httpd, nginx,
+# OpenSSL, PHP, Tomcat, Python, ASP.NET, SharePoint, ...). Same load semantics
+# and schema as LIBRARY_EOL.
 
 _TECH_EOL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tech_eol.json")
 
@@ -1981,6 +1974,8 @@ def check_tls(domain, port=443):
         "cert_issued":        None,
         "cert_expires":       None,
         "cert_lifetime_days": None,
+        "cert_remaining_seconds": None,  # time left until notAfter, at audit time
+        "cert_remaining_pct":     None,  # share of total lifetime still left (0-100)
         "cert_issuer":        None,
         "cert_names_match":   None,
         "cert_san_names":     [],
@@ -2024,6 +2019,16 @@ def check_tls(domain, port=443):
                         result["cert_lifetime_days"] = (expires - issued).days
                         result["cert_issued"]  = issued.strftime("%Y-%m-%d")
                         result["cert_expires"] = expires.strftime("%Y-%m-%d")
+                        # Renewal headroom. Worked in seconds, not days, so
+                        # it holds for short-lived certificates: a ~160-hour
+                        # (6-day) certificate has only 16 hours in its last
+                        # 10%, which whole-day arithmetic cannot express.
+                        lifetime_s  = expires_ts - issued_ts
+                        remaining_s = expires_ts - time.time()
+                        if lifetime_s > 0:
+                            result["cert_remaining_seconds"] = int(remaining_s)
+                            result["cert_remaining_pct"] = round(
+                                100.0 * remaining_s / lifetime_s, 1)
                     except Exception:
                         pass  # cert exists but date fields are unparseable; lifetime stays None
                     issuer_dict = dict(x[0] for x in cert.get("issuer", []))
@@ -2740,6 +2745,20 @@ def check_security_txt(domain):
 #    finding so the report is transparent about where the disclosure was
 #    observed.
 
+# Server banner as printed in a default error page footer. Apache prints its
+# full ServerTokens string before " Server at <host> Port <n>"; nginx prints
+# "nginx/1.18.0 (Ubuntu)"; Tomcat prints "Apache Tomcat/9.0.50"; IIS detailed
+# errors print "Microsoft-IIS/8.5". The match stops at the first tag or at
+# Apache's " Server at".
+_ERROR_BANNER_RE = re.compile(
+    r"(?:Apache Tomcat/\d[\w.\-]*"
+    r"|Apache/\d[^<\n]{0,160}?(?=\s+Server at\b|<|\n|$)"
+    r"|nginx/\d[\w.]*(?:\s+\([^)<]{1,40}\))?"
+    r"|Microsoft-IIS/\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
 def check_error_page(domain):
     """Probe for default error page disclosure.
 
@@ -2759,6 +2778,8 @@ def check_error_page(domain):
                   | 'spa_or_2xx' | 'error'
       detected:   product name (e.g. 'nginx') if outcome is default_*, else None
       version:    version string if outcome is default_with_version, else None
+      banner:     full server banner from the page footer when a version was
+                  found (e.g. 'Apache/2.2.22 (Ubuntu)'), else None
       status:     HTTP status code observed, or None
       probe_url:  the URL fetched (for transparency in the report)
       error:      error string if outcome == 'error', else None
@@ -2778,6 +2799,7 @@ def check_error_page(domain):
             "outcome":   "error",
             "detected":  None,
             "version":   None,
+            "banner":    None,
             "status":    None,
             "probe_url": url,
             "error":     None,
@@ -2827,6 +2849,13 @@ def check_error_page(domain):
                             out["version"] = m.group("version")
                     if out["version"]:
                         out["outcome"] = "default_with_version"
+                        # Keep the footer's full server banner — it often
+                        # names the distro and bundled modules ("Apache/2.2.22
+                        # (Ubuntu) mod_ssl/... OpenSSL/..."), which the EOL
+                        # checks read the same way they read a Server header.
+                        bm = _ERROR_BANNER_RE.search(body)
+                        if bm:
+                            out["banner"] = " ".join(bm.group(0).split())[:200]
                     else:
                         out["outcome"] = "default_no_version"
                     return out
@@ -3134,6 +3163,8 @@ def check_server_header(domain, _cached_response=None):
             "server":              h.get("Server"),
             "x_powered_by":        h.get("X-Powered-By"),
             "x_aspnet_version":    h.get("X-AspNet-Version"),
+            "x_aspnetmvc_version": h.get("X-AspNetMvc-Version"),
+            "sharepoint_version":  h.get("MicrosoftSharePointTeamServices"),
             "final_url":           resp.url,
             "stack":               stack,
             "http3_advertised":    "h3" in alt_svc,
@@ -3626,6 +3657,11 @@ _LIB_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("drupal",       re.compile(r'<meta[^>]+name=["\']Generator["\'][^>]+content=["\']Drupal\s+(\d+)',                     re.IGNORECASE)),
     ("drupal",       re.compile(r'<meta[^>]+content=["\']Drupal\s+(\d+)[^"\']*["\'][^>]+name=["\']Generator["\']',         re.IGNORECASE)),
     ("joomla",       re.compile(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']Joomla!?\s+(\d+\.\d+(?:\.\d+)?)',     re.IGNORECASE)),
+    # TYPO3 printed its version in the generator tag through the 7.x line
+    # ("TYPO3 6.2 CMS"); later releases print "TYPO3 CMS" with no version.
+    ("typo3",        re.compile(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']TYPO3\s+(\d+\.\d+(?:\.\d+)?)\s+CMS', re.IGNORECASE)),
+    ("mediawiki",    re.compile(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']MediaWiki\s+(\d+\.\d+(?:\.\d+)?)',    re.IGNORECASE)),
+    ("discourse",    re.compile(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']Discourse\s+(\d+\.\d+(?:\.\d+)?)',    re.IGNORECASE)),
 
     # AngularJS — distinct project from modern Angular. Filename-based since
     # the ng-version attribute is modern-Angular-only.
@@ -3912,98 +3948,228 @@ _LIB_PATTERNS: list[tuple[str, re.Pattern]] = [
 ]
 
 
-def _major_of(version: str, library: str = "") -> str:
-    """Extract the major-version key for EOL lookup.
+# ── Date-driven EOL judgement (schema v2) ─────────────────────────────────────
+# One judge for all three data files (library_eol.json, tech_eol.json,
+# os_eol.json). Each entry carries a 'releases' map of release cycle →
+# {"eol": "YYYY-MM-DD" | true | null}. The verdict comes from comparing that
+# date with TODAY, so a release goes end-of-life on its own when its date
+# passes — nobody has to remember to bump a floor. The files are refreshed
+# from endoflife.date by tools/update_eol_data.py; nothing is fetched at
+# audit time.
 
-    Most libraries: the integer before the first '.'. So '3.6.4' → '3'.
-    jQuery UI is special — its 'major' for our purposes is the 1.x.y minor
-    segment, since the entire library has been at 1.x for its whole life.
-    So '1.12.1' → '1.12'. The library-specific dispatch lives here so the
-    annotator stays generic.
+_NUM_VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
+
+
+def _eol_today() -> str:
+    """Today's date (UTC) as an ISO string. ISO dates compare correctly as
+    plain strings, which keeps the judge free of date parsing."""
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _vnum(version) -> str:
+    """Leading dotted-numeric part of a version string.
+    '1.0.2k-fips' → '1.0.2', '8.1.2-1ubuntu2.14' → '8.1.2', 'v5.16.3' → '5.16.3'."""
+    m = _NUM_VERSION_RE.search(str(version or ""))
+    return m.group(0) if m else ""
+
+
+def _vtuple(version) -> tuple:
+    num = _vnum(version)
+    return tuple(int(p) for p in num.split(".")) if num else ()
+
+
+def _row_is_eol(row, today: str) -> bool:
+    eol = (row or {}).get("eol")
+    return eol is True or (isinstance(eol, str) and eol <= today)
+
+
+def _eol_judge(entry, version, today=None, ignore_gate=False) -> dict:
+    """Judge one detected version against one data-file entry.
+
+    Returns {"status": "eol" | "ok" | "unknown", "reason": ..., ...}. On
+    "eol" the dict may also carry: cycle, date (ISO), latest, last_release,
+    last_version, extended (paid-support end date), ref_cycle.
+
+    Order of evidence:
+      1. 'retired'          — whole project discontinued; every version is EOL.
+      2. no version known   — EOL only if EVERY tracked release is EOL.
+      3. 'never_flag'       — cycles that must not be judged (IIS 10.0 spans
+                              four Windows Server releases).
+      4. 'only_flag_below'  — distro-backported products; cycles at or above
+                              the gate are not judged (see tech_eol.json).
+      5. exact cycle        — longest dotted prefix of the version that is a
+                              key in 'releases'; its date decides.
+      6. 'min_supported'    — static floor on hand-curated entries.
+      7. older than tracked — the nearest tracked cycle above this version is
+                              itself EOL, so this older one is too.
+    Anything else is 'ok' (newer than everything tracked, or past the floor)
+    or 'unknown' (cannot place it).
     """
-    if library == "jquery-ui":
-        parts = version.split(".")
-        if len(parts) >= 2:
-            return f"{parts[0]}.{parts[1]}"
-        return parts[0] if parts else version
-    return version.split(".")[0]
+    if not isinstance(entry, dict):
+        return {"status": "unknown", "reason": "no_data"}
+    today = today or _eol_today()
+    releases = entry.get("releases") or {}
+
+    retired = entry.get("retired")
+    if retired is True or (isinstance(retired, str) and retired <= today):
+        out = {"status": "eol", "reason": "retired"}
+        if isinstance(retired, str):
+            out["date"] = retired
+        return out
+
+    num = _vnum(version)
+    if not num:
+        rows = [r for r in releases.values() if isinstance(r, dict)]
+        if rows and all(_row_is_eol(r, today) for r in rows):
+            dates = [r["eol"] for r in rows if isinstance(r.get("eol"), str)]
+            out = {"status": "eol", "reason": "all_releases"}
+            if dates:
+                out["date"] = max(dates)
+            return out
+        return {"status": "unknown", "reason": "no_version"}
+
+    vt = _vtuple(num)
+    parts = num.split(".")
+
+    cycle = None
+    for n in range(len(parts), 0, -1):
+        key = ".".join(parts[:n])
+        if key in releases:
+            cycle = key
+            break
+
+    if cycle is not None and cycle in (entry.get("never_flag") or []):
+        return {"status": "ok", "reason": "never_flag", "cycle": cycle}
+
+    gate = _vtuple(entry.get("only_flag_below"))
+    if gate and not ignore_gate and vt[:len(gate)] >= gate:
+        return {"status": "unknown", "reason": "vendor_maintained", "cycle": cycle}
+
+    if cycle is not None:
+        row = releases[cycle] or {}
+        if _row_is_eol(row, today):
+            out = {"status": "eol", "reason": "cycle", "cycle": cycle}
+            if isinstance(row.get("eol"), str):
+                out["date"] = row["eol"]
+            for k in ("latest", "last_release", "last_version", "extended"):
+                if row.get(k):
+                    out[k] = row[k]
+            return out
+        return {"status": "ok", "reason": "supported", "cycle": cycle,
+                "date": row.get("eol") if isinstance(row.get("eol"), str) else None}
+
+    floor = _vtuple(entry.get("min_supported"))
+    if floor and vt[:len(floor)] < floor:
+        return {"status": "eol", "reason": "below_floor",
+                "floor": str(entry.get("min_supported"))}
+
+    tracked = sorted((_vtuple(k), k) for k in releases
+                     if _NUM_VERSION_RE.fullmatch(str(k)))
+    above = [(ct, k) for ct, k in tracked if vt[:len(ct)] < ct]
+    if above:
+        ct, k = above[0]
+        row = releases[k] or {}
+        if _row_is_eol(row, today):
+            out = {"status": "eol", "reason": "older_than", "ref_cycle": k}
+            if isinstance(row.get("eol"), str):
+                out["date"] = row["eol"]
+            return out
+        return {"status": "unknown", "reason": "untracked"}
+    if tracked or floor:
+        return {"status": "ok", "reason": "newer_than_tracked"}
+    return {"status": "unknown", "reason": "untracked"}
 
 
-def _annotate_library_eol(library: str, version: str) -> dict:
+def _eol_phrase(j: dict, version: str = "") -> str:
+    """Short human phrase for an 'eol' judgement, without the product name
+    (callers put the name in front). Used as eol_message."""
+    reason = j.get("reason")
+    date = j.get("date")
+    if reason == "retired":
+        return (f"project end of life since {date}" if date
+                else "project discontinued by its maintainers")
+    if reason == "all_releases":
+        return (f"every release is end of life (the last on {date})" if date
+                else "every release is end of life")
+    if reason == "below_floor":
+        return f"below the oldest supported release ({j.get('floor')})"
+    if reason == "older_than":
+        ref = j.get("ref_cycle")
+        return (f"older than {ref}, which reached end of life {date}" if date
+                else f"older than {ref}, which is end of life")
+    cycle = j.get("cycle") or ""
+    label = f"{cycle}.x" if cycle and "." not in cycle else cycle
+    if date:
+        return f"{label} end of life since {date}".strip()
+    bits = []
+    if j.get("last_version"):
+        bits.append(f"last release {j['last_version']}")
+    if j.get("last_release"):
+        bits.append(j["last_release"] if bits else f"last release {j['last_release']}")
+    tail = f"; {', '.join(bits)}" if bits else ""
+    return f"{label} end of life{tail}".strip()
+
+
+def _eol_data_age_days(data: dict):
+    """Days since a data file was generated, or None if it carries no date."""
+    stamp = (data or {}).get("_generated_on") or (data or {}).get("_verified_on")
+    try:
+        then = datetime.strptime(stamp, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+    return (datetime.now(timezone.utc).date() - then).days
+
+
+# Releases already in the data files expire on schedule without any refresh,
+# but releases published AFTER the last refresh are unknown and are reported
+# as supported. Say so in the log once the data is old enough to matter.
+EOL_DATA_STALE_DAYS = 180
+for _name, _data in (("library_eol.json", LIBRARY_EOL), ("tech_eol.json", TECH_EOL),
+                     ("os_eol.json", OS_EOL)):
+    _age = _eol_data_age_days(_data)
+    if _age is not None and _age > EOL_DATA_STALE_DAYS:
+        logging.getLogger(__name__).warning(
+            "%s was generated %d days ago; run tools/update_eol_data.py to "
+            "pick up new releases", _name, _age)
+
+
+def _annotate_library_eol(library: str, version: str, today=None) -> dict:
     """Look up EOL status for a detected library + version.
 
-    Returns a dict with at least {library, version}. When EOL data is
-    available and the version is below floor or explicitly listed, also
-    populates: eol_status ('eol' / 'ok' / 'unknown'), eol_message, and
-    eol_last_release / eol_last_version when known.
-
-    Outcomes:
-      - Library not in LIBRARY_EOL → eol_status='unknown' (just report version)
-      - Major < min_supported_major AND in eol_majors → 'eol' with specific msg
-      - Major < min_supported_major AND not in eol_majors → 'eol' with
-        generic msg ("major version below minimum supported"). This is the
-        floor-based catch-all per spec — old versions that predate our
-        explicit listings still get flagged.
-      - Major in eol_majors but >= floor → 'eol' (shouldn't happen in
-        practice unless someone misconfigures the JSON, but handled
-        defensively).
-      - Otherwise → 'ok' (no annotation in the report)
+    Returns a dict with at least {library, version, eol_status}. eol_status
+    is 'unknown' when the library is not in library_eol.json (version is
+    reported with no judgement), 'eol', or 'ok'. On 'eol' it also carries
+    eol_message, and eol_last_release / eol_last_version when known.
     """
     out = {"library": library, "version": version}
     entry = LIBRARY_EOL.get(library)
-    if not entry:
+    if not isinstance(entry, dict):
         out["eol_status"] = "unknown"
         return out
+    if entry.get("name"):
+        out["name"] = entry["name"]
 
-    major_key = _major_of(version, library)
-
-    # Determine the floor. jQuery UI uses min_supported_major_minor (string
-    # like "1.14"); everyone else uses min_supported_major (integer).
-    min_floor_str = entry.get("min_supported_major_minor")
-    if min_floor_str:
-        # String-keyed comparison — convert "1.13" vs "1.14" via numeric tuple
-        def _vt(s):
-            try:
-                return tuple(int(p) for p in s.split("."))
-            except ValueError:
-                return ()
-        floor_tuple = _vt(min_floor_str)
-        major_tuple = _vt(major_key)
-        below_floor = major_tuple and floor_tuple and major_tuple < floor_tuple
-    else:
-        floor_int = entry.get("min_supported_major")
-        try:
-            major_int = int(major_key)
-            below_floor = floor_int is not None and major_int < floor_int
-        except ValueError:
-            below_floor = False
-
-    eol_majors = entry.get("eol_majors") or {}
-    specific = eol_majors.get(major_key)
-
-    if below_floor or specific:
+    j = _eol_judge(entry, version, today)
+    if j["status"] == "eol":
         out["eol_status"] = "eol"
-        if specific:
-            parts = []
-            if specific.get("last_version"):
-                parts.append(f"last release {specific['last_version']}")
-            if specific.get("last_release"):
-                parts.append(specific["last_release"])
-            detail = " ".join(parts) if parts else "version EOL"
-            out["eol_message"] = f"{library} {major_key}.x — {detail}"
-            if specific.get("last_release"):
-                out["eol_last_release"] = specific["last_release"]
-            if specific.get("last_version"):
-                out["eol_last_version"] = specific["last_version"]
-        else:
-            # Below floor but no explicit entry — generic message
-            out["eol_message"] = (
-                f"{library} {major_key}.x — major version below minimum "
-                f"supported"
-            )
-    else:
+        out["eol_message"] = _eol_phrase(j, version)
+        if j.get("date"):
+            out["eol_last_release"] = j["date"]
+        elif j.get("last_release"):
+            out["eol_last_release"] = j["last_release"]
+        last_version = j.get("last_version") or j.get("latest")
+        if last_version:
+            out["eol_last_version"] = last_version
+        if entry.get("retired_reason") and j.get("reason") == "retired":
+            out["eol_reason"] = entry["retired_reason"]
+        if entry.get("source"):
+            out["eol_source"] = entry["source"]
+    elif j["status"] == "ok":
         out["eol_status"] = "ok"
-
+    else:
+        # In the file but this version cannot be placed. Report it as in
+        # support rather than "not in EOL database", which would be untrue.
+        out["eol_status"] = "ok"
     return out
 
 
@@ -4046,187 +4212,296 @@ def check_versioned_libraries(html: str) -> dict:
     return {"libraries": libraries, "any_eol": any_eol}
 
 
-# ── Server-side tech EOL detection ────────────────────────────────────────────
-# Inspects HTTP response headers for disclosed server-side runtime/framework
-# versions and flags end-of-life ones. Unlike client-side library detection
-# (which parses page HTML), this reads three headers already captured by
-# check_server_header:
+# ── Server-side software EOL detection ────────────────────────────────────────
+# Reads software versions the server volunteers and judges them against
+# tech_eol.json. No extra network I/O: every input was already captured by
+# check_server_header and check_error_page.
 #
-#   - X-Powered-By: PHP/8.1.34     → php 8.1  → EOL 2025-12-31
-#   - X-Powered-By: ASP.NET        → (no version, not flagged)
-#   - X-AspNet-Version: 2.0.50727  → asp.net 2.0 → EOL long ago
-#   - Server: ... PHP/7.4.3 ...    → php 7.4  → EOL 2022-11-28  (some servers
-#                                     put the PHP version in the Server header
-#                                     instead of / in addition to X-Powered-By)
+#   Server: Apache/2.2.22 (Win32) mod_ssl/2.2.22 OpenSSL/1.0.1e PHP/5.4.16
+#       → apache 2.2.22, openssl 1.0.1e, php 5.4.16 — all end of life
+#   X-Powered-By: PHP/8.1.34            → php 8.1 (EOL 2025-12-31)
+#   X-AspNet-Version: 2.0.50727         → asp.net 2.0
+#   X-AspNetMvc-Version: 3.0            → asp.net-mvc 3
+#   MicrosoftSharePointTeamServices: 15.0.0.4569 → SharePoint Server 2013
+#   default 404 page footer "Apache Tomcat/7.0.76" → tomcat 7
 #
-# Version keys are major.minor because runtime lifecycles differ by minor
-# (PHP 8.1 EOL, 8.2 supported). We match against TECH_EOL (tech_eol.json).
-# The disclosed-version part is separately a mild finding (server_header
-# X-Powered-By disclosure) — this check adds the EOL dimension on top: not
-# just "you're revealing PHP" but "the PHP you're revealing is unsupported."
+# Distro packages are the hard part. Debian, Ubuntu and RHEL keep patching
+# the nginx / OpenSSL / Python / PHP version they shipped for years after
+# upstream drops it, and a "your nginx is end of life" finding on a fully
+# patched Debian 12 box is wrong. Two guards keep that from happening:
+#
+#   * 'only_flag_below' in tech_eol.json — for products distros backport,
+#     only cycles so old that every distro that shipped them is itself out
+#     of support are judged. Lifted only on Windows builds ((Win32),
+#     (Win64)), where no distro is backporting anything. A (Unix) source
+#     build of Apache may still link the distro's patched OpenSSL, so the
+#     gate stays on there.
+#   * A PHP version carrying an Ubuntu/Debian package suffix
+#     ("8.1.2-1ubuntu2.14") is judged by that distro release, not by
+#     php.net. If the release is still supported the PHP is too.
 
-# Patterns to extract (tech_key, version) from header values. Each returns
-# a major.minor version string. Ordered; first match per tech wins.
+# (tech key, pattern). Group 1 is the version as disclosed.
 _TECH_VERSION_PATTERNS = [
-    # PHP/8.1.34 or PHP/8.1  (in X-Powered-By or Server)
-    ("php",     re.compile(r"PHP/(\d+\.\d+)(?:\.\d+)*", re.IGNORECASE)),
-    # ASP.NET version header: "2.0.50727" → 2.0
-    ("asp.net", re.compile(r"^(\d+\.\d+)", re.IGNORECASE)),
+    ("php",     re.compile(r"\bPHP/(\d+\.\d+(?:\.\d+)?[^\s,;()]*)", re.IGNORECASE)),
+    ("apache",  re.compile(r"\bApache/(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
+    ("nginx",   re.compile(r"\bnginx/(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
+    ("openssl", re.compile(r"\bOpenSSL/(\d+\.\d+\.\d+[a-z]*)", re.IGNORECASE)),
+    ("tomcat",  re.compile(r"\bApache[ -]Tomcat/(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
+    ("jetty",   re.compile(r"\bJetty\(v?(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
+    ("python",  re.compile(r"\bC?Python/(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
+    ("ruby",    re.compile(r"\bRuby/(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
+    ("perl",    re.compile(r"\bPerl/v?(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
 ]
+_ASPNET_VERSION_RE = re.compile(r"^\s*(\d+\.\d+(?:\.\d+)*)")
+
+# Banner annotations that rule out distro backporting — upstream's own
+# lifecycle applies in full. Windows only; see the note above on (Unix).
+_UPSTREAM_BUILD_RE = re.compile(r"\((?:Win32|Win64)\)", re.IGNORECASE)
+
+# Techs whose 'only_flag_below' gate is lifted on an upstream build.
+_GATED_TECHS = {"openssl", "python", "ruby", "perl"}
+
+_PHP_UBUNTU_RELEASE_RE = re.compile(r"ubuntu\d*\.(\d\d\.\d\d)\b", re.IGNORECASE)
+_PHP_DEBIAN_RELEASE_RE = re.compile(r"deb(\d+)u\d+", re.IGNORECASE)
 
 
-def _annotate_tech_eol(tech: str, version_mm: str) -> dict:
-    """Annotate a server-side tech (major.minor) against TECH_EOL.
+def _php_distro_release(php_version: str):
+    """Distro release implied by a packaged PHP version string, or None.
 
-    version_mm is a major.minor string like "8.1". Returns a dict with
-    {tech, version, eol_status}, plus eol_message / eol_last_release /
-    eol_last_version when EOL. Mirrors _annotate_library_eol but keyed on
-    major.minor throughout (that's how server-runtime lifecycles work).
+    'PHP/7.2.24-0ubuntu0.18.04.17' → ('ubuntu', '18.04')   release is literal
+    'PHP/8.1.2-1ubuntu2.14'        → ('ubuntu', '22.04')   PHP 8.1 = 22.04's PHP
+    'PHP/7.3.31-1~deb10u5'         → ('debian', '10')
+    'PHP/8.1.34'                   → None                   not a distro string
     """
-    out = {"tech": tech, "version": version_mm}
+    v = php_version or ""
+    low = v.lower()
+    if "ubuntu" in low:
+        m = _PHP_UBUNTU_RELEASE_RE.search(v)
+        if m:
+            return ("ubuntu", m.group(1))
+        hints = ((OS_EOL.get("_package_hints") or {}).get("ubuntu") or {}).get("php") or {}
+        mm = ".".join(_vnum(v).split(".")[:2])
+        rel = hints.get(mm)
+        return ("ubuntu", rel) if isinstance(rel, str) else None
+    m = _PHP_DEBIAN_RELEASE_RE.search(v)
+    if m:
+        return ("debian", m.group(1))
+    return None
+
+
+def _os_release_judgement(os_key: str, release: str, today=None) -> dict:
+    return _eol_judge(OS_EOL.get(os_key), release, today)
+
+
+def _sharepoint_release(header_value: str):
+    """Map a MicrosoftSharePointTeamServices value to a product year.
+
+    The header is '<major>.0.0.<build>'. Majors 12/14/15 are one product each.
+    Major 16 is shared by 2016, 2019, Subscription Edition and SharePoint
+    Online; only the 2016 and 2019 build ranges are unambiguous, so any other
+    major-16 build returns None (not judged).
+    """
+    m = re.match(r"^\s*(\d+)\.\d+\.\d+\.(\d+)", header_value or "")
+    if not m:
+        return None
+    major, build = int(m.group(1)), int(m.group(2))
+    if major == 12:
+        return "2007"
+    if major == 14:
+        return "2010"
+    if major == 15:
+        return "2013"
+    if major == 16:
+        if 4000 <= build <= 9999:
+            return "2016"
+        if 10000 <= build <= 13999:
+            return "2019"
+    return None
+
+
+def _annotate_tech_eol(tech: str, version: str, today=None, ignore_gate=False) -> dict:
+    """Annotate one piece of disclosed server software against TECH_EOL.
+
+    Returns {tech, version, eol_status} plus name, and on 'eol' also
+    eol_message, eol_last_release (the EOL date) and eol_last_version.
+    eol_status 'unknown' means "not judged" and is dropped by the caller.
+    """
+    out = {"tech": tech, "version": version}
     entry = TECH_EOL.get(tech)
-    if not entry:
+    if not isinstance(entry, dict):
         out["eol_status"] = "unknown"
         return out
+    out["name"] = entry.get("name") or tech
 
-    def _vt(s):
-        try:
-            return tuple(int(p) for p in s.split("."))
-        except ValueError:
-            return ()
-
-    eol_majors = entry.get("eol_majors") or {}
-    specific = eol_majors.get(version_mm)
-
-    floor_str = entry.get("min_supported_major_minor")
-    below_floor = False
-    if floor_str:
-        ft, vt = _vt(floor_str), _vt(version_mm)
-        below_floor = bool(ft) and bool(vt) and vt < ft
-
-    if specific or below_floor:
-        out["eol_status"] = "eol"
-        if specific:
-            parts = []
-            if specific.get("last_version"):
-                parts.append(f"last release {specific['last_version']}")
-            if specific.get("last_release"):
-                parts.append(f"EOL {specific['last_release']}")
-            detail = ", ".join(parts) if parts else "end of life"
-            out["eol_message"] = f"{tech.upper()} {version_mm} — {detail}"
-            if specific.get("last_release"):
-                out["eol_last_release"] = specific["last_release"]
-            if specific.get("last_version"):
-                out["eol_last_version"] = specific["last_version"]
-        else:
-            out["eol_message"] = (
-                f"{tech.upper()} {version_mm} — below minimum supported "
-                f"version ({floor_str})"
-            )
-    else:
-        out["eol_status"] = "ok"
+    j = _eol_judge(entry, version, today, ignore_gate=ignore_gate)
+    out["eol_status"] = j["status"]
+    if j["status"] == "eol":
+        out["eol_message"] = _eol_phrase(j, version)
+        if j.get("date"):
+            out["eol_last_release"] = j["date"]
+        elif j.get("last_release"):
+            out["eol_last_release"] = j["last_release"]
+        last_version = j.get("last_version") or j.get("latest")
+        if last_version:
+            out["eol_last_version"] = last_version
+        if entry.get("source"):
+            out["eol_source"] = entry["source"]
     return out
 
 
-def check_tech_eol(server_header_result: dict) -> dict:
-    """Detect EOL server-side tech from already-captured HTTP headers.
+def check_tech_eol(server_header_result: dict, error_page_result: dict | None = None,
+                   today=None) -> dict:
+    """Detect end-of-life server software from already-captured responses.
 
-    Consumes the dict returned by check_server_header (specifically the
-    'server', 'x_powered_by', and 'x_aspnet_version' fields). Pure CPU on
-    strings already in hand — no extra network I/O. Safe to call after the
-    server_header check completes.
+    Inputs are the dicts returned by check_server_header and (optionally)
+    check_error_page. Pure CPU on strings already in hand.
 
     Returns:
       {
         "techs": [
-          {"tech": "php", "version": "8.1", "eol_status": "eol",
-           "eol_message": "PHP 8.1 — last release 8.1.x, EOL 2025-12-31",
-           "eol_last_release": "2025-12-31", "eol_last_version": "8.1.x"},
+          {"tech": "php", "name": "PHP", "version": "8.1.34",
+           "eol_status": "eol", "eol_message": "8.1 end of life since 2025-12-31",
+           "eol_last_release": "2025-12-31", "source": "x_powered_by"},
           ...
         ],
         "any_eol": True/False,
       }
 
-    Only EOL and 'ok' techs where we could extract a version are returned;
-    techs we can't version (bare "ASP.NET" with no version header) are
-    omitted — the plain disclosure finding covers those.
+    Only software that could be judged ('eol' or 'ok') is returned.
     """
-    if not server_header_result or server_header_result.get("error"):
+    sh = server_header_result or {}
+    ep = error_page_result or {}
+    if sh.get("error") and not ep.get("banner"):
         return {"techs": [], "any_eol": False}
 
-    # Sources to scan, in priority order. X-Powered-By is the usual PHP
-    # carrier; Server sometimes carries it too; X-AspNet-Version is the
-    # ASP.NET one.
-    xpb   = server_header_result.get("x_powered_by") or ""
-    srv   = server_header_result.get("server") or ""
-    aspnet = server_header_result.get("x_aspnet_version") or ""
+    srv    = sh.get("server") or ""
+    xpb    = sh.get("x_powered_by") or ""
+    banner = ep.get("banner") or ""
+    # Priority order: the live response headers first, the error-page footer
+    # last. First source to disclose a given product wins.
+    sources = [("server_header", srv), ("x_powered_by", xpb), ("error_page", banner)]
 
-    found: dict[str, str] = {}   # tech -> major.minor
+    found: dict[str, tuple[str, str, str]] = {}   # tech → (version, source, text)
+    for tech, pattern in _TECH_VERSION_PATTERNS:
+        for source, text in sources:
+            m = pattern.search(text) if text else None
+            if m:
+                found[tech] = (m.group(1), source, text)
+                break
 
-    # PHP: check X-Powered-By first, then Server.
-    php_re = _TECH_VERSION_PATTERNS[0][1]
-    for source in (xpb, srv):
-        m = php_re.search(source)
-        if m:
-            found["php"] = m.group(1)
-            break
+    techs = []
+    for tech, (version, source, text) in sorted(found.items()):
+        upstream_build = bool(_UPSTREAM_BUILD_RE.search(text))
+        ignore_gate = tech in _GATED_TECHS and upstream_build
 
-    # ASP.NET version: from the dedicated header.
-    if aspnet:
-        m = _TECH_VERSION_PATTERNS[1][1].search(aspnet.strip())
-        if m:
-            found["asp.net"] = m.group(1)
+        if tech == "php":
+            distro = _php_distro_release(version)
+            if distro:
+                # Distro-packaged PHP: the distro release decides. Still
+                # supported → the PHP is patched, nothing to flag. Out of
+                # support (or unknown release) → fall through to php.net's
+                # dates, which are then the right yardstick.
+                dj = _os_release_judgement(distro[0], distro[1], today)
+                if dj["status"] == "ok":
+                    continue
 
-    techs = [_annotate_tech_eol(t, v) for t, v in sorted(found.items())]
-    # Only surface techs we have EOL data for (drop 'unknown').
+        # PHP package strings are long ("7.2.24-0ubuntu0.18.04.17"); report
+        # the plain version and keep the raw string as detail.
+        shown = (_vnum(version) or version) if tech == "php" else version
+        t = _annotate_tech_eol(tech, shown, today, ignore_gate=ignore_gate)
+        t["source"] = source
+        if shown != version:
+            t["detail"] = version
+        techs.append(t)
+
+    aspnet = sh.get("x_aspnet_version") or ""
+    m = _ASPNET_VERSION_RE.match(aspnet)
+    if m:
+        t = _annotate_tech_eol("asp.net", m.group(1), today)
+        t["source"] = "x_aspnet_version"
+        techs.append(t)
+
+    mvc = sh.get("x_aspnetmvc_version") or ""
+    m = _ASPNET_VERSION_RE.match(mvc)
+    if m:
+        t = _annotate_tech_eol("asp.net-mvc", m.group(1), today)
+        t["source"] = "x_aspnetmvc_version"
+        techs.append(t)
+
+    sp_raw = sh.get("sharepoint_version") or ""
+    sp_rel = _sharepoint_release(sp_raw)
+    if sp_rel:
+        entry = TECH_EOL.get("sharepoint") or {}
+        row = (entry.get("releases") or {}).get(sp_rel)
+        if row is not None:
+            t = {"tech": "sharepoint", "version": sp_rel,
+                 "name": entry.get("name") or "SharePoint Server",
+                 "source": "sharepoint_header", "detail": sp_raw.strip()}
+            if _row_is_eol(row, today or _eol_today()):
+                t["eol_status"] = "eol"
+                date = row["eol"] if isinstance(row.get("eol"), str) else None
+                t["eol_message"] = (f"end of life since {date}" if date else "end of life")
+                if date:
+                    t["eol_last_release"] = date
+                if entry.get("source"):
+                    t["eol_source"] = entry["source"]
+            else:
+                t["eol_status"] = "ok"
+            techs.append(t)
+
+    # Only surface software we could judge.
     techs = [t for t in techs if t.get("eol_status") in ("eol", "ok")]
     any_eol = any(t.get("eol_status") == "eol" for t in techs)
     return {"techs": techs, "any_eol": any_eol}
 
 
-# ── OS EOL detection (2.9.0) ──────────────────────────────────────────────────
-# Inspects the Server header (and a couple of corroborating signals) for
-# evidence that the host is running an end-of-life operating system. Three
-# detection strategies, in order of confidence:
+# ── OS EOL detection ──────────────────────────────────────────────────────────
+# Infers the server operating system from what the web server volunteers and
+# judges it against os_eol.json. Four strategies, most direct first:
 #
-#   1. IIS version string. "Server: Microsoft-IIS/7.5" maps unambiguously
-#      to Windows Server 2008 R2, which is EOL. IIS ≤8.5 each map to a
-#      single specific Windows Server release, all of which are EOL.
-#      IIS 10.0 ships on Server 2016, 2019, 2022, AND 2025 — those are
-#      not distinguishable from the IIS version, so IIS 10.0 produces no
-#      EOL flag here.
+#   1. IIS version. "Server: Microsoft-IIS/7.5" maps to exactly one Windows
+#      Server release (2008 R2) for IIS 8.5 and older. IIS 10.0 ships on
+#      Server 2016, 2019, 2022 and 2025, so it is never flagged.
 #
-#   2. Distro name + version in an Apache/Nginx parens annotation.
-#      "Server: Apache/2.4.6 (CentOS)" names the distro but not its
-#      version. We attribute it to the named distro and look up the
-#      vendor's overall lifecycle — for CentOS that's a 999 floor, so
-#      every CentOS string flags. For Ubuntu / Debian / RHEL we need a
-#      version, which is rare in Server headers.
+#   2. Distro named WITH a version in the Server header parens annotation.
+#      Rare, but unambiguous when present.
 #
-#   3. TLS-fingerprint corroboration. If the TLS check found that the
-#      server still negotiates TLS 1.0 / 1.1 / SSLv3, we record it as a
-#      'tls_old_stack' signal alongside the OS finding. This does NOT
-#      by itself identify a specific OS — operators backport, link
-#      statically, etc. — but if the Server header already named CentOS
-#      or IIS 7.5, the TLS signal strengthens the case.
+#   3. Distro named WITHOUT a version, resolved from the package version.
+#      "Apache/2.4.29 (Ubuntu)" does not say which Ubuntu, but distributions
+#      freeze the upstream version for the life of a release, and 2.4.29 is
+#      the Apache that shipped in 18.04 and nowhere else. The mapping lives
+#      in os_eol.json under _package_hints and only lists versions that
+#      identify a release unambiguously. A version shared by two releases
+#      (nginx 1.18.0 = Ubuntu 20.04 and 22.04) is flagged only when every
+#      candidate is end of life.
 #
-# Per-OS confidence rules:
-#   - IIS ≤8 → high confidence, EOL
-#   - "CentOS" anywhere in Server header → high confidence, EOL
-#     (entire CentOS Linux line is EOL)
-#   - Ubuntu / Debian / RHEL with explicit version → high confidence
-#   - Distro name without version → reported but not flagged EOL
-#     (we can't tell which version is running)
+#   4. Distro package suffix in the PHP version. "PHP/7.2.24-0ubuntu0.18.04.17"
+#      and "PHP/7.3.31-1~deb10u5" name the release outright.
 #
-# Output shape mirrors check_versioned_libraries:
+# A distro named with no way to resolve its version is flagged only when
+# every release of that distro is end of life (CentOS Linux, Scientific
+# Linux). CentOS Stream is a separate, still-supported product and is
+# matched before the bare "CentOS" token.
+#
+# The same strategies run over the default error page footer when the probe
+# captured one ("Apache/2.2.22 (Ubuntu) Server at example.com Port 80").
+#
+# TLS 1.0 / 1.1 / SSLv3 still being negotiated is recorded as corroborating
+# evidence (tls_old_stack) but never identifies an OS on its own.
+#
+# Detection stays conservative on purpose: a wrong "your OS is end of life"
+# is painful for the operator who receives the report.
+#
+# Output shape:
 #   {
 #     "os_findings": [
-#       {"os": "iis", "version": "7.5", "eol_status": "eol",
-#        "eol_message": "...", "underlying_os": "Windows Server 2008 R2",
-#        "source": "server_header"},
+#       {"os": "ubuntu", "name": "Ubuntu", "version": "18.04",
+#        "eol_status": "eol", "eol_last_release": "2023-05-31",
+#        "eol_message": "...", "source": "server_header",
+#        "notes": ["Release inferred from the Apache 2.4.29 package version", ...]},
 #       ...
 #     ],
-#     "tls_old_stack": True/False,    # corroborating TLS-fingerprint signal
+#     "tls_old_stack": True/False,
 #     "tls_signals": ["TLSv1.0 negotiated", ...],
 #     "any_eol": True/False,
 #   }
@@ -4234,36 +4509,47 @@ def check_tech_eol(server_header_result: dict) -> dict:
 # Server-header IIS version regex: "Microsoft-IIS/7.5" → captures "7.5".
 _IIS_VERSION_RE = re.compile(r'\bMicrosoft-IIS/(\d+(?:\.\d+)?)', re.IGNORECASE)
 
-# Server-header parens distro annotation: "Apache/2.4.6 (CentOS)" or
-# "Apache/2.4.7 (Ubuntu)" or "Apache/2.4.41 (Ubuntu) mod_wsgi/4.6.8 ..." etc.
-# We capture the first parens annotation; subsequent ones tend to be modules
-# (mod_wsgi, mod_ssl) rather than distros.
+# Server-header parens annotation: "Apache/2.4.6 (CentOS)".
 _DISTRO_PARENS_RE = re.compile(r'\(([^)]+)\)')
 
-# Distro names we recognize inside the parens annotation. The dict maps
-# the lowercase token we look for to the OS_EOL key.
-_DISTRO_NAME_TO_KEY = {
-    "centos":                  "centos",
-    "red hat":                 "rhel",
-    "rhel":                    "rhel",
-    "red hat enterprise linux":"rhel",
-    "ubuntu":                  "ubuntu",
-    "debian":                  "debian",
-    "freebsd":                 "freebsd",
-}
+# (token to look for inside the parens, OS_EOL key, package-hint family).
+# ORDER MATTERS: "centos stream" must be tried before "centos", "raspbian"
+# before "debian". Keys with no OS_EOL entry (suse, fedora) are recognised so
+# the report can name the OS, but are never judged.
+_DISTRO_TOKENS = [
+    ("centos stream",            "centos-stream",    "el"),
+    ("centos",                   "centos",           "el"),
+    ("red hat enterprise linux", "rhel",             "el"),
+    ("red hat",                  "rhel",             "el"),
+    ("rhel",                     "rhel",             "el"),
+    ("almalinux",                "almalinux",        "el"),
+    ("rocky",                    "rocky-linux",      "el"),
+    ("oracle linux",             "oracle-linux",     "el"),
+    ("scientific",               "scientific-linux", "el"),
+    ("ubuntu",                   "ubuntu",           "ubuntu"),
+    ("raspbian",                 "debian",           "debian"),
+    ("debian",                   "debian",           "debian"),
+    ("amazon",                   "amazon-linux",     None),
+    ("freebsd",                  "freebsd",          None),
+    ("suse",                     "suse",             None),
+    ("fedora",                   "fedora",           None),
+]
+# Backwards-compatible view of the table above (token → OS key).
+_DISTRO_NAME_TO_KEY = {tok: key for tok, key, _fam in _DISTRO_TOKENS}
 
-# Version pattern that may appear after the distro name within the parens —
-# rare in Apache Server headers (most just say "(Ubuntu)" without a version),
-# but Nginx packaging sometimes includes it.
+_OS_FALLBACK_NAMES = {"suse": "SUSE Linux", "fedora": "Fedora Linux"}
+
+# Version that may appear after the distro name within the parens.
 _DISTRO_VERSION_RE = re.compile(r'(\d+(?:\.\d+)?(?:\.\d+)?)')
 
-# Per-IIS-minor underlying-Windows-Server table. The major-version JSON entry
-# only carries one EOL date and one underlying_os string per major (because
-# 7.0/7.5 and 8.0/8.5 share EOL dates), but the rendering layer wants to
-# distinguish "Server 2008" from "Server 2008 R2" in the user-facing text.
-# This dict refines the underlying_os AFTER the JSON lookup. IIS 10.0 is
-# handled separately because TLS context narrows the candidate Windows
-# Server release.
+# Web-server package versions used for release inference.
+_PKG_VERSION_RES = [
+    ("apache", "Apache", re.compile(r"\bApache/(\d+\.\d+\.\d+)", re.IGNORECASE)),
+    ("nginx",  "nginx",  re.compile(r"\bnginx/(\d+\.\d+\.\d+)", re.IGNORECASE)),
+]
+
+# Per-IIS-minor underlying-Windows-Server table. The rendering layer wants
+# "Server 2008" and "Server 2008 R2" told apart.
 _IIS_MINOR_REFINEMENTS = {
     "5.0": "Windows 2000 Server",
     "5.1": "Windows XP",
@@ -4277,22 +4563,13 @@ _IIS_MINOR_REFINEMENTS = {
 
 
 def _refine_iis_finding(finding: dict, tls_result: dict | None) -> dict:
-    """Refine an IIS finding from check_os_eol with per-minor underlying-OS
-    detail and a TLS-capability narrative.
+    """Refine an IIS finding with the precise underlying Windows Server
+    release and, for IIS 10.0, a TLS-capability narrative.
 
-    The JSON entry's underlying_os is generic ("Windows Server 2008 / 2008
-    R2"); this function tightens it to the precise Windows Server release
-    implied by the IIS minor version (7.0 → Server 2008, 7.5 → Server 2008
-    R2, etc), and for IIS 10.0 it adds a tls_capability_note that uses
-    the negotiated TLS version to narrow the candidate set.
-
-    Microsoft's official position (Microsoft Learn) is that TLS 1.3 in
-    Schannel is supported only on Windows Server 2022 and later — enabling
-    TLS 1.3 on earlier versions via registry hacks is not a supported
-    configuration. So:
+    Microsoft's position is that TLS 1.3 in Schannel is supported only on
+    Windows Server 2022 and later. So:
       - IIS 10.0 + TLS 1.3 → likely Server 2022 or 2025
-      - IIS 10.0 + non-TLS-1.3 → likely Server 2016 or 2019; getting TLS
-        1.3 supportably requires moving to Server 2022 or later
+      - IIS 10.0 + non-TLS-1.3 → likely Server 2016 or 2019
       - IIS 10.0 + unknown TLS → can't narrow
 
     Returns the same dict back, mutated in place.
@@ -4303,6 +4580,9 @@ def _refine_iis_finding(finding: dict, tls_result: dict | None) -> dict:
         finding["underlying_os"] = refined
 
     if iis_ver.startswith("10."):
+        ws = (OS_EOL.get("windows-server") or {}).get("releases") or {}
+        d2016 = (ws.get("2016") or {}).get("eol") or "2027-01-12"
+        d2019 = (ws.get("2019") or {}).get("eol") or "2029-01-09"
         tls_ver = ""
         if tls_result and not tls_result.get("error"):
             tls_ver = (tls_result.get("version") or "")
@@ -4320,8 +4600,8 @@ def _refine_iis_finding(finding: dict, tls_result: dict | None) -> dict:
             finding["tls_capability_note"] = (
                 f"IIS 10.0 + {tls_ver} → likely Server 2016 or 2019; "
                 "to support TLS 1.3 you would need to upgrade to Server "
-                "2022 or later (Server 2016 ends extended support "
-                "2027-01-12; Server 2019 ends 2029-01-09)"
+                f"2022 or later (Server 2016 ends extended support "
+                f"{d2016}; Server 2019 ends {d2019})"
             )
         else:
             finding["underlying_os"] = (
@@ -4335,176 +4615,156 @@ def _refine_iis_finding(finding: dict, tls_result: dict | None) -> dict:
     return finding
 
 
-def _annotate_os_eol(os_key: str, version: str, source: str) -> dict:
+def _annotate_os_eol(os_key: str, version: str, source: str, today=None) -> dict:
     """Look up EOL status for a detected OS + version.
 
-    Mirrors _annotate_library_eol but uses OS_EOL. Returns a dict with at
-    least {os, version, source}, plus eol_status and eol_message when EOL
-    data is available. 'source' indicates which detection strategy fired
-    (server_header, server_header_iis, or tls_corroboration).
+    Returns {os, name, version, source, eol_status}. On 'eol' also
+    eol_message, eol_last_release (the EOL date) and a 'notes' list. An empty
+    version is judged 'eol' only when every release of that OS is end of life.
     """
-    out = {"os": os_key, "version": version, "source": source}
+    today = today or _eol_today()
     entry = OS_EOL.get(os_key)
-    if not entry:
+    name = ((entry or {}).get("name") if isinstance(entry, dict) else None) \
+        or _OS_FALLBACK_NAMES.get(os_key) or os_key
+    out = {"os": os_key, "name": name, "version": version, "source": source}
+    if not isinstance(entry, dict):
         out["eol_status"] = "unknown"
         return out
 
-    # Determine the major-version key for lookup. Ubuntu uses two-segment
-    # majors ("22.04"), windows-server uses 4-digit years ("2016"), most
-    # others use a single integer.
-    if entry.get("min_supported_major_minor"):
-        # Ubuntu-style: keep "22.04" as the lookup key
-        parts = version.split(".")
-        major_key = ".".join(parts[:2]) if len(parts) >= 2 else parts[0]
-    else:
-        major_key = version.split(".")[0]
-
-    # Floor comparison
-    min_floor_str = entry.get("min_supported_major_minor")
-    if min_floor_str:
-        def _vt(s):
-            try:
-                return tuple(int(p) for p in s.split("."))
-            except ValueError:
-                return ()
-        floor_tuple = _vt(min_floor_str)
-        major_tuple = _vt(major_key)
-        below_floor = bool(major_tuple) and bool(floor_tuple) and major_tuple < floor_tuple
-    else:
-        floor_int = entry.get("min_supported_major")
-        try:
-            major_int = int(major_key)
-            below_floor = floor_int is not None and major_int < floor_int
-        except ValueError:
-            # Non-numeric version (e.g. "?"). Special case: a 999 floor means
-            # the entire OS is EOL by convention, so we should still flag
-            # even when we couldn't extract a version. Otherwise (real floor,
-            # missing version), we can't compare and don't flag.
-            below_floor = (floor_int == 999)
-
-    eol_majors = entry.get("eol_majors") or {}
-    specific = eol_majors.get(major_key)
-
-    if below_floor or specific:
-        out["eol_status"] = "eol"
-        if specific:
-            parts = []
-            if specific.get("last_version"):
-                parts.append(f"last release {specific['last_version']}")
-            if specific.get("last_release"):
-                parts.append(specific["last_release"])
-            detail = " ".join(parts) if parts else "version EOL"
-            out["eol_message"] = f"{os_key} {major_key} — {detail}"
-            if specific.get("last_release"):
-                out["eol_last_release"] = specific["last_release"]
-            if specific.get("last_version"):
-                out["eol_last_version"] = specific["last_version"]
-            if specific.get("underlying_os"):
-                out["underlying_os"] = specific["underlying_os"]
-        else:
-            # Below floor with no specific entry. Two sub-cases:
-            #  - Floor is 999 → entire OS is EOL by convention. We may not
-            #    even have a version (CentOS in a Server header rarely
-            #    includes one). The phrasing "all versions EOL" is the
-            #    accurate framing, not "below minimum supported".
-            #  - Real floor (e.g. Ubuntu floor 22.04, detected 16.04) →
-            #    "below minimum supported" phrasing.
-            floor_for_msg = entry.get("min_supported_major")
-            if floor_for_msg == 999:
-                out["eol_message"] = f"{os_key} — all versions EOL"
-            else:
-                out["eol_message"] = (
-                    f"{os_key} {major_key} — major version below minimum supported"
-                )
-    else:
-        out["eol_status"] = "ok"
-
+    j = _eol_judge(entry, "" if version in ("", "?") else version, today)
+    out["eol_status"] = j["status"]
+    if j["status"] == "eol":
+        out["eol_message"] = f"{name} {version}".strip() + " — " + _eol_phrase(j, version)
+        if j.get("date"):
+            out["eol_last_release"] = j["date"]
+        notes = []
+        ext = j.get("extended")
+        if isinstance(ext, str) and ext > today:
+            notes.append(f"Paid extended support is sold until {ext}; "
+                         "the audit cannot see whether this server has it")
+        if j.get("reason") == "retired" and entry.get("retired_reason"):
+            notes.append(entry["retired_reason"])
+        if notes:
+            out["notes"] = notes
+        if entry.get("source"):
+            out["eol_source"] = entry["source"]
     return out
 
 
-def check_os_eol(server_header: str, tls_result: dict | None = None) -> dict:
-    """Detect EOL operating systems via Server header and TLS fingerprinting.
+def _infer_release_from_packages(family: str, text: str):
+    """(candidate releases, note) from an exact web-server package version in
+    `text`, using os_eol.json _package_hints. ([], None) when nothing maps."""
+    hints = (OS_EOL.get("_package_hints") or {}).get(family or "") or {}
+    for pkg_key, pkg_name, pattern in _PKG_VERSION_RES:
+        m = pattern.search(text or "")
+        if not m:
+            continue
+        rel = (hints.get(pkg_key) or {}).get(m.group(1))
+        if rel:
+            cands = [rel] if isinstance(rel, str) else list(rel)
+            return cands, f"Release inferred from the {pkg_name} {m.group(1)} package version"
+    return [], None
+
+
+def _os_findings_from_banner(text: str, source: str, seen: set, today) -> list:
+    """Strategies 2 and 3 over one banner string (a Server header value or an
+    error-page footer)."""
+    findings = []
+    for paren_match in _DISTRO_PARENS_RE.finditer(text or ""):
+        inner = paren_match.group(1).lower().strip()
+        for token, os_key, family in _DISTRO_TOKENS:
+            if token not in inner:
+                continue
+            if os_key in seen:
+                break
+            seen.add(os_key)
+
+            ver_match = _DISTRO_VERSION_RE.search(inner)
+            if ver_match:
+                findings.append(_annotate_os_eol(os_key, ver_match.group(1), source, today))
+                break
+
+            cands, note = _infer_release_from_packages(family, text)
+            if len(cands) == 1:
+                f = _annotate_os_eol(os_key, cands[0], source, today)
+                f["notes"] = [note] + (f.get("notes") or [])
+                findings.append(f)
+            elif len(cands) > 1:
+                judged = [_annotate_os_eol(os_key, c, source, today) for c in cands]
+                if all(x.get("eol_status") == "eol" for x in judged):
+                    f = judged[-1]   # newest candidate — the most generous reading
+                    f["notes"] = [f"{note}, shipped in {' and '.join(cands)}; "
+                                  "both are end of life"] + (f.get("notes") or [])
+                    findings.append(f)
+                else:
+                    f = _annotate_os_eol(os_key, "", source, today)
+                    f["eol_status"] = "unknown"
+                    f["candidates"] = cands
+                    findings.append(f)
+            else:
+                # No version anywhere. Flagged only if every release of this
+                # OS is end of life; otherwise reported without a verdict.
+                findings.append(_annotate_os_eol(os_key, "", source, today))
+            break   # one distro per parens group
+    return findings
+
+
+def check_os_eol(server_header: str, tls_result: dict | None = None,
+                 x_powered_by: str = "", error_banner: str = "", today=None) -> dict:
+    """Detect end-of-life operating systems from response headers.
 
     Args:
-        server_header: The raw Server header value (e.g. "Apache/2.4.6 (CentOS)"
-                       or "Microsoft-IIS/7.5"). Empty string is fine.
-        tls_result: The check_tls() result dict. We look at .version to
-                    detect TLS 1.0/1.1/SSLv3 still being negotiated, which
-                    corroborates an old-stack hypothesis. Optional.
+        server_header: raw Server header value ("Apache/2.4.6 (CentOS)",
+                       "Microsoft-IIS/7.5"). Empty string is fine.
+        tls_result:    check_tls() result; TLS 1.0/1.1/SSLv3 negotiated is
+                       recorded as corroboration. Optional.
+        x_powered_by:  raw X-Powered-By value; a distro-packaged PHP version
+                       names the distro release. Optional.
+        error_banner:  server banner captured from a default error page.
+                       Optional.
 
-    Returns:
-        {
-          "os_findings": [...],            # list of {os, version, eol_status, ...}
-          "tls_old_stack": bool,           # corroborating signal
-          "tls_signals": [str, ...],
-          "any_eol": bool,
-        }
-
-    Detection is intentionally conservative — false positives on "your OS
-    is EOL" findings are painful for operators, so we only annotate
-    high-confidence signals. Every match goes through _annotate_os_eol()
-    which consults OS_EOL.
+    See the block comment above for strategies and output shape.
     """
+    today = today or _eol_today()
     findings: list[dict] = []
     tls_signals: list[str] = []
+    seen_os_keys: set[str] = set()
 
     # ── Strategy 1: IIS version ──
-    if server_header:
-        m = _IIS_VERSION_RE.search(server_header)
-        if m:
-            iis_ver = m.group(1)
-            iis_finding = _annotate_os_eol("iis", iis_ver, "server_header_iis")
-            # Refine with per-minor underlying-OS detail + TLS-capability
-            # narrative. This lets the rendering layer distinguish "Server
-            # 2008" from "Server 2008 R2", and produces the IIS-10-plus-TLS
-            # narrative the renderer reads back when displaying findings.
+    for text, source in ((server_header, "server_header_iis"), (error_banner, "server_header_iis")):
+        m = _IIS_VERSION_RE.search(text or "")
+        if m and "iis" not in seen_os_keys:
+            seen_os_keys.add("iis")
+            iis_finding = _annotate_os_eol("iis", m.group(1), source, today)
             findings.append(_refine_iis_finding(iis_finding, tls_result))
 
-    # ── Strategy 2: distro name in parens annotation ──
-    # Walk all parens groups since Apache may emit several. First distro-name
-    # match wins per OS key (we don't want to double-flag "Ubuntu" if the
-    # operator vended it twice).
-    seen_os_keys: set[str] = set()
-    if server_header:
-        for paren_match in _DISTRO_PARENS_RE.finditer(server_header):
-            inner = paren_match.group(1).lower().strip()
-            for distro_token, os_key in _DISTRO_NAME_TO_KEY.items():
-                if distro_token in inner and os_key not in seen_os_keys:
-                    # Try to pull a version out of the parens content. If
-                    # the distro is one with a 999 floor (CentOS), version
-                    # doesn't matter; otherwise we only flag if we have a
-                    # version to compare against.
-                    ver_match = _DISTRO_VERSION_RE.search(inner)
-                    detected_version = ver_match.group(1) if ver_match else ""
-                    entry = OS_EOL.get(os_key, {})
-                    floor = entry.get("min_supported_major")
-                    # Treat 999 floors as "any version flags" — we don't
-                    # need a version to know it's EOL.
-                    if floor == 999:
-                        findings.append(_annotate_os_eol(os_key, detected_version or "?", "server_header"))
-                        seen_os_keys.add(os_key)
-                    elif detected_version:
-                        findings.append(_annotate_os_eol(os_key, detected_version, "server_header"))
-                        seen_os_keys.add(os_key)
-                    else:
-                        # Distro named but no version — record the
-                        # detection without an EOL claim, so the report
-                        # can show "Ubuntu (version unknown)" without
-                        # penalizing the score.
-                        findings.append({
-                            "os":         os_key,
-                            "version":    "",
-                            "source":     "server_header",
-                            "eol_status": "unknown",
-                        })
-                        seen_os_keys.add(os_key)
-                    break  # one distro per parens group is enough
+    # ── Strategies 2 + 3: distro in parens, version explicit or inferred ──
+    findings += _os_findings_from_banner(server_header, "server_header", seen_os_keys, today)
+    findings += _os_findings_from_banner(error_banner, "error_page", seen_os_keys, today)
 
-    # ── Strategy 3: TLS fingerprint corroboration ──
-    # We treat TLS 1.0 / 1.1 / SSLv3 as a strong "old stack" signal, but
-    # do NOT claim a specific OS from it. The TLS version alone could
-    # mean the operator deliberately enabled legacy compat for a partner
-    # or kept default OpenSSL settings.
+    # ── Strategy 4: distro package suffix in the PHP version ──
+    for text in (x_powered_by, server_header, error_banner):
+        m = _TECH_VERSION_PATTERNS[0][1].search(text or "")
+        if not m:
+            continue
+        distro = _php_distro_release(m.group(1))
+        if not distro:
+            continue
+        os_key, release = distro
+        prior = next((f for f in findings if f.get("os") == os_key), None)
+        if prior is None or not prior.get("version"):
+            f = _annotate_os_eol(os_key, release, "php_package", today)
+            f["notes"] = [f"Release inferred from the PHP package version "
+                          f"({m.group(1)})"] + (f.get("notes") or [])
+            if prior is not None:
+                findings.remove(prior)
+            findings.append(f)
+            seen_os_keys.add(os_key)
+        break
+
+    # ── TLS fingerprint corroboration ──
+    # TLS 1.0 / 1.1 / SSLv3 is a strong "old stack" signal, but the operator
+    # may have enabled legacy compat deliberately, so it never names an OS.
     tls_old_stack = False
     if tls_result and not tls_result.get("error"):
         ver = (tls_result.get("version") or "").upper()
@@ -4918,16 +5178,20 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
         e, p = _w(label, outcome)
         pts.append((f"{prefix}{label}", e, p))
 
-    has_mx  = bool(mx.get("entries")) and not mx.get("null_mx")
     spf_s   = spf.get("status", "")
     has_spf = spf_s not in ("error", "missing", "", None)
 
-    # SPF policy is scored when a record exists OR when there's an MX.
-    # Rationale: SPF on a no-MX domain is deliberate anti-spoofing (e.g.
-    # v=spf1 -all to block forged senders); its strength is meaningful.
+    # SPF policy is scored on EVERY domain the SPF lookup answered for,
+    # mail-sending or not. A domain with no MX can still be forged in a From
+    # address, and the practice for one is to publish "v=spf1 -all"
+    # (null_sender, full marks). Missing therefore scores 0/18 whether or not
+    # there is an MX. It used to be skipped on no-MX domains, which let a
+    # parked domain that publishes nothing out-percentage one that does.
+    # Not scored only when the lookup itself failed or was skipped — that
+    # is missing data, not a missing record.
     if spf_s == "null_sender":
         _p("SPF policy", "null_sender")
-    elif (has_mx or has_spf) and spf_s != "error":
+    elif spf_s and spf_s != "error":
         # Direct lookup: the rubric's outcome keys match the spf_s values
         # for the eight non-null-sender outcomes. Default to 'missing' for
         # an unrecognised status to keep the denominator stable.
@@ -4936,13 +5200,18 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
         else:
             _p("SPF policy", "missing")
 
-        lc = spf.get("lookup_count")
-        if lc is not None:
-            _p("SPF lookup count",
-               "within_limit" if lc <= _THRESH["spf_lookup_limit"] else "exceeds_limit")
+        # Refinements of a record that exists. With no record there is no
+        # lookup count and no redirect to judge, so these rows are not
+        # scored (previously a missing record still collected the 4 points
+        # for "SPF redirect resolves").
+        if has_spf:
+            lc = spf.get("lookup_count")
+            if lc is not None:
+                _p("SPF lookup count",
+                   "within_limit" if lc <= _THRESH["spf_lookup_limit"] else "exceeds_limit")
 
-        if spf_s != "redirect_target_no_spf":
-            _p("SPF redirect", "resolves")
+            if spf_s != "redirect_target_no_spf":
+                _p("SPF redirect", "resolves")
 
     if not dmarc.get("error"):
         present = dmarc.get("present")
@@ -5146,6 +5415,18 @@ def score_results(results):
             _p("Certificate lifetime",
                "short_lived" if lifetime <= _THRESH["cert_lifetime_max_days"] else "long_lived")
 
+        # Renewal headroom: a certificate inside the last 10% of its lifetime
+        # should already have been replaced. ACME clients renew with about a
+        # third of the lifetime left (and around the halfway point for 6-day
+        # certificates), so falling under 10% means renewal is failing or is
+        # being done by hand at the last minute. Relative, not a day count,
+        # so it means the same thing for a 6-day and a 199-day certificate.
+        remaining_pct = tls.get("cert_remaining_pct")
+        if remaining_pct is not None:
+            _p("Certificate renewal",
+               "on_schedule" if remaining_pct >= _THRESH["cert_renewal_min_remaining_pct"]
+               else "overdue")
+
         names_match = tls.get("cert_names_match")
         if names_match is not None:
             _p("Certificate name match", "match" if names_match else "no_match")
@@ -5197,6 +5478,7 @@ def score_results(results):
             _p("TLS connection",         "cert_error" if cert_err else "no_tls")
             _p("TLS 1.3",                "older")
             _p("Certificate lifetime",   "long_lived")
+            _p("Certificate renewal",    "no_cert")
             _p("Certificate name match", "cert_error" if cert_err else "no_match")
             _p("HTTP/2",                 "not_supported")
             _p("HTTP version",           "http1")

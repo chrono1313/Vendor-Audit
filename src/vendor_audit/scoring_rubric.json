@@ -1,10 +1,11 @@
 {
-    "rubric_version": "1.5.8",
+    "rubric_version": "1.6.0",
     "compatible_with": "vendor_audit 1.x",
     "_comment": "Scoring weights, thresholds, labels, and category mapping for vendor_audit. The branching logic in audit_checks.py reads from this file. Each entry under 'weights' is {earned, possible} keyed by score outcome label. 'possible' is the denominator that always applies for that outcome; 'earned' is the value awarded in the named outcome. An outcome with possible=0 is never counted in either numerator or denominator (used for partial checks where absence proves nothing).",
     "thresholds": {
         "spf_lookup_limit": 10,
-        "cert_lifetime_max_days": 199,
+        "cert_lifetime_max_days": 91,
+        "cert_renewal_min_remaining_pct": 10,
         "score_color_green_pct": 80,
         "score_color_yellow_pct": 50,
         "hsts_max_age_min_seconds": 15552000,
@@ -63,6 +64,7 @@
             "TLS connection",
             "TLS 1.3",
             "Certificate lifetime",
+            "Certificate renewal",
             "Certificate name match",
             "Cert covers www variant",
             "Cert chain completeness",
@@ -530,6 +532,20 @@
             "older": {
                 "earned": 0,
                 "possible": 10
+            }
+        },
+        "Certificate renewal": {
+            "on_schedule": {
+                "earned": 4,
+                "possible": 4
+            },
+            "overdue": {
+                "earned": 0,
+                "possible": 4
+            },
+            "no_cert": {
+                "earned": 0,
+                "possible": 4
             }
         },
         "Certificate lifetime": {
@@ -1131,6 +1147,7 @@
         "TLS connection": "TLS connection successful",
         "TLS 1.3": "TLS 1.3 negotiated",
         "Certificate lifetime": "Certificate auto-renewed (short-lived)",
+        "Certificate renewal": "Certificate renewed on schedule",
         "Certificate name match": "Certificate name matches domain",
         "HTTP version": "HTTP/3 supported",
         "HTTP\u2192HTTPS redirect": "Plaintext HTTP not serving content",
@@ -1204,7 +1221,7 @@
         "SPF policy": "SPF soft fail only (~all) - not fully enforcing",
         "TLS connection": "TLS running but certificate is untrusted (self-signed/expired)",
         "Certificate name match": "TLS running but certificate is untrusted (self-signed/expired)",
-        "Certificate lifetime": "Certificate lifetime exceeds 199 days - manual renewal likely",
+        "Certificate lifetime": "Certificate lifetime exceeds 91 days - manual renewal likely",
         "MTA-STS": "MTA-STS in testing mode (not enforced)",
         "DANE TLSA on MX": "DANE/TLSA on some but not all MX hosts",
         "STARTTLS-MX": "STARTTLS-MX: TLS 1.2 negotiated (TLS 1.3 not offered)",

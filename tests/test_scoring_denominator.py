@@ -18,6 +18,10 @@ These tests assert that removing a feature that SHOULD always be scored (given
 the domain is a web/mail domain) does NOT shrink the denominator — the rows
 must still be present, scored 0.
 
+Also covered: SPF is scored on every domain (a no-MX domain with no SPF
+record scores 0/18 instead of dropping the row), and the certificate
+lifetime / renewal thresholds.
+
 Deliberately NOT tested (these correctly score only when present):
   - Cookie flags       — no cookies means nothing to secure
   - DANE / STARTTLS-MX — only relevant with MX
@@ -44,7 +48,8 @@ def _full_domain():
                   "sp": "reject", "rua": ["mailto:x@ex.com"]},
         "mx": {"entries": [{"priority": 10, "host": "mx.ex.com"}], "null_mx": False},
         "tls": {"error": None, "version": "TLSv1.3", "cert_names_match": True,
-                "cert_lifetime_days": 80, "chain_status": "complete"},
+                "cert_lifetime_days": 80, "cert_remaining_pct": 60.0,
+                "cert_remaining_seconds": 48 * 86400, "chain_status": "complete"},
         "http_version": {"version": "HTTP/3"},
         "http_redirect": {"status": "https_only"},
         "server_header": {"server": "nginx", "csp_quality": "present",
@@ -99,6 +104,84 @@ _MUST_NOT_SHRINK = [
 ]
 
 
+def _rows(results):
+    _, _, pts = audit_checks.score_results(results)
+    return {label: (earned, possible) for label, earned, possible in pts}
+
+
+def _spf_and_cert_cases():
+    """Targeted row-level assertions. Returns a list of failure strings."""
+    fails = []
+
+    # SPF is scored on every domain. No MX + no SPF record must score 0/18,
+    # not vanish (the bug: the row was gated on 'has MX or has SPF').
+    d = _full_domain()
+    d["mx"] = {"entries": [], "null_mx": False}
+    d["spf"] = {"status": "missing", "record": None, "lookup_count": None}
+    rows = _rows(d)
+    if rows.get("SPF policy") != (0, 18):
+        fails.append(f"  FAIL no MX + no SPF: SPF policy row is {rows.get('SPF policy')}, want (0, 18)")
+
+    # A missing record has no redirect and no lookup count to judge.
+    d = _full_domain()
+    d["spf"] = {"status": "missing", "record": None, "lookup_count": None}
+    rows = _rows(d)
+    for label in ("SPF redirect", "SPF lookup count"):
+        if label in rows:
+            fails.append(f"  FAIL MX + no SPF: '{label}' scored {rows[label]} with no SPF record")
+    if rows.get("SPF policy") != (0, 18):
+        fails.append(f"  FAIL MX + no SPF: SPF policy row is {rows.get('SPF policy')}, want (0, 18)")
+
+    # No MX + "v=spf1 -all" is the recommended posture: full marks.
+    d = _full_domain()
+    d["mx"] = {"entries": [], "null_mx": False}
+    d["spf"] = {"status": "null_sender", "record": "v=spf1 -all", "lookup_count": 0}
+    if _rows(d).get("SPF policy") != (18, 18):
+        fails.append("  FAIL no MX + v=spf1 -all: SPF policy should be 18/18")
+
+    # A failed or deadline-skipped SPF lookup is missing data, not a missing
+    # record: no SPF rows at all.
+    for spf in ({"status": "error", "error": "SERVFAIL"},
+                {"error": "Skipped: audit deadline exceeded"}):
+        d = _full_domain()
+        d["spf"] = spf
+        if any(k.startswith("SPF") for k in _rows(d)):
+            fails.append(f"  FAIL SPF lookup failed ({spf}): SPF rows were scored")
+
+    # Certificate lifetime: 91 days or less reads as automated issuance.
+    for days, want in ((90, (10, 10)), (91, (10, 10)), (92, (0, 10)), (199, (0, 10)), (6, (10, 10))):
+        d = _full_domain()
+        d["tls"]["cert_lifetime_days"] = days
+        got = _rows(d).get("Certificate lifetime")
+        if got != want:
+            fails.append(f"  FAIL cert lifetime {days}d: got {got}, want {want}")
+
+    # Certificate renewal: under 10% of lifetime left is overdue. Percent of
+    # lifetime, so a ~160-hour certificate is judged the same way.
+    for pct, want in ((60.0, (4, 4)), (10.0, (4, 4)), (9.9, (0, 4)), (-3.0, (0, 4))):
+        d = _full_domain()
+        d["tls"]["cert_remaining_pct"] = pct
+        got = _rows(d).get("Certificate renewal")
+        if got != want:
+            fails.append(f"  FAIL cert renewal at {pct}% left: got {got}, want {want}")
+
+    # The text report keeps its own copy of the two certificate thresholds
+    # for wording; they must not drift from the rubric.
+    from vendor_audit import audit_txt_report as atr
+    th = audit_checks.RUBRIC["thresholds"]
+    if atr._CERT_LIFETIME_MAX_DAYS != th["cert_lifetime_max_days"]:
+        fails.append("  FAIL audit_txt_report._CERT_LIFETIME_MAX_DAYS differs from the rubric")
+    if atr._CERT_RENEWAL_MIN_PCT != th["cert_renewal_min_remaining_pct"]:
+        fails.append("  FAIL audit_txt_report._CERT_RENEWAL_MIN_PCT differs from the rubric")
+
+    # No remaining-life figure (older cached result) → row not scored.
+    d = _full_domain()
+    d["tls"].pop("cert_remaining_pct")
+    if "Certificate renewal" in _rows(d):
+        fails.append("  FAIL cert renewal scored without a remaining-life figure")
+    return fails
+
+
 def run():
     base = _full_domain()
     _, base_denom, _ = audit_checks.score_results(base)
@@ -119,6 +202,11 @@ def run():
             )
         else:
             print(f"  ok   {name}: shrink {shrink} (allowed {allowed_shrink})")
+
+    row_failures = _spf_and_cert_cases()
+    if not row_failures:
+        print("  ok   SPF scored on every domain; certificate lifetime and renewal thresholds")
+    failures.extend(row_failures)
 
     if failures:
         print("\nSCORING DENOMINATOR REGRESSIONS:\n" + "\n".join(failures))

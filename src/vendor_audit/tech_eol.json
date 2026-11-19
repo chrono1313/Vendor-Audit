@@ -1,35 +1,797 @@
 {
-  "_comment": "End-of-life data for server-side technologies disclosed in HTTP response headers (Server, X-Powered-By). Distinct from library_eol.json, which covers client-side JS/CSS libraries detected in page HTML. Same schema shape so _annotate_eol() in audit_checks.py can consume both. Versions here are keyed major.minor because server-runtime lifecycles (PHP, Python, etc.) differ by minor version, not just major. Dates are authoritative end-of-life (no security patches) dates from each project's official lifecycle page.",
-  "_schema_version": 1,
-  "_verified_on": "2026-09-29",
+  "_comment": "End-of-life data for server software disclosed in HTTP response headers (Server, X-Powered-By, X-AspNet-Version, X-AspNetMvc-Version, MicrosoftSharePointTeamServices) or in a default error page. Same date-driven schema v2 as library_eol.json; see that file's _comment. One extra field: 'only_flag_below'. Linux distributions keep patching the package versions they ship long after upstream stops, and the audit cannot see from outside whether a given nginx/OpenSSL/Python is a distro package. For those products only release cycles BELOW 'only_flag_below' are judged; that floor is the oldest cycle any distribution still in free support ships, so everything under it is unpatched everywhere. The gate is lifted only when the Server header says the build is for Windows ((Win32), (Win64)), where no distribution is backporting anything. A (Unix) source build of the web server may still link the distribution's patched OpenSSL or Python, so the gate stays on.",
+  "_schema_version": 2,
+  "_generated_on": "2026-11-18",
+  "_verified_on": "2026-11-18",
   "php": {
-    "_note": "php.net/supported-versions. 4-year lifecycle (2yr active + 2yr security). 8.1 EOL 2025-12-31; 8.2 EOL 2026-12-31 (security-only now); 8.3/8.4/8.5 supported. Everything 8.0 and below is EOL.",
-    "_source": "https://www.php.net/supported-versions.php",
-    "min_supported_major_minor": "8.2",
-    "eol_majors": {
-      "8.1": {"last_release": "2025-12-31", "last_version": "8.1.x"},
-      "8.0": {"last_release": "2023-11-26", "last_version": "8.0.30"},
-      "7.4": {"last_release": "2022-11-28", "last_version": "7.4.33"},
-      "7.3": {"last_release": "2021-12-06", "last_version": "7.3.33"},
-      "7.2": {"last_release": "2020-11-30", "last_version": "7.2.34"},
-      "7.1": {"last_release": "2019-12-01", "last_version": "7.1.33"},
-      "7.0": {"last_release": "2019-01-10", "last_version": "7.0.33"},
-      "5.6": {"last_release": "2018-12-31", "last_version": "5.6.40"},
-      "5.5": {"last_release": "2016-07-21", "last_version": "5.5.38"},
-      "5.4": {"last_release": "2015-09-03", "last_version": "5.4.45"},
-      "5.3": {"last_release": "2014-08-14", "last_version": "5.3.29"}
-    }
+    "name": "PHP",
+    "endoflife": {
+      "product": "php"
+    },
+    "releases": {
+      "8.5": {
+        "eol": "2029-12-31",
+        "latest": "8.5.12"
+      },
+      "8.4": {
+        "eol": "2028-12-31",
+        "latest": "8.4.27"
+      },
+      "8.3": {
+        "eol": "2027-12-31",
+        "latest": "8.3.36"
+      },
+      "8.2": {
+        "eol": "2026-12-31",
+        "latest": "8.2.35"
+      },
+      "8.1": {
+        "eol": "2025-12-31",
+        "latest": "8.1.34"
+      },
+      "8.0": {
+        "eol": "2023-11-26",
+        "latest": "8.0.30"
+      },
+      "7.4": {
+        "eol": "2022-11-28",
+        "latest": "7.4.33"
+      },
+      "7.3": {
+        "eol": "2021-12-06",
+        "latest": "7.3.33"
+      },
+      "7.2": {
+        "eol": "2020-11-30",
+        "latest": "7.2.34"
+      },
+      "7.1": {
+        "eol": "2019-12-01",
+        "latest": "7.1.33"
+      },
+      "7.0": {
+        "eol": "2019-01-10",
+        "latest": "7.0.33"
+      },
+      "5.6": {
+        "eol": "2018-12-31",
+        "latest": "5.6.40"
+      },
+      "5.5": {
+        "eol": "2016-07-21",
+        "latest": "5.5.38"
+      },
+      "5.4": {
+        "eol": "2015-09-14",
+        "latest": "5.4.45"
+      },
+      "5.3": {
+        "eol": "2014-08-14",
+        "latest": "5.3.29"
+      },
+      "5.2": {
+        "eol": "2011-01-06",
+        "latest": "5.2.17"
+      },
+      "5.1": {
+        "eol": "2006-08-24",
+        "latest": "5.1.6"
+      },
+      "5.0": {
+        "eol": "2005-09-05",
+        "latest": "5.0.5"
+      },
+      "4.4": {
+        "eol": "2008-08-07",
+        "latest": "4.4.9"
+      },
+      "4.3": {
+        "eol": "2005-03-31",
+        "latest": "4.3.11"
+      },
+      "4.2": {
+        "eol": "2002-09-06",
+        "latest": "4.2.3"
+      },
+      "4.1": {
+        "eol": "2002-03-12",
+        "latest": "4.1.2"
+      },
+      "4.0": {
+        "eol": "2001-06-23",
+        "latest": "4.0.6"
+      }
+    },
+    "_note": "Judged on php.net's own lifecycle. Exception handled in code: a PHP version string that carries an Ubuntu or Debian package suffix is judged by that distro release instead, because the distro backports security fixes.",
+    "source": "https://endoflife.date/php"
   },
   "asp.net": {
-    "_note": "ASP.NET Framework versions exposed via X-AspNet-Version. The classic .NET Framework 1.x-3.x are long dead; 4.x is the last Framework line (supported as part of Windows). This covers the classic X-AspNet-Version disclosures, which almost always indicate old WebForms apps.",
-    "_source": "https://learn.microsoft.com/en-us/lifecycle/products/microsoft-net-framework",
-    "min_supported_major_minor": "4.0",
-    "eol_majors": {
-      "2.0": {"last_release": "2011-07-12", "last_version": "2.0.50727"},
-      "3.0": {"last_release": "2011-07-12", "last_version": "3.0"},
-      "3.5": {"last_release": "2011-07-12", "last_version": "3.5"},
-      "1.1": {"last_release": "2008-10-14", "last_version": "1.1.4322"},
-      "1.0": {"last_release": "2009-07-14", "last_version": "1.0.3705"}
-    }
+    "name": "ASP.NET",
+    "source": "https://learn.microsoft.com/en-us/lifecycle/products/microsoft-net-framework",
+    "min_supported": "4.0",
+    "releases": {
+      "3.5": {
+        "eol": true,
+        "last_release": "2011-07-12"
+      },
+      "3.0": {
+        "eol": true,
+        "last_release": "2011-07-12"
+      },
+      "2.0": {
+        "eol": true,
+        "last_release": "2011-07-12",
+        "last_version": "2.0.50727"
+      },
+      "1.1": {
+        "eol": true,
+        "last_release": "2008-10-14",
+        "last_version": "1.1.4322"
+      },
+      "1.0": {
+        "eol": true,
+        "last_release": "2009-07-14",
+        "last_version": "1.0.3705"
+      }
+    },
+    "_note": "Classic .NET Framework runtime version from X-AspNet-Version. Carried over unchanged from schema v1. Caveat: 2.0.50727 is the CLR version and is also reported by .NET Framework 3.5 SP1, which Microsoft supports until 2029-01-09 as a Windows component."
+  },
+  "asp.net-mvc": {
+    "name": "ASP.NET MVC",
+    "source": "https://dotnet.microsoft.com/en-us/platform/support/policy/aspnet",
+    "releases": {
+      "5": {
+        "eol": null
+      },
+      "4": {
+        "eol": "2019-07-01"
+      }
+    },
+    "_note": "From X-AspNetMvc-Version. Microsoft's ASP.NET support policy lists MVC 5.x as the supported version and gives July 1 2019 as end of support for MVC 4. MVC 1-3 are older than the oldest tracked release and are flagged with it."
+  },
+  "apache": {
+    "name": "Apache HTTP Server",
+    "endoflife": {
+      "product": "apache-http-server"
+    },
+    "releases": {
+      "2.4": {
+        "eol": null,
+        "latest": "2.4.71"
+      },
+      "2.2": {
+        "eol": "2017-07-11",
+        "latest": "2.2.34"
+      },
+      "2.0": {
+        "eol": "2013-07-10",
+        "latest": "2.0.65"
+      },
+      "1.3": {
+        "eol": "2010-02-03",
+        "latest": "1.3.42"
+      }
+    },
+    "_note": "2.4 is the only maintained branch and distributions patch within it, so the branch is all that needs judging. No supported distribution ships 2.2 or older.",
+    "source": "https://endoflife.date/apache-http-server"
+  },
+  "nginx": {
+    "name": "nginx",
+    "endoflife": {
+      "product": "nginx"
+    },
+    "releases": {
+      "1.31": {
+        "eol": null,
+        "latest": "1.31.8"
+      },
+      "1.30": {
+        "eol": null,
+        "latest": "1.30.6"
+      },
+      "1.29": {
+        "eol": "2026-05-13",
+        "latest": "1.29.8"
+      },
+      "1.28": {
+        "eol": "2026-04-14",
+        "latest": "1.28.3"
+      },
+      "1.27": {
+        "eol": "2025-06-24",
+        "latest": "1.27.5"
+      },
+      "1.26": {
+        "eol": "2025-04-23",
+        "latest": "1.26.3"
+      },
+      "1.25": {
+        "eol": "2024-05-29",
+        "latest": "1.25.5"
+      },
+      "1.24": {
+        "eol": "2024-04-23",
+        "latest": "1.24.0"
+      },
+      "1.23": {
+        "eol": "2023-05-23",
+        "latest": "1.23.4"
+      },
+      "1.22": {
+        "eol": "2023-04-11",
+        "latest": "1.22.1"
+      },
+      "1.21": {
+        "eol": "2022-06-21",
+        "latest": "1.21.6"
+      },
+      "1.20": {
+        "eol": "2022-05-24",
+        "latest": "1.20.2"
+      },
+      "1.19": {
+        "eol": "2021-05-25",
+        "latest": "1.19.10"
+      },
+      "1.18": {
+        "eol": "2021-04-20",
+        "latest": "1.18.0"
+      },
+      "1.17": {
+        "eol": "2020-05-26",
+        "latest": "1.17.10"
+      },
+      "1.16": {
+        "eol": "2020-04-20",
+        "latest": "1.16.1"
+      },
+      "1.15": {
+        "eol": "2019-05-21",
+        "latest": "1.15.12"
+      },
+      "1.14": {
+        "eol": "2019-04-23",
+        "latest": "1.14.2"
+      },
+      "1.13": {
+        "eol": "2018-06-05",
+        "latest": "1.13.12"
+      },
+      "1.12": {
+        "eol": "2018-04-17",
+        "latest": "1.12.2"
+      },
+      "1.11": {
+        "eol": "2017-04-25",
+        "latest": "1.11.13"
+      },
+      "1.10": {
+        "eol": "2017-04-12",
+        "latest": "1.10.3"
+      },
+      "1.9": {
+        "eol": "2016-05-24",
+        "latest": "1.9.15"
+      },
+      "1.8": {
+        "eol": "2016-04-26",
+        "latest": "1.8.1"
+      },
+      "1.7": {
+        "eol": "2015-04-28",
+        "latest": "1.7.12"
+      },
+      "1.6": {
+        "eol": "2015-04-21",
+        "latest": "1.6.3"
+      },
+      "1.5": {
+        "eol": "2014-04-24",
+        "latest": "1.5.13"
+      },
+      "1.4": {
+        "eol": "2014-04-24",
+        "latest": "1.4.7"
+      },
+      "1.3": {
+        "eol": "2013-05-07",
+        "latest": "1.3.16"
+      },
+      "1.2": {
+        "eol": "2013-04-24",
+        "latest": "1.2.9"
+      },
+      "1.1": {
+        "eol": "2012-05-15",
+        "latest": "1.1.19"
+      },
+      "1.0": {
+        "eol": "2012-04-23",
+        "latest": "1.0.15"
+      }
+    },
+    "only_flag_below": "1.14",
+    "_note": "Upstream supports only the current stable and mainline branches, but Debian, Ubuntu, RHEL and others ship and patch older branches for years (1.14 on RHEL 8, 1.18 on Ubuntu 22.04, 1.22 on Debian 12). Only branches below 1.14 are flagged: every distribution that shipped them is itself out of free support.",
+    "source": "https://endoflife.date/nginx"
+  },
+  "openssl": {
+    "name": "OpenSSL",
+    "endoflife": {
+      "product": "openssl"
+    },
+    "releases": {
+      "4.1": {
+        "eol": "2027-11-23",
+        "latest": "4.1.0"
+      },
+      "4.0": {
+        "eol": "2027-05-14",
+        "latest": "4.0.3"
+      },
+      "3.6": {
+        "eol": "2026-11-01",
+        "latest": "3.6.5"
+      },
+      "3.5": {
+        "eol": "2030-04-08",
+        "latest": "3.5.9"
+      },
+      "3.4": {
+        "eol": "2026-10-22",
+        "latest": "3.4.8"
+      },
+      "3.3": {
+        "eol": "2026-04-09",
+        "latest": "3.3.7"
+      },
+      "3.2": {
+        "eol": "2025-11-23",
+        "latest": "3.2.6"
+      },
+      "3.1": {
+        "eol": "2025-03-14",
+        "latest": "3.1.8"
+      },
+      "3.0": {
+        "eol": "2026-09-07",
+        "latest": "3.0.22"
+      },
+      "1.1.1": {
+        "eol": "2023-09-11",
+        "latest": "1.1.1w"
+      },
+      "1.1.0": {
+        "eol": "2019-09-11",
+        "latest": "1.1.0l"
+      },
+      "1.0.2": {
+        "eol": "2019-12-31",
+        "latest": "1.0.2u"
+      },
+      "1.0.1": {
+        "eol": "2016-12-31",
+        "latest": "1.0.1u"
+      },
+      "1.0.0": {
+        "eol": "2015-12-31",
+        "latest": "1.0.0t"
+      },
+      "0.9.8": {
+        "eol": "2015-12-31",
+        "latest": "0.9.8zh"
+      }
+    },
+    "only_flag_below": "1.1.1",
+    "_note": "Appears in Apache 'ServerTokens Full' banners. 1.1.1 and 3.0 are past upstream end of life but still patched by RHEL 8 / Ubuntu 22.04 / Debian 12, so only 1.0.2 and older are flagged. On (Win32)/(Win64) builds no distribution is involved and the upstream dates apply in full.",
+    "source": "https://endoflife.date/openssl"
+  },
+  "tomcat": {
+    "name": "Apache Tomcat",
+    "endoflife": {
+      "product": "tomcat"
+    },
+    "releases": {
+      "11.0": {
+        "eol": null,
+        "latest": "11.0.29"
+      },
+      "10.1": {
+        "eol": null,
+        "latest": "10.1.62"
+      },
+      "10.0": {
+        "eol": "2022-10-31",
+        "latest": "10.0.27"
+      },
+      "9.0": {
+        "eol": "2027-03-31",
+        "latest": "9.0.124"
+      },
+      "8.5": {
+        "eol": "2024-03-31",
+        "latest": "8.5.100"
+      },
+      "8.0": {
+        "eol": "2018-06-30",
+        "latest": "8.0.53"
+      },
+      "7": {
+        "eol": "2021-03-31",
+        "latest": "7.0.109"
+      },
+      "6": {
+        "eol": "2016-12-31",
+        "latest": "6.0.53"
+      },
+      "5": {
+        "eol": "2012-09-30",
+        "latest": "5.5.36"
+      }
+    },
+    "only_flag_below": "9.0",
+    "_note": "Version comes from the default error page or a Server header that names Tomcat. RHEL 8 and 9 ship and patch Tomcat 9.0 for the life of the release, past upstream's date, so only branches below 9.0 are flagged.",
+    "source": "https://endoflife.date/tomcat"
+  },
+  "jetty": {
+    "name": "Eclipse Jetty",
+    "endoflife": {
+      "product": "eclipse-jetty"
+    },
+    "releases": {
+      "12.1": {
+        "eol": null,
+        "latest": "12.1.15"
+      },
+      "12.0": {
+        "eol": null,
+        "latest": "12.0.41"
+      },
+      "11": {
+        "eol": "2025-01-01",
+        "latest": "11.0.26"
+      },
+      "10": {
+        "eol": "2025-01-01",
+        "latest": "10.0.26"
+      },
+      "9.4": {
+        "eol": "2025-08-14",
+        "latest": "9.4.58.v20250814"
+      },
+      "9.3": {
+        "eol": "2020-12-07",
+        "latest": "9.3.30.v20211001"
+      },
+      "9.2": {
+        "eol": "2018-03-08",
+        "latest": "9.2.30.v20200428"
+      },
+      "9.1": {
+        "eol": "2014-12-31",
+        "latest": "9.1.6.v20160112"
+      },
+      "9.0": {
+        "eol": "2013-12-31",
+        "latest": "9.0.7.v20131107"
+      },
+      "8": {
+        "eol": "2014-12-31",
+        "latest": "8.2.0.v20160908"
+      },
+      "7": {
+        "eol": "2014-12-31",
+        "latest": "7.6.21.v20160908"
+      }
+    },
+    "only_flag_below": "9.4",
+    "_note": "Jetty 9.4 is past upstream end of life but still packaged and patched by Debian 12, so only 9.3 and older are flagged.",
+    "source": "https://endoflife.date/eclipse-jetty"
+  },
+  "python": {
+    "name": "Python",
+    "endoflife": {
+      "product": "python"
+    },
+    "releases": {
+      "3.15": {
+        "eol": "2031-10-31",
+        "latest": "3.15.2"
+      },
+      "3.14": {
+        "eol": "2030-10-31",
+        "latest": "3.14.10"
+      },
+      "3.13": {
+        "eol": "2029-10-31",
+        "latest": "3.13.18"
+      },
+      "3.12": {
+        "eol": "2028-10-31",
+        "latest": "3.12.16"
+      },
+      "3.11": {
+        "eol": "2027-10-31",
+        "latest": "3.11.18"
+      },
+      "3.10": {
+        "eol": "2026-10-01",
+        "latest": "3.10.22"
+      },
+      "3.9": {
+        "eol": "2025-10-31",
+        "latest": "3.9.25"
+      },
+      "3.8": {
+        "eol": "2024-10-07",
+        "latest": "3.8.20"
+      },
+      "3.7": {
+        "eol": "2023-06-27",
+        "latest": "3.7.17"
+      },
+      "3.6": {
+        "eol": "2021-12-23",
+        "latest": "3.6.15"
+      },
+      "3.5": {
+        "eol": "2020-09-30",
+        "latest": "3.5.10"
+      },
+      "3.4": {
+        "eol": "2019-03-18",
+        "latest": "3.4.10"
+      },
+      "3.3": {
+        "eol": "2017-09-29",
+        "latest": "3.3.7"
+      },
+      "3.2": {
+        "eol": "2016-02-20",
+        "latest": "3.2.6"
+      },
+      "3.1": {
+        "eol": "2012-04-09",
+        "latest": "3.1.5"
+      },
+      "3.0": {
+        "eol": "2009-06-27",
+        "latest": "3.0.1"
+      },
+      "2.7": {
+        "eol": "2020-01-01",
+        "latest": "2.7.18"
+      },
+      "2.6": {
+        "eol": "2013-10-29",
+        "latest": "2.6.9"
+      },
+      "2.5": {
+        "eol": "2011-05-26",
+        "latest": "2.5.6"
+      },
+      "2.4": {
+        "eol": "2008-12-19",
+        "latest": "2.4.6"
+      },
+      "2.3": {
+        "eol": "2008-03-11",
+        "latest": "2.3.7"
+      },
+      "2.2": {
+        "eol": "2003-05-30",
+        "latest": "2.2.3"
+      },
+      "2.1": {
+        "eol": "2002-04-09",
+        "latest": "2.1.3"
+      }
+    },
+    "only_flag_below": "3.6",
+    "_note": "Disclosed by Werkzeug, aiohttp, wsgiref and mod_wsgi banners. RHEL 8 patches Python 3.6 until 2029, so only versions below 3.6 (including all of Python 2) are flagged.",
+    "source": "https://endoflife.date/python"
+  },
+  "ruby": {
+    "name": "Ruby",
+    "endoflife": {
+      "product": "ruby"
+    },
+    "releases": {
+      "4.0": {
+        "eol": "2029-03-31",
+        "latest": "4.0.9"
+      },
+      "3.4": {
+        "eol": "2028-03-31",
+        "latest": "3.4.12"
+      },
+      "3.3": {
+        "eol": "2027-03-31",
+        "latest": "3.3.13"
+      },
+      "3.2": {
+        "eol": "2026-03-31",
+        "latest": "3.2.11"
+      },
+      "3.1": {
+        "eol": "2025-03-26",
+        "latest": "3.1.7"
+      },
+      "3.0": {
+        "eol": "2024-04-23",
+        "latest": "3.0.7"
+      },
+      "2.7": {
+        "eol": "2023-03-31",
+        "latest": "2.7.8"
+      },
+      "2.6": {
+        "eol": "2022-03-31",
+        "latest": "2.6.10"
+      },
+      "2.5": {
+        "eol": "2021-03-31",
+        "latest": "2.5.9"
+      },
+      "2.4": {
+        "eol": "2020-03-31",
+        "latest": "2.4.10"
+      },
+      "2.3": {
+        "eol": "2019-03-31",
+        "latest": "2.3.8"
+      },
+      "2.2": {
+        "eol": "2018-03-31",
+        "latest": "2.2.10"
+      },
+      "2.1": {
+        "eol": "2017-03-31",
+        "latest": "2.1.10"
+      },
+      "2.0.0": {
+        "eol": "2016-02-24",
+        "latest": "2.0.0p648"
+      },
+      "1.9.3": {
+        "eol": "2015-02-23",
+        "latest": "1.9.3p551"
+      },
+      "1.8": {
+        "eol": "2013-06-30",
+        "latest": "1.8.7p374"
+      }
+    },
+    "only_flag_below": "2.5",
+    "_note": "Disclosed by WEBrick banners. Only versions below 2.5 are flagged; newer branches may be distro-maintained.",
+    "source": "https://endoflife.date/ruby"
+  },
+  "perl": {
+    "name": "Perl",
+    "endoflife": {
+      "product": "perl"
+    },
+    "releases": {
+      "5.44": {
+        "eol": "2029-07-15",
+        "latest": "5.44.0"
+      },
+      "5.42": {
+        "eol": "2028-07-03",
+        "latest": "5.42.3"
+      },
+      "5.40": {
+        "eol": "2027-06-09",
+        "latest": "5.40.5"
+      },
+      "5.38": {
+        "eol": "2026-07-02",
+        "latest": "5.38.5"
+      },
+      "5.36": {
+        "eol": "2025-05-27",
+        "latest": "5.36.3"
+      },
+      "5.34": {
+        "eol": "2024-05-20",
+        "latest": "5.34.3"
+      },
+      "5.32": {
+        "eol": "2023-06-20",
+        "latest": "5.32.1"
+      },
+      "5.30": {
+        "eol": "2022-05-22",
+        "latest": "5.30.3"
+      },
+      "5.28": {
+        "eol": "2021-06-23",
+        "latest": "5.28.3"
+      },
+      "5.26": {
+        "eol": "2020-05-30",
+        "latest": "5.26.3"
+      },
+      "5.24": {
+        "eol": "2019-05-09",
+        "latest": "5.24.4"
+      },
+      "5.22": {
+        "eol": "2018-06-01",
+        "latest": "5.22.4"
+      },
+      "5.20": {
+        "eol": "2017-05-27",
+        "latest": "5.20.3"
+      },
+      "5.18": {
+        "eol": "2016-05-18",
+        "latest": "5.18.4"
+      },
+      "5.16": {
+        "eol": "2015-05-20",
+        "latest": "5.16.3"
+      },
+      "5.14": {
+        "eol": "2014-05-14",
+        "latest": "5.14.4"
+      },
+      "5.12": {
+        "eol": "2013-04-12",
+        "latest": "5.12.5"
+      },
+      "5.10": {
+        "eol": "2011-05-14",
+        "latest": "5.10.1"
+      },
+      "5.8": {
+        "eol": "2008-12-14",
+        "latest": "5.8.9"
+      }
+    },
+    "only_flag_below": "5.26",
+    "_note": "Disclosed by mod_perl in Apache banners. RHEL 8 patches Perl 5.26 until 2029, so only versions below 5.26 are flagged.",
+    "source": "https://endoflife.date/perl"
+  },
+  "sharepoint": {
+    "name": "SharePoint Server",
+    "endoflife": {
+      "product": "sharepoint",
+      "cycle_map": {
+        "subscription": "subscription",
+        "2019": "2019",
+        "2016": "2016",
+        "2013": "2013",
+        "2010": "2010",
+        "2007": "2007"
+      }
+    },
+    "releases": {
+      "2019": {
+        "eol": "2026-07-14",
+        "latest": "16.0.10417.20198"
+      },
+      "2016": {
+        "eol": "2026-07-14",
+        "latest": "16.0.5565.1001"
+      },
+      "2013": {
+        "eol": "2023-04-11",
+        "latest": "15.0.5545.1000"
+      },
+      "2010": {
+        "eol": "2021-04-13",
+        "latest": "14.0.7268.5000"
+      },
+      "2007": {
+        "eol": "2017-10-10",
+        "latest": "12.0.6690.5000"
+      },
+      "subscription": {
+        "eol": null,
+        "latest": "16.0.20326.20278"
+      }
+    },
+    "_note": "From the MicrosoftSharePointTeamServices header. Major 12 = 2007, 14 = 2010, 15 = 2013. Major 16 covers 2016, 2019, Subscription Edition and SharePoint Online; the build number separates them (4xxx-9xxx = 2016, 10xxx-13xxx = 2019). Any other major-16 build is not judged.",
+    "source": "https://endoflife.date/sharepoint"
   }
 }
