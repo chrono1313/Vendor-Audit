@@ -36,11 +36,23 @@ SVG and plain elements sized with numbers computed here.
 The page works without the script: every row is listed, and a check's
 detail panel opens through the :target selector. The script adds the
 filters, search, keyboard handling and previous / next.
+
+SAVED COPY
+----------
+to_standalone() turns a rendered page into the file served by
+/audit/<domain>.html: the script is inlined so the copy works from disk,
+the parts that only make sense on the site (the audit form, the download
+links) are dropped, site links become absolute, and a note says the file
+is a snapshot. It is a string transform of the cached page, so a download
+costs no audit and no re-render, and always matches the page on screen.
+Site-only markup sits between <!--site--> and <!--/site-->.
 """
 from __future__ import annotations
 
+import base64
 import html
 import re
+from urllib.parse import quote
 from datetime import datetime
 
 from .. import audit_txt_report
@@ -129,7 +141,8 @@ def render_result(envelope: dict) -> str:
              _render_top_bar_html(data, domain),
              '<div class="shell">',
              _render_side_nav_html(data, records),
-             '<main class="report">']
+             '<main class="report">',
+             _render_saved_note_html(data, domain)]
     parts.extend(_render_banners_html(data))
     parts.append(_render_overview_html(data, records, domain, audit_domain,
                                        timestamp, duration_ms))
@@ -147,6 +160,37 @@ def render_result(envelope: dict) -> str:
     parts.append(f'<script src="/static/result.js?v={_h(audit_txt_report.__version__)}"></script>')
     parts.append('</body></html>')
     return "\n".join(parts)
+
+
+# ── Saved copy ──────────────────────────────────────────────────────────────
+
+_SITE_ONLY_RE = re.compile(r"[ \t]*<!--site-->.*?<!--/site-->\n?", re.S)
+_SCRIPT_TAG_RE = re.compile(r'<script src="/static/result\.js\?v=[^"]*"></script>')
+_FAVICON_LINK = '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
+
+
+def to_standalone(page: str, service_url: str, favicon_svg: str = "") -> str:
+    """The saved-copy file for a rendered result page.
+
+    `page` is render_result() output, before or after the age placeholder
+    is filled. The file needs nothing from the site to display or to work:
+    no request is made when it is opened.
+    """
+    out = _SITE_ONLY_RE.sub("", page)
+    out = out.replace("<!--AGO-->", "")
+    out = out.replace('<div class="banner banner-saved" hidden>', '<div class="banner banner-saved">', 1)
+    icon = ""
+    if favicon_svg:
+        icon = ('<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,'
+                + base64.b64encode(favicon_svg.encode("utf-8")).decode("ascii") + '">')
+    out = out.replace(_FAVICON_LINK, icon, 1)
+    # Site links: the brand link and "audit again" point at the service.
+    base = service_url.rstrip("/")
+    out = out.replace('href="/', f'href="{base}/')
+    # The script goes in last, so the link rewrite above never touches it.
+    # It contains no "</script" (a test checks), so it cannot end the tag early.
+    out = _SCRIPT_TAG_RE.sub(lambda _m: "<script>\n" + _RESULT_JS + "</script>", out, count=1)
+    return out
 
 
 # ── Small helpers ────────────────────────────────────────────────────────────
@@ -167,6 +211,13 @@ def _short(text):
     em dash, minus trailing parentheticals."""
     head = (text or "").split(" — ", 1)[0]
     return re.sub(r"(\s*\([^()]*\))+$", "", head).strip()
+
+
+def _download_hrefs(domain, deep):
+    """Site paths of the .txt and .html downloads for this result."""
+    q = "?deep=1" if deep else ""
+    d = quote(domain)
+    return f"/audit/{_h(d)}.txt{q}", f"/audit/{_h(d)}.html{q}"
 
 
 def _badge(sev):
@@ -211,14 +262,14 @@ def _stacked_bar_html(counts, total, label):
 
 def _render_top_bar_html(data, domain):
     """Brand, the audited domain, the audit-another-domain form and the
-    .txt download.
+    .txt and .html downloads.
 
     The hidden `from` field carries the domain on screen. /audit compares
     it with the submitted one and, when they match, bypasses the cache so
     re-submitting the same domain runs a fresh audit.
     """
     deep = bool(data.results.get("_scan", {}).get("deep", False))
-    txt_href = f"/audit/{_h(domain)}.txt" + ("?deep=1" if deep else "")
+    txt_href, html_href = _download_hrefs(domain, deep)
     checked = " checked" if deep else ""
     return "\n".join([
         '<header class="top-bar">',
@@ -227,6 +278,7 @@ def _render_top_bar_html(data, domain):
         '    <span class="brand">Vendor Audit</span>',
         '  </a>',
         f'  <span class="top-domain">{_h(domain)}</span>',
+        '  <!--site-->',
         '  <div class="top-actions">',
         '  <form class="inline-audit-form" method="get" action="/audit"'
         ' aria-label="Audit another domain">',
@@ -240,8 +292,12 @@ def _render_top_bar_html(data, domain):
         '<span>Deep</span></label>',
         '    <button type="submit">Audit</button>',
         '  </form>',
+        '  <span class="downloads">',
         f'  <a class="download-link" href="{txt_href}" download>Download .txt</a>',
+        f'  <a class="download-link" href="{html_href}" download>Download .html</a>',
+        '  </span>',
         '  </div>',
+        '  <!--/site-->',
         '</header>',
     ])
 
@@ -273,6 +329,16 @@ def _render_side_nav_html(data, records):
 
 
 # ── Banners ─────────────────────────────────────────────────────────────────
+
+def _render_saved_note_html(data, domain):
+    """The note at the top of a saved copy. Rendered hidden on the site;
+    to_standalone() shows it. The link runs a new audit on the site."""
+    deep = bool(data.results.get("_scan", {}).get("deep", False))
+    again = f"/audit/result?domain={quote(domain)}" + ("&deep=1" if deep else "")
+    return ('<div class="banner banner-saved" hidden><strong>Saved copy:</strong> '
+            f'this file shows the scan of {_h(_format_timestamp(data.timestamp))} and does not update. '
+            f'<a href="{_h(again)}">Audit {_h(domain)} again</a> for current results.</div>')
+
 
 def _render_banners_html(data):
     r = data.results
@@ -770,7 +836,7 @@ def _render_footer_html(data, domain):
         key=lambda kv: -kv[1],
     )[:5]
     deep = bool(scan.get("deep", False))
-    txt_href = f"/audit/{_h(domain)}.txt" + ("?deep=1" if deep else "")
+    txt_href, html_href = _download_hrefs(domain, deep)
 
     out = ['<footer class="report-footer" id="scan">',
            '  <div class="block-head"><h2>Scan details</h2></div>']
@@ -781,10 +847,13 @@ def _render_footer_html(data, domain):
             out.append(f'    <div><dt>{_h(k)}</dt><dd>{_h(v)}</dd></div>')
         out.append('  </dl>')
         out.append('  <p class="block-note">Observed for awareness. These are not rated as checks.</p>')
+    out.append('  <!--site-->')
     out.append('  <div class="footer-actions">')
     out.append(f'    <a class="download-link" href="{txt_href}" download>Download as .txt</a>')
+    out.append(f'    <a class="download-link" href="{html_href}" download>Download as .html</a>')
     out.append('    <a href="/">Audit another domain</a>')
     out.append('  </div>')
+    out.append('  <!--/site-->')
     out.append('  <div class="footer-info">')
     out.append(f'    <span>Vendor Audit v{_h(data.report_version)}</span>'
                f'<span>{"Deep scan" if deep else "Standard scan"}</span>'
@@ -1118,6 +1187,8 @@ h1, h2, h3 { text-wrap: balance; }
 }
 .inline-audit-form button:hover { background: var(--accent-hover); }
 .download-link { font-weight: 600; white-space: nowrap; }
+.downloads { display: flex; gap: 0.4rem 1rem; flex-wrap: wrap; }
+.banner-saved { border-left-color: var(--accent); }
 
 /* ── Shell and side navigation ───────────────────────────────────────── */
 .shell { display: flex; align-items: flex-start; max-width: 1360px; margin: 0 auto; }

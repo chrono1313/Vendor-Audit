@@ -16,6 +16,7 @@ pin:
   - every check has a record with an explanation, a standard and a detail
     panel on the page
   - a bot-challenge response is recorded and the reports say so
+  - the .html download is a saved copy that works from disk
 
 Run:  python3 tests/test_findings.py
 Exits non-zero on failure.
@@ -225,7 +226,7 @@ def test_page_budget():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped page budget: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "2.1.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "2.2.0"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     scripts = re.findall(r"<script\b[^>]*>", page)
@@ -250,6 +251,36 @@ def test_page_budget():
         check(f'id="{target}"' in page, f"link to #{target} has no target on the page")
 
 
+def test_saved_copy():
+    """The .html download works from disk: script inlined, no site-relative
+    links, no request to make, and the site-only parts gone."""
+    try:
+        from vendor_audit.web import render_html
+    except Exception as exc:                     # web extras not installed
+        print(f"       (skipped saved copy: {exc})")
+        return
+    d = sample(); d["_scan"] = {"deep": True, "version": "2.2.0"}
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
+    check('href="/audit/example.com.html?deep=1"' in page, "site page should link the .html download")
+    check('class="banner banner-saved" hidden' in page, "saved-copy note should be hidden on the site")
+    check("</script" not in render_html._RESULT_JS, "the script must not contain </script, or inlining breaks")
+    saved = render_html.to_standalone(page, "https://vendoraudit.org", "<svg></svg>")
+    scripts = re.findall(r"<script\b[^>]*>", saved)
+    check(scripts == ["<script>"], f"saved copy should have one inline script, got {scripts}")
+    check("openDrawer" in saved, "the inlined script should be the page script")
+    left = re.findall(r'(?:href|src|action)="/[^"]*"', saved)
+    check(not left, f"saved copy should have no site-relative links, found {left[:3]}")
+    check(not re.findall(r'<link rel="stylesheet"|<img\b|<iframe\b', saved), "saved copy should fetch nothing")
+    check('class="inline-audit-form"' not in saved and "<!--site-->" not in saved, "site-only parts should be gone")
+    check("<!--AGO-->" not in saved, "age placeholder should be gone")
+    check('class="banner banner-saved">' in saved, "saved-copy note should show")
+    check('href="https://vendoraudit.org/audit/result?domain=example.com&amp;deep=1"' in saved,
+          "audit-again link should point at the service")
+    for target in set(re.findall(r'href="#([\w-]+)"', saved)):
+        check(f'id="{target}"' in saved, f"link to #{target} has no target in the saved copy")
+
+
 def test_bot_challenge():
     """A response Cloudflare marks as a challenge is recorded as one, and the
     reports say so. A plain 403 is not a challenge."""
@@ -261,7 +292,7 @@ def test_bot_challenge():
     miss = ac.check_server_header("example.com", _cached_response=resp(403, {"Server": "cloudflare"}))
     check(hit.get("bot_challenge") is True and hit.get("status_code") == 403, "challenge response should be recorded")
     check(miss.get("bot_challenge") is False, "a plain 403 is not a challenge")
-    d = sample(); d["_scan"] = {"deep": True, "version": "2.1.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "2.2.0"}
     d["server_header"] = dict(d["server_header"], bot_challenge=True, status_code=403)
     data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
     check("Bot challenge:" in atr._render_text(data), "text report should carry the challenge note")
@@ -277,7 +308,7 @@ def test_bot_challenge():
 def test_records():
     """Every check becomes one record with something to say about it."""
     from vendor_audit import audit_records as ar
-    d = sample(); d["_scan"] = {"deep": True, "version": "2.1.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "2.2.0"}
     data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
     recs = ar.build_records(data)
     check(len(recs) == len(data.finding_rows), "one record per finding row")
@@ -306,7 +337,7 @@ def test_records():
 
 def run():
     for fn in (test_rubric_integrity, test_sample_counts, test_spf_everywhere, test_one_cause_one_finding,
-               test_certificate_thresholds, test_mta_sts_default_mode, test_page_budget, test_bot_challenge, test_records):
+               test_certificate_thresholds, test_mta_sts_default_mode, test_page_budget, test_saved_copy, test_bot_challenge, test_records):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

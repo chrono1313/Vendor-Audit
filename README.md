@@ -18,7 +18,9 @@ runs the assessment server-side.
 A hosted version of Vendor Audit runs at
 [vendoraudit.org](https://vendoraudit.org). It's the same audit logic,
 no install required — type a domain, get a report, optionally download
-it as a `.txt` for sharing with the vendor. The web version supports an
+it as a `.txt` for sharing with the vendor, or as an `.html` file: a saved
+copy of the report page that works offline, with its filters and check
+details, and makes no network requests when opened. The web version supports an
 opt-in **Deep checks** checkbox (DANE, STARTTLS-MX, page parse) that
 adds 3–5 seconds when enabled. SSL Labs (`--ssl`) and bulk mode
 (`--file`) remain CLI-only — the SSL Labs Terms of Use don't permit
