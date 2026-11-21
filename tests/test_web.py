@@ -161,13 +161,13 @@ def _pages():
     for name, url in (("form", "/"), ("error", "/no-such-page"), ("bad input", "/audit/result?domain=not a domain")):
         r = _request("GET", url)
         out.append((name, r.text, r.headers.get("content-security-policy", "")))
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.1"}
     page = appmod.render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                              "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     out.append(("result", page, f"{appmod._STYLE_SRC};"))
     loading = appmod.templates.get_template("loading.html").render(
         display_domain="example.com", result_url="/audit/result?domain=example.com", refresh_url="x",
-        version="3.4.0", request=None)
+        version="3.4.1", request=None)
     out.append(("loading", loading, _request("GET", "/").headers.get("content-security-policy", "")))
     return out
 
@@ -191,6 +191,19 @@ def test_csp_styles():
         check(not attrs, f"{name}: style= attribute(s) found: {attrs[:2]}")
 
 
+def test_front_page_counts():
+    """The front page states the check count from rubric.json."""
+    if _skip():
+        return
+    import re
+    from vendor_audit import audit_checks as ac
+    n = ac.check_counts()
+    text = re.sub(r"<[^>]+>", "", _request("GET", "/").text)
+    check(f"The audit runs {n['standard']} checks in six categories" in text, "front page check count")
+    check(f"Deep checks add {n['deep_extra']} more" in text, "front page deep count")
+    check("about 60 checks" not in text, "the old count is gone")
+
+
 def test_head():
     """HEAD answers like GET, without the body."""
     if _skip():
@@ -210,7 +223,7 @@ def test_head():
 def run():
     for fn in (test_no_duplicate_definitions, test_routes_registered_once,
                test_workers_guard_connections, test_cache_compressed, test_slow_dns_does_not_stall_other_requests,
-               test_csp_styles, test_head):
+               test_csp_styles, test_front_page_counts, test_head):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

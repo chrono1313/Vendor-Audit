@@ -59,7 +59,7 @@ from slowapi.util import get_remote_address
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .. import audit, audit_txt_report, netguard
+from .. import audit, audit_checks, audit_txt_report, netguard
 from . import render_html
 from .validate import ValidationError, validate_domain_input
 
@@ -709,7 +709,7 @@ async def form_page(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="form.html",
-        context={"version": audit.__version__},
+        context={"version": audit.__version__, "counts": audit_checks.check_counts()},
     )
 
 

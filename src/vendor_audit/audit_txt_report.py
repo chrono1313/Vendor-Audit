@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.4.0"
+__version__ = "3.4.1"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -596,11 +596,12 @@ EXPLANATIONS = {
         ],
     },
     "http_version": {
-        "what": "HTTP/2 and HTTP/3 are modern transport protocols that are faster and more efficient than HTTP/1.1.",
-        "why":  "HTTP/3 in particular improves performance on mobile networks and high-latency links; both fix head-of-line blocking from HTTP/1.1.",
-        "fix":  "Enable HTTP/2 and HTTP/3 in your web server or CDN; most modern stacks support both with a single config flag.",
+        "what": "The HTTP versions the site offers: HTTP/1.1, HTTP/2 or HTTP/3.",
+        "why":  "HTTP/1.1 marks where a request ends in two ambiguous ways, so when a proxy or CDN and the server behind it disagree, an attacker can smuggle a hidden request through (request smuggling, or desync) to hijack other visitors' responses, poison caches or slip past security controls. HTTP/2 and HTTP/3 frame every request exactly; HTTP/3 is also faster on mobile and high-latency links.",
+        "fix":  "Enable HTTP/2 and HTTP/3 at the web server or CDN, and use HTTP/2 between any proxy or CDN and the origin server as well.",
         "details": [
             "HTTP/2 (originally RFC 7540 in 2015, current revision RFC 9113 in 2022) and HTTP/3 (RFC 9114, 2022) are the modern HTTP transports. HTTP/2 multiplexes many requests over a single TCP connection, eliminating the connection-pool overhead of HTTP/1.1 and the artificial sharding workarounds (multiple subdomains, sprite sheets) sites used to need. HTTP/3 takes the same idea to UDP via QUIC, improving handshake latency and resilience to packet loss.",
+            "PortSwigger's 2025 research \"HTTP/1.1 must die: the desync endgame\" (http1mustdie.com) showed request-smuggling attacks still working against major CDNs and sites, and concluded that the only reliable fix is to stop using HTTP/1.1 between proxies and servers. This audit sees only the connection visitors make, so a site offering HTTP/2 here may still use HTTP/1.1 behind its CDN; a site offering only HTTP/1.1 almost certainly does.",
             "Vendor Audit detects HTTP/2 by the negotiated ALPN protocol on the TLS handshake, and HTTP/3 by the presence of an Alt-Svc header on the response advertising h3. Some servers support HTTP/3 but don't advertise it via Alt-Svc — in those cases the audit will report HTTP/3 as not advertised even though it works.",
             "Enabling them in your server stack is usually trivial: nginx 1.25+ ships HTTP/3 behind a flag; Apache via mod_http2 and mod_http3; Caddy enables both by default; and every major CDN (Cloudflare, Fastly, Akamai, AWS CloudFront) supports both transparently. There's no compatibility risk: clients negotiate down to HTTP/1.1 if needed.",
         ],

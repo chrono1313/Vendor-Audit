@@ -201,7 +201,7 @@ _STANDARD = {
 _CHECK_TEXT = {
     "SPF lookup count": (
         "Evaluating an SPF record may trigger at most 10 DNS lookups.",
-        "Past that limit receivers return a permanent error and treat the record as broken.",
+        "Past that limit receivers treat the record as broken, so SPF no longer stops anyone sending mail that claims to be from the domain.",
         "Remove include: entries that are no longer used, or replace them with IP ranges."),
     "MX target hygiene": (
         "An MX record must point to a host name that has its own address records, not to an IP address or a CNAME.",
@@ -271,7 +271,7 @@ _CHECK_TEXT = {
         "Send X-Content-Type-Options: nosniff on every response."),
     "Referrer-Policy": (
         "Referrer-Policy controls how much of the current address is sent along when a visitor follows a link to another site.",
-        "Setting it gives every browser the same behaviour and keeps full addresses from reaching other sites.",
+        "Full addresses can carry session tokens, password-reset links or search terms; without a policy they can leak to every site the page links to or loads from.",
         "Send Referrer-Policy: strict-origin-when-cross-origin, or no-referrer."),
     "Permissions-Policy": (
         "Permissions-Policy states which browser features, such as camera, microphone and location, the page and its frames may use.",
@@ -299,19 +299,19 @@ _CHECK_TEXT = {
         "Change the http:// addresses to https://, or host the resource on the site itself."),
     "SPF single record": (
         "A domain may publish only one TXT record that starts with v=spf1.",
-        "With two or more, receivers stop with a permanent error and treat the domain as having no usable SPF.",
+        "With two or more, receivers treat the domain as having no usable SPF, so mail forged in its name is no longer rejected on SPF.",
         "Merge the records into one, keeping every sender they list."),
     "SPF mechanisms": (
         "Each name an SPF record looks up should exist, and the ptr mechanism should not be used.",
-        "An include: of a domain with no SPF record makes the whole check fail, more than two lookups that return nothing may make receivers give up, and ptr is slow and unreliable.",
+        "An include: of a domain with no SPF record breaks the whole record, and more than two lookups that return nothing may make receivers give up; either way forged mail is no longer stopped by SPF. ptr is slow and unreliable.",
         "Remove include:, a: and mx: entries for names that no longer exist, and replace ptr with ip4:, ip6: or include: entries."),
     "DMARC single record": (
         "A domain may publish only one DMARC record at _dmarc.<domain>.",
-        "With more than one, receivers ignore DMARC for the domain, as if it had none.",
+        "With more than one, receivers ignore DMARC for the domain as if it had none, so phishing mail spoofing it is delivered whatever the policy says.",
         "Delete the extra records and keep a single v=DMARC1 record."),
     "DMARC external reports": (
         "When DMARC reports go to an address at another organisation, that organisation must publish a record saying it accepts them.",
-        "Without that record, receivers do not send the reports, so the domain owner gets no visibility from that address.",
+        "Without that record, receivers do not send the reports there, so spoofing of the domain and legitimate mail that fails authentication go unseen.",
         "Ask the report provider to publish <your domain>._report._dmarc.<their domain> TXT \"v=DMARC1\", or send reports to an address in your own domain."),
     "MX hosts resolve": (
         "Every host an MX record names must have an A or AAAA record.",

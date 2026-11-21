@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.4.0"
+__version__ = "3.4.1"
 
 import os
 import re
@@ -7089,6 +7089,29 @@ def _category_for_label(label):
         if label in labels:
             return cat
     return "Website"
+
+
+# Checks that run only with --deep / Deep checks, and only with --ssl (CLI).
+# Everything else in rubric.json runs on every scan where it applies.
+DEEP_ONLY_CHECKS = {"DANE TLSA on MX", "STARTTLS-MX", "Subresource Integrity",
+                    "Mixed content (in-page)", "Page language declared"}
+SSL_ONLY_CHECKS = {"SSL Labs grade"}
+
+
+def check_counts():
+    """How many checks rubric.json defines, for the front page and README.
+
+    End-of-life findings are not counted here: there is one for each
+    operating system, server or library version a scan detects."""
+    cats = RUBRIC["categories"]
+    every = [label for labels in cats.values() for label in labels]
+    return {
+        "total": len(every),
+        "standard": len([x for x in every if x not in DEEP_ONLY_CHECKS | SSL_ONLY_CHECKS]),
+        "deep_extra": len([x for x in every if x in DEEP_ONLY_CHECKS]),
+        "ssl_extra": len([x for x in every if x in SSL_ONLY_CHECKS]),
+        "categories": list(cats),
+    }
 
 
 def assess_results(results):

@@ -226,7 +226,7 @@ def test_page_budget():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped page budget: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.1"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     scripts = re.findall(r"<script\b[^>]*>", page)
@@ -259,7 +259,7 @@ def test_saved_copy():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped saved copy: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.1"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     check('href="/audit/example.com.html?deep=1"' in page, "site page should link the .html download")
@@ -310,7 +310,7 @@ def test_bot_challenge():
 
     # Failing Website checks and HSTS become Informational; other
     # categories keep their ratings, and passes stay passes.
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.1"}
     plain = {f["label"]: f for f in ac.assess_results(d)}
     d["server_header"] = dict(d["server_header"], bot_challenge=True, bot_challenge_kind="challenge", status_code=403)
     rated = {f["label"]: f for f in ac.assess_results(d)}
@@ -449,10 +449,28 @@ def test_rhel_php():
     check(sev.get("EOL tech: asp.net 2.0.50727") == "info", f"undetermined ASP.NET should be info: {sev}")
 
 
+def test_check_counts_documented():
+    """The README states the numbers rubric.json actually has; the front page
+    computes them, so only the README can drift."""
+    import re
+    n = ac.check_counts()
+    readme = open(os.path.join(os.path.dirname(__file__), "..", "README.md"), encoding="utf-8").read()
+    words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+    want = (f"{n['total']} checks in {words[len(n['categories'])]} categories: "
+            f"{n['standard']} run on every scan, {n['deep_extra']} more")
+    check(want in " ".join(readme.split()), f"README should say: {want!r}")
+    check(re.search(rf"A default run makes {n['standard']} checks", readme),
+          f"README's usage line should say {n['standard']} checks")
+    for cat in n["categories"]:
+        check(f"**{cat}** —" in readme, f"README should describe the {cat} category")
+    check(not (ac.DEEP_ONLY_CHECKS | ac.SSL_ONLY_CHECKS) - set(sum(ac.RUBRIC["categories"].values(), [])),
+          "every deep-only and SSL-only check should be in rubric.json")
+
+
 def test_records():
     """Every check becomes one record with something to say about it."""
     from vendor_audit import audit_records as ar
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.1"}
     data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
     recs = ar.build_records(data)
     check(len(recs) == len(data.finding_rows), "one record per finding row")
@@ -481,7 +499,7 @@ def test_records():
 
 def run():
     for fn in (test_rubric_integrity, test_sample_counts, test_spf_everywhere, test_one_cause_one_finding,
-               test_certificate_thresholds, test_mta_sts_default_mode, test_page_budget, test_saved_copy, test_bot_challenge, test_www_apex, test_mta_sts_policy_fetch,
+               test_certificate_thresholds, test_mta_sts_default_mode, test_page_budget, test_saved_copy, test_bot_challenge, test_www_apex, test_mta_sts_policy_fetch, test_check_counts_documented,
                test_cors_wording, test_rhel_php, test_records):
         before = len(_failures)
         fn()

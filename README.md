@@ -53,8 +53,8 @@ vendor-audit example.com --deep --report
 vendor-audit --file domains.txt --outcsv results.csv
 ```
 
-A default run makes about 85 checks in one to two seconds, and `--deep` adds
-3–5 seconds. In bulk mode (`--file`) domains are audited 10 at a time, so
+A default run makes 80 checks in one to two seconds, and `--deep` adds 5 more
+and 3–5 seconds. In bulk mode (`--file`) domains are audited 10 at a time, so
 200 domains usually take under a minute. `--ssl` adds an SSL Labs grade;
 it runs one domain at a time and adds 1–2 minutes per domain, because SSL
 Labs runs the assessment on its own servers. See
@@ -140,9 +140,13 @@ values mean nothing.
 
 ## What it checks
 
-Vendor Audit groups checks into six categories. Every check maps to a published
-standard (RFC, W3C spec, OWASP, or CA/Browser Forum baseline requirement) — no
-made-up checks.
+Vendor Audit has 86 checks in six categories: 80 run on every scan, 5 more
+with `--deep`, and the SSL Labs grade with `--ssl`. On top of those, each
+operating system, server or library version detected gets its own end-of-life
+check. Checks that don't apply to a domain are skipped (mail checks for a
+domain that receives no mail, for example), so a report usually lists fewer.
+Every check maps to a published standard (RFC, W3C spec, OWASP, or CA/Browser
+Forum baseline requirement) — no made-up checks.
 
 **Email** — SPF (one record, ending, lookup count, lookups that return
 nothing, `ptr`, includes with no SPF record, `redirect=` resolution), DKIM

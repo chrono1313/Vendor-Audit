@@ -244,9 +244,10 @@
 
   <h2>What this checks</h2>
 
-  <p>The audit covers SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS configuration, HSTS, HTTP/2 and HTTP/3 support, security headers, cookie attributes, end-of-life operating systems, server software and libraries, and more — about 60 checks against published standards. Each finding is rated Critical, High, Medium or Low. Optional practices are listed as informational and are never counted.</p>
+  {% set words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"] %}
+  <p>The audit runs {{ counts.standard }} checks in {{ words[counts.categories | length] }} categories — {{ counts.categories[:-1] | join(", ") }} and {{ counts.categories[-1] }} — and Deep checks add {{ counts.deep_extra }} more. They cover SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS versions and certificates, HSTS, HTTP/2 and HTTP/3, security headers, cookies and security.txt, each against a published standard, plus an end-of-life check for every operating system, server or library version detected. Checks that don't apply are skipped, such as mail checks for a domain that receives no mail. Each finding is rated Critical, High, Medium or Low. Optional practices are listed as informational and are never counted.</p>
 
-  <p>This service is passive: it reads what the domain voluntarily publishes — DNS records, a handful of ordinary web requests, and public routing data. With Deep checks it also connects to the domain's mail servers. It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, SSL Labs integration, and bulk audits.</p>
+  <p>This service is passive: it reads what the domain voluntarily publishes — DNS records, a handful of ordinary web requests and TLS handshakes, and public routing data. With Deep checks it also connects to the domain's mail servers. It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, SSL Labs integration, and bulk audits.</p>
 </section>
 
 <p class="privacy"><strong>Privacy.</strong> Visitor IP and submitted domain are logged for 30 days for abuse prevention. Traffic passes through Cloudflare, whose privacy policy also applies.</p>
