@@ -38,9 +38,12 @@ re-runs the audit; that's fine for v1 traffic.
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
+import hashlib
 import logging
 import os
+import re
 import time
 import zlib
 from concurrent.futures import ProcessPoolExecutor
@@ -543,6 +546,29 @@ app.add_exception_handler(Exception, _server_error_handler)
 
 # ── Security headers middleware ──────────────────────────────────────────────
 
+def _style_hashes() -> str:
+    """CSP source list for every <style> block the site serves.
+
+    The pages carry their CSS inline (one response per page, nothing else
+    to fetch), so instead of 'unsafe-inline' the CSP names each block by
+    its SHA-256. The blocks are fixed text — the result page's CSS in
+    render_html._DOC_HEAD and one block in each template, none containing
+    Jinja syntax — so the hashes are computed once, here, from the same
+    text that is served. tests/test_web.py checks every page against them.
+    """
+    blocks = re.findall(r"<style>(.*?)</style>", render_html._DOC_HEAD, re.S)
+    for name in sorted(os.listdir(_TEMPLATE_DIR)):
+        if name.endswith(".html"):
+            with open(os.path.join(_TEMPLATE_DIR, name), encoding="utf-8") as fh:
+                blocks += re.findall(r"<style>(.*?)</style>", fh.read(), re.S)
+    digests = sorted({base64.b64encode(hashlib.sha256(b.encode("utf-8")).digest()).decode()
+                      for b in blocks})
+    return " ".join(f"'sha256-{d}'" for d in digests)
+
+
+_STYLE_SRC = f"style-src 'self' {_style_hashes()}"
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Apply baseline security headers to every response.
 
@@ -589,7 +615,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             f"{script_src}; "
-            "style-src 'self' 'unsafe-inline'; "  # inline styles in templates
+            f"{_STYLE_SRC}; "  # the inline <style> blocks, by hash
             "img-src 'self' data:; "
             "object-src 'none'; "
             "frame-ancestors 'none'; "
@@ -625,6 +651,42 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+
+class HeadAsGetMiddleware:
+    """Answer HEAD on every GET route (RFC 9110 §9.3.2).
+
+    FastAPI registers GET routes for GET only, so HEAD got 405. This turns
+    a HEAD into a GET for everything downstream — routing, the rate limit,
+    the result cache, the security headers — and drops the body on the way
+    out, keeping the headers (Content-Length included) the GET would send.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") != "HEAD":
+            return await self.app(scope, receive, send)
+        scope = dict(scope, method="GET")
+        sent_body = False
+
+        async def send_headless(message):
+            nonlocal sent_body
+            if message["type"] == "http.response.body":
+                if sent_body:
+                    return
+                if message.get("more_body"):
+                    return              # swallow every chunk; send one empty end
+                sent_body = True
+                message = {"type": "http.response.body", "body": b"", "more_body": False}
+            await send(message)
+
+        await self.app(scope, receive, send_headless)
+
+
+# Added last, so it is outermost: everything inside sees a GET.
+app.add_middleware(HeadAsGetMiddleware)
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────

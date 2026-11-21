@@ -102,8 +102,31 @@
         "latest": "4.0.6"
       }
     },
-    "_note": "Judged on php.net's own lifecycle. Exception handled in code: a PHP version string that carries an Ubuntu or Debian package suffix is judged by that distro release instead, because the distro backports security fixes.",
-    "source": "https://endoflife.date/php"
+    "_note": "Judged on php.net's own lifecycle. Exceptions handled in code: a PHP version string that carries an Ubuntu or Debian package suffix is judged by that distro release, and PHP on Red Hat Enterprise Linux and its rebuilds (Rocky, Alma, Oracle) is judged by Red Hat's Application Stream dates in rhel_appstreams, because both backport security fixes.",
+    "source": "https://endoflife.date/php",
+    "rhel_appstreams": {
+      "_source": "https://access.redhat.com/support/policy/updates/rhel-app-streams-life-cycle",
+      "_verified_on": "2026-11-20",
+      "_note": "Retirement date per RHEL major and PHP stream. Full-life streams (7.4 on 8, 8.0 on 9, 8.3 on 10) carry the major's own end of maintenance. Hand-maintained: tools/update_eol_data.py refreshes 'releases' only.",
+      "8": {
+        "7.2": "2021-05-31",
+        "7.3": "2021-11-30",
+        "7.4": "2029-05-31",
+        "8.0": "2024-11-30",
+        "8.2": "2029-05-31"
+      },
+      "9": {
+        "8.0": "2032-05-31",
+        "8.1": "2025-05-31",
+        "8.2": "2029-05-31",
+        "8.3": "2029-05-31",
+        "8.4": "2029-05-31"
+      },
+      "10": {
+        "8.3": "2035-05-31",
+        "8.4": "2029-05-31"
+      }
+    }
   },
   "asp.net": {
     "name": "ASP.NET",

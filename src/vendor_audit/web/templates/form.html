@@ -116,6 +116,7 @@
      the input is positioned for alignment, not styled into a custom
      control — native checkboxes are perfectly fine and accessible. */
   .options {
+    grid-column: 1 / -1;
     margin: 0 0 2.6rem;
     font-size: 0.92rem;
     color: var(--muted);
@@ -224,7 +225,7 @@
          data-lpignore="true"
          data-form-type="other">
   <button type="submit">Audit</button>
-  <div class="options" style="grid-column: 1 / -1;">
+  <div class="options">
     <label>
       <input type="checkbox" name="deep" value="1">
       <span><span class="opt-label">Deep checks</span> <span class="opt-note">— DANE, STARTTLS-MX, page parse for SRI / mixed content / accessibility. Adds 3–5 seconds.</span></span>

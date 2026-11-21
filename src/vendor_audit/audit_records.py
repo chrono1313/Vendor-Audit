@@ -355,7 +355,8 @@ def _ev_mta_sts(G):
     out = _kv(("TXT record at _mta-sts", rec.get("record") or "none published"),
               ("Policy id", rec.get("id")))
     if pol.get("fetched"):
-        out += _kv(("Policy mode", pol.get("mode")), ("Policy max_age", pol.get("max_age")))
+        out += _kv(("Policy mode", pol.get("mode")), ("Policy max_age", pol.get("max_age")),
+                   ("Problems", "; ".join(pol.get("problems") or []) or None))
         out += _list("MX hosts named in the policy", pol.get("mx"))
     elif rec.get("present"):
         out += _kv(("Policy file", f'could not be fetched ({pol.get("error")})'

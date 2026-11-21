@@ -57,7 +57,7 @@ from datetime import datetime
 
 from .. import audit_txt_report
 from .. import audit_records
-from ..audit_txt_report import _ReportData
+from ..audit_txt_report import _ReportData, bot_challenge_note
 
 
 # ── Brand ────────────────────────────────────────────────────────────────────
@@ -246,16 +246,28 @@ def _render_unexpected(envelope: dict) -> str:
 
 
 def _stacked_bar_html(counts, total, label):
-    """One horizontal bar split by severity; widths are percentages."""
+    """One horizontal bar split by severity, drawn as SVG.
+
+    SVG geometry attributes rather than style="width: …", so the page needs
+    no inline style attributes and the CSP can leave out 'unsafe-inline'.
+    The bar is 100 units wide and stretched to fit; each segment is at
+    least 1.2 units so a single finding stays visible, and segments are
+    separated by a 0.8-unit gap.
+    """
     if not total:
         return ""
-    segs = []
-    for sev in SEVERITY_ORDER:
-        n = counts.get(sev, 0)
-        if n:
-            segs.append(f'<span class="seg seg-{sev}" style="width: {n * 100.0 / total:.2f}%"></span>')
-    return (f'<span class="stacked-bar" role="img" aria-label="{_h(label)}">'
-            + "".join(segs) + '</span>')
+    present = [(sev, counts.get(sev, 0)) for sev in SEVERITY_ORDER if counts.get(sev, 0)]
+    gap = 0.8
+    room = 100.0 - gap * (len(present) - 1)
+    widths = [max(1.2, room * n / total) for _sev, n in present]
+    scale = room / sum(widths)
+    rects, x = [], 0.0
+    for (sev, _n), w in zip(present, widths):
+        w *= scale
+        rects.append(f'<rect class="seg-{sev}" x="{x:.2f}" width="{w:.2f}" height="1"/>')
+        x += w + gap
+    return (f'<svg class="stacked-bar" role="img" aria-label="{_h(label)}" viewBox="0 0 100 1" '
+            'preserveAspectRatio="none">' + "".join(rects) + '</svg>')
 
 
 # ── Top bar ─────────────────────────────────────────────────────────────────
@@ -324,8 +336,31 @@ def _render_side_nav_html(data, records):
                        f'{_h(r["category"])}{count}</a>')
     out.append('  <div class="nav-group">Scan</div>')
     out.append('  <a class="nav-link" href="#scan">Scan details</a>')
+    out.append('  <div class="nav-group nav-ext">Other tools</div>')
+    for name, url in _other_tools(data):
+        out.append(f'  <a class="nav-link nav-ext" href="{_h(url)}" target="_blank" '
+                   f'rel="noopener noreferrer">{_h(name)}<span class="nav-count" aria-hidden="true">↗</span>'
+                   '<span class="sr-only"> (opens in a new tab)</span></a>')
     out.append('</nav>')
     return "\n".join(out)
+
+
+def _other_tools(data):
+    """(name, url) for other free checkers, pre-filled with this domain.
+
+    The website tools get the audited host (after any redirect); the mail
+    and DNS tools get the domain that was entered.
+    """
+    site = quote(data.audit_domain or data.original_domain, safe="")
+    dom = quote(data.original_domain, safe="")
+    return [
+        ("internet.nl website", f"https://internet.nl/site/{site}/"),
+        ("internet.nl email", f"https://internet.nl/mail/{dom}/"),
+        ("SSL Labs", f"https://www.ssllabs.com/ssltest/analyze.html?d={site}&hideResults=on"),
+        ("MDN Observatory", f"https://developer.mozilla.org/en-US/observatory/analyze?host={site}"),
+        ("DNSViz", f"https://dnsviz.net/d/{dom}/dnssec/"),
+        ("crt.sh", f"https://crt.sh/?q={site}"),
+    ]
 
 
 # ── Banners ─────────────────────────────────────────────────────────────────
@@ -354,13 +389,11 @@ def _render_banners_html(data):
                    f'{_h(r.get("_no_web_note"))}</div>')
     # The site answered with a bot challenge, so the page that was read is
     # the challenge, not the site.
-    sh = r.get("server_header") or {}
-    if sh.get("bot_challenge"):
-        status = f' (HTTP {sh["status_code"]})' if sh.get("status_code") else ""
-        out.append('<div class="banner banner-warn" role="note"><strong>Bot challenge:</strong> '
-                   f'the site answered this audit with a challenge page{_h(status)}. '
-                   'The Website findings describe that challenge page, not the site itself. '
-                   'Email, DNS, routing and certificate checks are not affected.</div>')
+    note = bot_challenge_note(r.get("server_header"))
+    if note:
+        head, lines = note
+        out.append(f'<div class="banner banner-warn" role="note"><strong>{_h(head)}:</strong> '
+                   f'{_h(" ".join(lines))}</div>')
     return out
 
 
@@ -484,7 +517,8 @@ def _render_overview_html(data, records, domain, audit_domain, timestamp, durati
     for sev in ISSUE_SEVERITIES:
         n = counts[sev]
         out.append(f'        <a class="sev-row" href="#checks-{sev}">{_badge(sev)}'
-                   f'<span class="sev-track"><span class="seg-{sev}" style="width: {n * 100.0 / biggest:.1f}%"></span></span>'
+                   f'<svg class="sev-track" viewBox="0 0 100 1" preserveAspectRatio="none" aria-hidden="true">'
+                   f'<rect class="seg-{sev}" width="{n * 100.0 / biggest:.1f}" height="1"/></svg>'
                    f'<span class="sev-n">{n}</span></a>')
     out.append('      </div>')
     out.append('      <dl class="sev-defs">')
@@ -1303,6 +1337,12 @@ h1, h2, h3 { text-wrap: balance; }
 .seg-low      { background: var(--low); }
 .seg-info     { background: var(--info); }
 .seg-pass     { background: var(--pass); }
+rect.seg-critical { fill: var(--critical); }
+rect.seg-high     { fill: var(--high); }
+rect.seg-medium   { fill: var(--medium); }
+rect.seg-low      { fill: var(--low); }
+rect.seg-info     { fill: var(--info); }
+rect.seg-pass     { fill: var(--pass); }
 
 .sev-rows { display: flex; flex-direction: column; gap: 0.15rem; }
 .sev-row {
@@ -1310,8 +1350,7 @@ h1, h2, h3 { text-wrap: balance; }
   padding: 0.3rem 0.4rem; margin: 0 -0.4rem; border-radius: 7px; color: var(--fg); text-decoration: none;
 }
 .sev-row .sev-badge { text-align: left; }
-.sev-track { display: block; height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
-.sev-track span { display: block; height: 100%; border-radius: 4px; }
+.sev-track { display: block; width: 100%; height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .sev-n { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
 .sev-defs { margin: 1rem 0 0; display: grid; gap: 0.25rem; font-size: 0.86rem; }
 .sev-defs div { display: grid; grid-template-columns: 6.6rem 1fr; gap: 0.6rem; }
@@ -1350,8 +1389,7 @@ h1, h2, h3 { text-wrap: balance; }
 .cat-total { font: 0.8rem var(--mono); color: var(--muted); }
 .cat-desc { display: flex; justify-content: space-between; gap: 0.8rem; font-size: 0.86rem; }
 .cat-passed { color: var(--muted); white-space: nowrap; }
-.stacked-bar { display: flex; gap: 2px; height: 8px; width: 100%; border-radius: 4px; overflow: hidden; background: var(--surface-2); }
-.seg { display: block; height: 100%; min-width: 3px; }
+.stacked-bar { display: block; height: 8px; width: 100%; border-radius: 4px; overflow: hidden; background: var(--surface-2); }
 
 .anchor { display: block; height: 0; }
 .checks-count { font: 0.8rem var(--mono); color: var(--muted); }
@@ -1475,6 +1513,7 @@ a.icon-btn:hover { background: var(--surface-hover); color: var(--fg); }
   }
   .nav-group { display: none; }
   .nav-link { flex: 0 0 auto; min-height: 44px; gap: 0.4rem; }
+  .nav-link.nav-ext { display: none; }
   .report { max-width: none; padding: 1.2rem 1rem 3rem; }
   .top-actions { margin-left: 0; width: 100%; flex-wrap: wrap; }
   .inline-audit-form { flex: 1 1 260px; min-width: 0; }

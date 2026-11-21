@@ -8,6 +8,9 @@
   - cache entries are stored compressed and come back unchanged
   - a slow DNS lookup during input validation does not stall other
     requests (the web service runs every request on one event loop)
+  - the CSP names every inline <style> block by hash (no 'unsafe-inline')
+    and no page uses a style= attribute
+  - HEAD is answered on every GET route, with the GET's headers and no body
 
 Run:  python3 tests/test_web.py
 Exits non-zero on failure. Skips itself if the web extras are missing.
@@ -130,9 +133,67 @@ def test_slow_dns_does_not_stall_other_requests():
     check(slow_status == 400, f"the slow request should end in a rejection, got {slow_status}")
 
 
+def _pages():
+    """(name, html, csp) for each kind of page the site serves."""
+    import base64, hashlib  # noqa: F401
+    from fastapi.testclient import TestClient
+    sys.path.insert(0, os.path.dirname(__file__))
+    from test_findings import sample
+    client = TestClient(appmod.app)
+    out = []
+    for name, url in (("form", "/"), ("error", "/no-such-page"), ("bad input", "/audit/result?domain=not a domain")):
+        r = client.get(url)
+        out.append((name, r.text, r.headers.get("content-security-policy", "")))
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.1.0"}
+    page = appmod.render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                             "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
+    out.append(("result", page, f"{appmod._STYLE_SRC};"))
+    loading = appmod.templates.get_template("loading.html").render(
+        display_domain="example.com", result_url="/audit/result?domain=example.com", refresh_url="x",
+        version="3.1.0", request=None)
+    out.append(("loading", loading, client.get("/").headers.get("content-security-policy", "")))
+    return out
+
+
+def test_csp_styles():
+    """No 'unsafe-inline': every <style> block is named by hash in the CSP,
+    and no page uses a style= attribute (hashes don't cover those)."""
+    if _skip():
+        return
+    import base64
+    import hashlib
+    import re
+    for name, html, csp in _pages():
+        check("unsafe-inline" not in csp, f"{name}: CSP still allows 'unsafe-inline'")
+        blocks = re.findall(r"<style>(.*?)</style>", html, re.S)
+        check(blocks, f"{name}: expected a <style> block")
+        for b in blocks:
+            h = base64.b64encode(hashlib.sha256(b.encode("utf-8")).digest()).decode()
+            check(f"'sha256-{h}'" in csp, f"{name}: <style> block hash sha256-{h[:10]}… not in the CSP")
+        attrs = re.findall(r"<[^>]*\sstyle=", html)
+        check(not attrs, f"{name}: style= attribute(s) found: {attrs[:2]}")
+
+
+def test_head():
+    """HEAD answers like GET, without the body."""
+    if _skip():
+        return
+    from fastapi.testclient import TestClient
+    client = TestClient(appmod.app)
+    for url in ("/", "/healthz", "/robots.txt", "/.well-known/security.txt", "/favicon.svg", "/static/result.js"):
+        g, h = client.get(url), client.head(url)
+        check(h.status_code == g.status_code == 200, f"HEAD {url}: {h.status_code} (GET {g.status_code})")
+        check(h.content == b"", f"HEAD {url} sent a body")
+        for k in ("content-type", "content-security-policy", "content-length"):
+            check(h.headers.get(k) == g.headers.get(k), f"HEAD {url}: {k} differs from GET")
+    check(client.head("/no-such-page").status_code == 404, "HEAD on a missing page should be 404")
+    check(client.post("/").status_code == 405, "POST should still be refused")
+
+
 def run():
     for fn in (test_no_duplicate_definitions, test_routes_registered_once,
-               test_cache_compressed, test_slow_dns_does_not_stall_other_requests):
+               test_cache_compressed, test_slow_dns_does_not_stall_other_requests,
+               test_csp_styles, test_head):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

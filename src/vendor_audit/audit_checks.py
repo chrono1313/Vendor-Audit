@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 import os
 import re
@@ -1004,37 +1004,86 @@ def check_mta_sts(domain):
     return {"present": False, "id": None, "record": None}
 
 
+# check_mta_sts_policy failures that mean sending servers can't use the
+# policy either ("unreachable" and "blocked" may be the audit's own view).
+_MTA_STS_BROKEN = {"no_host", "http_error", "bad_cert"}
+
+
 def check_mta_sts_policy(domain):
     """Fetch the MTA-STS policy file (deep-mode only).
 
-    Returns dict with mode, mx, max_age. mode is the value scored.
+    Returns {"fetched": True, "mode", "max_age", "mx", "problems"} when the
+    file was read, else {"fetched": False, "error", "failure"}.
+
+    RFC 8461 §3.3: sending servers fetch the policy over HTTPS from
+    mta-sts.<domain> with a valid certificate, and ignore a policy they
+    can't fetch or parse. So what decides the result is why a fetch failed:
+
+      failure "unreachable"  timeout, refused or reset. A firewall in front
+                             of the audit (not of mail servers) looks like
+                             this, so the published record is taken at its
+                             word and the check passes as "published".
+      failure "blocked"      a bot challenge or block page answered. Same
+                             reasoning: the policy is probably there.
+      failure "no_host"      mta-sts.<domain> has no A/AAAA record.
+      failure "http_error"   the server answered with an error status.
+      failure "bad_cert"     the certificate doesn't validate.
+      "problems" non-empty   the file was read but isn't a usable policy.
+
+    The last four mean sending servers can't use the policy either.
     """
-    url = f"https://mta-sts.{domain}/.well-known/mta-sts.txt"
+    host = f"mta-sts.{domain}"
+    url = f"https://{host}/.well-known/mta-sts.txt"
+    if _has_a_or_aaaa(host) is False:
+        return {"fetched": False, "failure": "no_host", "error": f"{host} has no A/AAAA record"}
     try:
-        resp = _http_get(url, verify=False, allow_redirects=True)
-        if not resp.is_success:
-            return {"fetched": False, "error": f"HTTP {resp.status_code}"}
-        body = resp.text
-        mode = max_age = None
-        mx = []
-        for line in body.splitlines():
-            line = line.strip()
-            if not line or ":" not in line:
-                continue
-            k, v = (x.strip() for x in line.split(":", 1))
-            kl = k.lower()
-            if kl == "mode":
-                mode = v.lower()
-            elif kl == "max_age":
-                try:
-                    max_age = int(v)
-                except ValueError:
-                    pass
-            elif kl == "mx":
-                mx.append(v)
-        return {"fetched": True, "mode": mode, "max_age": max_age, "mx": mx}
+        # RFC 8461 §3.3: no redirects, and the certificate must validate —
+        # so this one fetch uses a verifying client, unlike the shared one.
+        with httpx.Client(http2=True, verify=True, follow_redirects=False,
+                          headers={"User-Agent": f"vendor-audit/{__version__}"},
+                          timeout=httpx.Timeout(_http_timeout, connect=_http_connect_timeout)) as client:
+            resp = client.get(url)
     except Exception as e:
-        return {"fetched": False, "error": str(e)}
+        msg = str(e) or e.__class__.__name__
+        low = msg.lower()
+        if "certificate" in low or "ssl" in low or "tls" in low or "hostname mismatch" in low:
+            return {"fetched": False, "failure": "bad_cert", "error": msg}
+        return {"fetched": False, "failure": "unreachable", "error": msg}
+    body = resp.text or ""
+    if _bot_defence_kind(resp, body):
+        return {"fetched": False, "failure": "blocked",
+                "error": f"HTTP {resp.status_code} ({_bot_defence_kind(resp, body)} page)"}
+    if not resp.is_success:
+        return {"fetched": False, "failure": "http_error", "error": f"HTTP {resp.status_code}"}
+    version = mode = max_age = None
+    mx = []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        k, v = (x.strip() for x in line.split(":", 1))
+        kl = k.lower()
+        if kl == "version":
+            version = v
+        elif kl == "mode":
+            mode = v.lower()
+        elif kl == "max_age":
+            try:
+                max_age = int(v)
+            except ValueError:
+                pass
+        elif kl == "mx":
+            mx.append(v)
+    problems = []
+    if version != "STSv1":
+        problems.append("no 'version: STSv1' line")
+    if mode not in ("enforce", "testing", "none"):
+        problems.append(f"mode is {mode!r}" if mode else "no mode line")
+    if max_age is None:
+        problems.append("no valid max_age")
+    if mode in ("enforce", "testing") and not mx:
+        problems.append("no mx lines")
+    return {"fetched": True, "mode": mode, "max_age": max_age, "mx": mx, "problems": problems}
 
 
 # ── TLS-RPT (RFC 8460) ───────────────────────────────────────────────────────
@@ -2501,40 +2550,25 @@ def check_www_apex_unification(domain):
     result["apex_error"] = apex_err
     result["www_error"]  = www_err
 
-    # Strip leading www. from both final hosts for the comparison: a final
-    # of "www.example.com" and "example.com" are the same canonical site.
-    def _strip_www(h):
-        if not h:
-            return None
-        return h[4:] if h.startswith("www.") else h
-
-    apex_canon = _strip_www(apex_final)
-    www_canon  = _strip_www(www_final)
-
     # Decide the outcome. Order matters: most-specific cases first.
+    #
+    # The final hosts are compared exactly. "example.com" and
+    # "www.example.com" are two different places: a visitor who typed one
+    # stays there and never reaches the other. (Before 3.1 the comparison
+    # dropped "www." first, which reported two separate sites as unified.)
 
     # Both DNS sides definitively resolve.
     if apex_resolves is True and www_resolves is True:
         if apex_final and www_final:
-            # Both probes returned a final hostname. Compare canonically.
-            if apex_canon == www_canon:
-                result["outcome"] = "unified"
-            else:
-                result["outcome"] = "split"
-        elif apex_final and not www_final:
-            # www has DNS but didn't respond to HTTPS. Apex's final host
-            # is what we have — if it points at the www variant, that's
-            # unification from the apex side. If not, treat as split
-            # because users who type www get an error.
-            if apex_canon == _strip_www(www_host):
-                result["outcome"] = "unified"
-            else:
-                result["outcome"] = "split"
-        elif www_final and not apex_final:
-            if www_canon == _strip_www(apex_host):
-                result["outcome"] = "unified"
-            else:
-                result["outcome"] = "split"
+            result["outcome"] = "unified" if apex_final == www_final else "split"
+        elif apex_final or www_final:
+            # One form answered HTTPS and the other didn't. If the one that
+            # answered ends up at the other's hostname, that's unification
+            # (the other's failure is then likely transient). Otherwise the
+            # silent form may only speak plain HTTP, which this probe
+            # doesn't try, so there isn't enough to rate it.
+            answered, other = (apex_final, www_host) if apex_final else (www_final, apex_host)
+            result["outcome"] = "unified" if answered == other else "not_scored"
         else:
             # Both have A/AAAA but neither responded to HTTPS at all.
             # Not enough signal to decide.
@@ -2925,7 +2959,8 @@ def check_cors(domain):
     """Probe for broken CORS configurations.
 
     Returns:
-      outcome:    'no_cors' | 'weak_wildcard_with_credentials'
+      outcome:    'no_cors' | 'public_wildcard' | 'allow_listed'
+                  | 'weak_wildcard_with_credentials'
                   | 'weak_null_origin' | 'weak_reflective' | 'error'
       details:    dict with raw header values observed for the report
       error:      error string if outcome == 'error', else None
@@ -2966,6 +3001,14 @@ def check_cors(domain):
         result["outcome"] = "weak_null_origin"
         return result
 
+    # ACAO=* without credentials: any site may read the responses, but the
+    # browser sends no cookies or auth with those reads, so only what an
+    # anonymous visitor could fetch anyway is exposed. Normal for public
+    # content, APIs and CDNs.
+    if acao1.strip() == "*":
+        result["outcome"] = "public_wildcard"
+        return result
+
     # Second probe: reflection check. Send an Origin the server has no
     # legitimate reason to trust. If it comes back in ACAO, the server is
     # reflecting and trusts arbitrary origins.
@@ -2990,6 +3033,7 @@ def check_cors(domain):
 
     # ACAO is set but to a static legitimate value (probably the site's own
     # origin or a partner). That's the correct way to use CORS — not a finding.
+    result["outcome"] = "allow_listed"
     return result
 
 
@@ -3092,6 +3136,39 @@ def _parse_set_cookies(resp):
 
 # ── Server header / browser security headers ──────────────────────────────────
 
+# Cloudflare's own pages: the challenge ("Just a moment...") and the block
+# page a firewall rule returns ("Sorry, you have been blocked", error 1020).
+# Both come from Cloudflare, not the site, so nothing on them describes the
+# site's own headers or page.
+_CF_BLOCK_MARKERS = (
+    'id="cf-error-details"', "Attention Required! | Cloudflare",
+    "Sorry, you have been blocked", "used Cloudflare to restrict access",
+)
+_CF_CHALLENGE_MARKERS = ("/cdn-cgi/challenge-platform/", "<title>Just a moment...</title>")
+
+
+def _bot_defence_kind(resp, body):
+    """'challenge', 'block' or None: whether the response is Cloudflare's
+    challenge or block page instead of the site.
+
+    A challenge is marked by the "cf-mitigated: challenge" header. A block
+    page carries no such header, so it is recognised by its status (403 or
+    429), Cloudflare's Server header and the block page's own markup.
+    """
+    h = resp.headers
+    if (h.get("cf-mitigated") or "").strip().lower() == "challenge":
+        return "challenge"
+    if "cloudflare" not in (h.get("Server") or "").lower():
+        return None
+    status = getattr(resp, "status_code", None)
+    text = body or ""
+    if status in (403, 429, 503) and any(m in text for m in _CF_CHALLENGE_MARKERS):
+        return "challenge"
+    if status in (403, 429) and any(m in text for m in _CF_BLOCK_MARKERS):
+        return "block"
+    return None
+
+
 def check_server_header(domain, _cached_response=None):
     """Return Server, X-Powered-By, browser security headers, and tech stack.
 
@@ -3167,10 +3244,12 @@ def check_server_header(domain, _cached_response=None):
             "sharepoint_version":  h.get("MicrosoftSharePointTeamServices"),
             "final_url":           resp.url,
             # HTTP status of the page the header checks read, and whether
-            # that page was a bot challenge instead of the site. Cloudflare
-            # marks a challenge response with "cf-mitigated: challenge".
+            # a bot defence answered instead of the site (see
+            # _bot_defence_kind). assess_results makes the Website findings
+            # Informational when it did.
             "status_code":         getattr(resp, "status_code", None),
-            "bot_challenge":       (h.get("cf-mitigated") or "").strip().lower() == "challenge",
+            "bot_challenge":       _bot_defence_kind(resp, body) is not None,
+            "bot_challenge_kind":  _bot_defence_kind(resp, body),
             "stack":               stack,
             "http3_advertised":    "h3" in alt_svc,
             "alt_svc":             alt_svc or None,
@@ -3211,7 +3290,7 @@ def check_server_header(domain, _cached_response=None):
 
     _EMPTY = {
         "server": None, "x_powered_by": None, "final_url": None, "stack": [],
-        "status_code": None, "bot_challenge": False,
+        "status_code": None, "bot_challenge": False, "bot_challenge_kind": None,
         "http3_advertised": None, "alt_svc": None,
         "csp": None, "csp_report_only": None, "csp_quality": None, "csp_frame_ancestors": False,
         "x_frame_options": None, "x_content_type": None,
@@ -4245,6 +4324,11 @@ def check_versioned_libraries(html: str) -> dict:
 #   * A PHP version carrying an Ubuntu/Debian package suffix
 #     ("8.1.2-1ubuntu2.14") is judged by that distro release, not by
 #     php.net. If the release is still supported the PHP is too.
+#   * PHP behind a Server header naming RHEL or a rebuild (Rocky, Alma,
+#     Oracle, CentOS Stream) is judged by Red Hat's Application Stream
+#     retirement dates (tech_eol.json php.rhel_appstreams). "PHP/7.4.33"
+#     on RHEL 8 is supported until 2029 even though php.net ended 7.4
+#     in 2022.
 
 # (tech key, pattern). Group 1 is the version as disclosed.
 _TECH_VERSION_PATTERNS = [
@@ -4293,6 +4377,52 @@ def _php_distro_release(php_version: str):
     if m:
         return ("debian", m.group(1))
     return None
+
+
+# EL distros whose PHP follows Red Hat's Application Streams. CentOS Linux
+# is left out: it is itself end of life, and the OS check says so.
+_RHEL_PHP_OSES = {"rhel", "rocky-linux", "almalinux", "oracle-linux", "centos-stream"}
+
+
+def _rhel_php_judgement(php_mm: str, banner: str, today=None):
+    """Red Hat's verdict on a PHP major.minor, or None when it doesn't apply.
+
+    Applies when `banner` (the Server header) names an EL distro and the PHP
+    version is one Red Hat ships as an Application Stream. Returns
+    ("ok", None, major) or ("eol", date, major); major may be None when the
+    banner doesn't pin the RHEL release, in which case the PHP is treated
+    as supported if any still-maintained RHEL major ships that stream —
+    a wrong "end of life" is the costlier mistake.
+    """
+    os_key = None
+    for paren in _DISTRO_PARENS_RE.finditer(banner or ""):
+        inner = paren.group(1).lower()
+        for tok, key, fam in _DISTRO_TOKENS:
+            if tok in inner:
+                os_key = key
+                break
+        if os_key:
+            break
+    if os_key not in _RHEL_PHP_OSES:
+        return None
+    streams = (TECH_EOL.get("php") or {}).get("rhel_appstreams") or {}
+    cands, _note = _infer_release_from_packages("el", banner)
+    today = today or _eol_today()
+    if len(cands) == 1 and isinstance(streams.get(cands[0]), dict):
+        major = cands[0]
+        date = streams[major].get(php_mm)
+        if not date:
+            return None                     # not a Red Hat stream: php.net decides
+        os_j = _os_release_judgement("rhel", major, today)
+        if os_j["status"] == "eol":
+            return None                     # the RHEL major itself is over
+        return ("ok", None, major) if date >= today else ("eol", date, major)
+    dates = [v.get(php_mm) for k, v in streams.items() if not k.startswith("_") and isinstance(v, dict)]
+    dates = [d for d in dates if d]
+    if not dates:
+        return None
+    best = max(dates)
+    return ("ok", None, None) if best >= today else ("eol", best, None)
 
 
 def _os_release_judgement(os_key: str, release: str, today=None) -> dict:
@@ -4410,6 +4540,24 @@ def check_tech_eol(server_header_result: dict, error_page_result: dict | None = 
                 dj = _os_release_judgement(distro[0], distro[1], today)
                 if dj["status"] == "ok":
                     continue
+            else:
+                rh = _rhel_php_judgement(".".join(_vnum(version).split(".")[:2]), srv, today)
+                if rh and rh[0] == "ok":
+                    continue
+                if rh:
+                    # Retired by Red Hat too: report Red Hat's date.
+                    _st, date, major = rh
+                    where = f"RHEL {major}" if major else "RHEL"
+                    shown = _vnum(version) or version
+                    t = {"tech": "php", "name": "PHP", "version": shown, "source": source,
+                         "eol_status": "eol", "eol_last_release": date,
+                         "eol_message": f"{'.'.join(shown.split('.')[:2])} retired on {where} since {date} "
+                                        f"(Red Hat Application Stream)",
+                         "eol_source": (TECH_EOL["php"]["rhel_appstreams"].get("_source"))}
+                    if shown != version:
+                        t["detail"] = version
+                    techs.append(t)
+                    continue
 
         # PHP package strings are long ("7.2.24-0ubuntu0.18.04.17"); report
         # the plain version and keep the raw string as detail.
@@ -4422,7 +4570,17 @@ def check_tech_eol(server_header_result: dict, error_page_result: dict | None = 
 
     aspnet = sh.get("x_aspnet_version") or ""
     m = _ASPNET_VERSION_RE.match(aspnet)
-    if m:
+    if m and m.group(1).startswith("2.0.50727"):
+        # 2.0.50727 is the CLR version, sent by .NET Framework 2.0 and 3.0
+        # (end of life) and also by 3.5 SP1, which Microsoft supports as a
+        # Windows component until 2029-01-09. The header can't tell which.
+        techs.append({"tech": "asp.net", "name": "ASP.NET", "version": m.group(1),
+                      "source": "x_aspnet_version", "eol_status": "undetermined",
+                      "eol_message": "sent by .NET Framework 2.0 and 3.0 (end of life since 2011-07-12) "
+                                     "and by 3.5 SP1 (supported until 2029-01-09); the header can't "
+                                     "tell them apart",
+                      "eol_source": (TECH_EOL.get("asp.net") or {}).get("source")})
+    elif m:
         t = _annotate_tech_eol("asp.net", m.group(1), today)
         t["source"] = "x_aspnet_version"
         techs.append(t)
@@ -4455,8 +4613,8 @@ def check_tech_eol(server_header_result: dict, error_page_result: dict | None = 
                 t["eol_status"] = "ok"
             techs.append(t)
 
-    # Only surface software we could judge.
-    techs = [t for t in techs if t.get("eol_status") in ("eol", "ok")]
+    # Only surface software we could judge, or could name as undecidable.
+    techs = [t for t in techs if t.get("eol_status") in ("eol", "ok", "undetermined")]
     any_eol = any(t.get("eol_status") == "eol" for t in techs)
     return {"techs": techs, "any_eol": any_eol}
 
@@ -5607,7 +5765,8 @@ def _collect_outcomes(results):
     # breakdown row visible without affecting the score.
     cors = results.get("cors", {})
     co_outcome = cors.get("outcome")
-    if not no_web_presence and co_outcome in ("no_cors", "weak_wildcard_with_credentials",
+    if not no_web_presence and co_outcome in ("no_cors", "public_wildcard", "allow_listed",
+                      "weak_wildcard_with_credentials",
                       "weak_null_origin", "weak_reflective", "error"):
         _p("CORS configuration", co_outcome)
 
@@ -5676,7 +5835,12 @@ def _collect_outcomes(results):
                 # user-not-yet-enforcing read. If we did fetch the policy
                 # (deep mode), use the actual mode.
                 mode = (mta_sts_policy.get("mode") if mta_sts_policy.get("fetched") else None)
-                if mode in ("enforce", "testing", "none"):
+                if mta_sts_policy.get("problems") or mta_sts_policy.get("failure") in _MTA_STS_BROKEN:
+                    # Deep check: the policy file is missing or unusable,
+                    # so sending servers ignore the record. Same weight as
+                    # having no MTA-STS at all.
+                    _p("MTA-STS", "policy_broken")
+                elif mode in ("enforce", "testing", "none"):
                     _p("MTA-STS", mode)
                 else:
                     # Record exists but the policy file was not fetched
@@ -6011,11 +6175,11 @@ def _collect_outcomes(results):
     tech_eol = results.get("tech_eol") or {}
     if not no_web_presence:
         for t in tech_eol.get("techs") or []:
-            if t.get("eol_status") == "eol":
+            if t.get("eol_status") in ("eol", "undetermined"):
                 tech_name = t.get("tech", "?")
                 ver       = t.get("version") or ""
                 label = f"EOL tech: {tech_name} {ver}".rstrip()
-                pts.append((label, "eol"))
+                pts.append((label, t["eol_status"]))
 
     return pts
 
@@ -6105,23 +6269,39 @@ def assess_results(results):
     rubric does not list produce no finding.
     """
     eol_sev = RUBRIC.get("eol_severity") or {}
+    # When a bot defence answered instead of the site, the checks that read
+    # the home-page response describe that defence's page. A failure there
+    # says nothing about the site, so it is Informational ("undetermined").
+    challenged = bool((results.get("server_header") or {}).get("bot_challenge"))
     findings = []
     for label, outcome in _merge_outcomes(_collect_outcomes(results)):
         if label.startswith("EOL "):
             kind = label.split(":", 1)[0]
-            entry = (eol_sev.get(kind, "high"), label)
+            entry = ("info" if outcome == "undetermined" else eol_sev.get(kind, "high"), label)
         else:
             entry = _finding_entry(label, outcome)
         if not entry:
             continue
+        category = _category_for_label(label)
+        severity, text = entry[0], entry[1]
+        if challenged and severity in ISSUE_SEVERITIES and (category == "Website" or label in _CHALLENGE_AFFECTED):
+            severity = "info"
+            text = f"{text} — not rated: the site answered with a bot challenge"
         findings.append({
             "label":    label,
             "outcome":  outcome,
-            "severity": entry[0],
-            "category": _category_for_label(label),
-            "text":     entry[1],
+            "severity": severity,
+            "category": category,
+            "text":     text,
         })
     return findings
+
+
+# Checks outside the Website category that also read the home-page
+# response, so a bot challenge stands in for the site there too. The rest
+# of the HTTP and TLS checks come from the connection itself (TLS, ALPN,
+# the port-80 redirect) and stay rated.
+_CHALLENGE_AFFECTED = {"HSTS"}
 
 
 def severity_counts(findings):

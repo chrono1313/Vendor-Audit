@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -1193,13 +1193,16 @@ class _ReportData:
         out = {}
         tech_eol = self.results.get("tech_eol") or {}
         for t in (tech_eol.get("techs") or []):
-            if t.get("eol_status") != "eol":
+            if t.get("eol_status") not in ("eol", "undetermined"):
                 continue
             tech = t.get("tech", "?")
             ver  = t.get("version", "?")
             key  = f"EOL tech: {tech} {ver}".rstrip()
             disp = t.get("name") or _TECH_DISPLAY_NAMES.get(tech, tech.upper())
             msg  = t.get("eol_message") or "version is end-of-life"
+            if t.get("eol_status") == "undetermined":
+                out[key] = f"Support status undetermined: {disp} {ver} ({msg})"
+                continue
             # eol_message already includes the tech name + version; use it
             # directly for the parenthetical detail but lead with a clear
             # "End-of-life runtime:" framing.
@@ -1586,7 +1589,26 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                           if mta_sts.get("id") else "")
                 mode = (mta_sts_policy.get("mode")
                         if mta_sts_policy.get("fetched") else None)
-                if mode == "enforce":
+                failure = mta_sts_policy.get("failure")
+                if mta_sts_policy.get("problems"):
+                    items.append(_status("fail",
+                        f"MTA-STS policy file is not a usable policy{id_str}",
+                        sub_lines=["; ".join(mta_sts_policy["problems"])
+                                   + " — sending servers ignore it"], check=chk + "MTA-STS"))
+                elif failure in ("no_host", "http_error", "bad_cert"):
+                    why = {"no_host": "the mta-sts host has no address",
+                           "http_error": f"the server answered {mta_sts_policy.get('error')}",
+                           "bad_cert": "its certificate does not validate"}[failure]
+                    items.append(_status("fail",
+                        f"MTA-STS record published but the policy can't be fetched: {why}{id_str}",
+                        sub_lines=["Sending servers ignore the record without a policy file"],
+                        check=chk + "MTA-STS"))
+                elif failure in ("unreachable", "blocked"):
+                    items.append(_status("pass",
+                        f"MTA-STS DNS record published{id_str}",
+                        sub_lines=[f"Policy file not reachable from this audit ({mta_sts_policy.get('error')});",
+                                   "taken as published"], check=chk + "MTA-STS"))
+                elif mode == "enforce":
                     items.append(_status("pass",
                         f"MTA-STS published — mode=enforce{id_str}", check=chk + "MTA-STS"))
                 elif mode == "testing":
@@ -2190,8 +2212,10 @@ def _render_http_section(data):
     if wau_outcome == "unified":
         apex_h = wau.get("apex_host", "")
         www_h  = wau.get("www_host", "")
+        final = wau.get("apex_final") or wau.get("www_final")
+        where = f"both land on {final}" if final else f"{apex_h} \u2194 {www_h}"
         parts.append(_status("pass",
-            f"Apex and www unified ({apex_h} \u2194 {www_h})", check="www and apex unified"))
+            f"Apex and www unified ({where})", check="www and apex unified"))
     elif wau_outcome == "split":
         apex_h = wau.get("apex_host", "")
         www_h  = wau.get("www_host", "")
@@ -2465,7 +2489,7 @@ def _render_server_disclosure_section(data):
     # "and that version is end-of-life" dimension.
     tech_eol = r.get("tech_eol") or {}
     eol_techs = [t for t in (tech_eol.get("techs") or [])
-                 if t.get("eol_status") == "eol"]
+                 if t.get("eol_status") in ("eol", "undetermined")]
     if eol_techs:
         parts.append("")
         parts.append("")
@@ -2484,6 +2508,11 @@ def _render_server_disclosure_section(data):
                          "x_aspnetmvc_version": "disclosed in X-AspNetMvc-Version",
                          "sharepoint_header": "from the MicrosoftSharePointTeamServices header",
                          }.get(t.get("source") or "")
+            if t.get("eol_status") == "undetermined":
+                parts.append(_status("info", f"{disp} {ver} — support undetermined: {msg}",
+                    note_lines=[src_label[0].upper() + src_label[1:]] if src_label else None,
+                    check=(f"EOL tech: {t.get('tech', '?')} {t.get('version') or ''}").rstrip()))
+                continue
             parts.append(_status("fail",
                 f"{disp} {ver}{detail} — no longer receives security patches",
                 note_lines=[src_label[0].upper() + src_label[1:]] if src_label else None, check=(f"EOL tech: {t.get('tech', '?')} {t.get('version') or ''}").rstrip()))
@@ -2871,9 +2900,19 @@ def _render_cors_section(data):
     parts = ["", _heading("CORS CONFIGURATION"), ""]
 
     co_outcome = cors.get("outcome")
+    details = cors.get("details") or {}
     if co_outcome == "no_cors":
         parts.append(_status("pass",
             "No CORS headers — secure default (browsers refuse cross-origin reads)", check="CORS configuration"))
+    elif co_outcome == "public_wildcard":
+        parts.append(_status("pass",
+            "ACAO=* without credentials — any site can read these responses, but only",
+            sub_lines=["what an anonymous visitor could fetch anyway (no cookies are sent)"],
+            check="CORS configuration"))
+    elif co_outcome == "allow_listed":
+        parts.append(_status("pass",
+            f"CORS allows one fixed origin ({details.get('acao_same_origin_probe') or '?'}) and "
+            "did not echo a foreign one", check="CORS configuration"))
     elif co_outcome == "weak_wildcard_with_credentials":
         parts.append(_status("fail",
             "ACAO=* combined with Allow-Credentials=true — spec-forbidden pairing",
@@ -3242,6 +3281,25 @@ def _render_scan_footer(data):
 
 # ── Top-level renderer ───────────────────────────────────────────────────────
 
+def bot_challenge_note(server_header):
+    """(heading, lines) for the notice shown when a bot defence answered the
+    audit instead of the site, or None. Shared by the .txt and the page."""
+    sh = server_header or {}
+    if not sh.get("bot_challenge"):
+        return None
+    status = f" (HTTP {sh['status_code']})" if sh.get("status_code") else ""
+    if sh.get("bot_challenge_kind") == "block":
+        head, first = "Blocked", f"Cloudflare answered this audit with its block page{status}."
+    else:
+        head, first = "Bot challenge", f"the site answered this audit with a challenge page{status}."
+    return head, [
+        first,
+        "The Website and HSTS checks read that page, not the site, so failing",
+        "ones are shown as Informational. Email, DNS, routing and certificate",
+        "checks are not affected.",
+    ]
+
+
 def _render_text(data):
     """Compose the final text document from the prepared _ReportData."""
     redirected = (data.results.get("redirect") or {}).get("redirected")
@@ -3262,12 +3320,11 @@ def _render_text(data):
         out.append("")
         out.append("")
 
-    sh = data.results.get("server_header") or {}
-    if sh.get("bot_challenge"):
-        status = f" (HTTP {sh['status_code']})" if sh.get("status_code") else ""
-        out.append(f"  Bot challenge: the site answered this audit with a challenge page{status}.")
-        out.append("  The Website findings describe that challenge page, not the site itself.")
-        out.append("  Email, DNS, routing and certificate checks are not affected.")
+    note = bot_challenge_note(data.results.get("server_header"))
+    if note:
+        head, lines = note
+        out.append(f"  {head}: {lines[0]}")
+        out.extend(f"  {line}" for line in lines[1:])
         out.append("")
         out.append("")
 

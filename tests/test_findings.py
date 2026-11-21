@@ -226,7 +226,7 @@ def test_page_budget():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped page budget: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.0.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.1.0"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     scripts = re.findall(r"<script\b[^>]*>", page)
@@ -259,7 +259,7 @@ def test_saved_copy():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped saved copy: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.0.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.1.0"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     check('href="/audit/example.com.html?deep=1"' in page, "site page should link the .html download")
@@ -292,10 +292,46 @@ def test_bot_challenge():
     miss = ac.check_server_header("example.com", _cached_response=resp(403, {"Server": "cloudflare"}))
     check(hit.get("bot_challenge") is True and hit.get("status_code") == 403, "challenge response should be recorded")
     check(miss.get("bot_challenge") is False, "a plain 403 is not a challenge")
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.0.0"}
-    d["server_header"] = dict(d["server_header"], bot_challenge=True, status_code=403)
+    # Cloudflare's block page has no cf-mitigated header; its markup and
+    # Server header give it away. The site's own 403 page does not count.
+    block = (b'<html><head><title>Attention Required! | Cloudflare</title></head>'
+             b'<body><div id="cf-error-details">Sorry, you have been blocked</div></body></html>')
+    def resp_body(status, headers, body):
+        return httpx.Response(status, headers=headers, content=body,
+                              request=httpx.Request("GET", "https://example.com/"))
+    blocked = ac.check_server_header("example.com", _cached_response=resp_body(403, {"Server": "cloudflare"}, block))
+    nginx = ac.check_server_header("example.com", _cached_response=resp_body(403, {"Server": "nginx"}, block))
+    js = ac.check_server_header("example.com", _cached_response=resp_body(
+        503, {"Server": "cloudflare"}, b"<title>Just a moment...</title><script src=/cdn-cgi/challenge-platform/x>"))
+    check(blocked.get("bot_challenge_kind") == "block", f"Cloudflare block page not recognised: {blocked.get('bot_challenge_kind')}")
+    check(nginx.get("bot_challenge") is False, "a block page not served by Cloudflare is the site's own")
+    check(js.get("bot_challenge_kind") == "challenge", "Cloudflare's JS challenge page not recognised")
+    check(hit.get("bot_challenge_kind") == "challenge", "cf-mitigated should read as a challenge")
+
+    # Failing Website checks and HSTS become Informational; other
+    # categories keep their ratings, and passes stay passes.
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.1.0"}
+    plain = {f["label"]: f for f in ac.assess_results(d)}
+    d["server_header"] = dict(d["server_header"], bot_challenge=True, bot_challenge_kind="challenge", status_code=403)
+    rated = {f["label"]: f for f in ac.assess_results(d)}
+    for label, f in plain.items():
+        g = rated[label]
+        affected = f["category"] == "Website" or label == "HSTS"
+        if affected and f["severity"] in ac.ISSUE_SEVERITIES:
+            check(g["severity"] == "info" and "bot challenge" in g["text"], f"{label}: {f['severity']} should become info")
+        else:
+            check(g["severity"] == f["severity"], f"{label}: {f['severity']} changed to {g['severity']}")
+    check(any(f["category"] == "Website" and f["severity"] in ac.ISSUE_SEVERITIES for f in plain.values()),
+          "sample should have a failing Website check to test")
+    check(any(f["category"] != "Website" and f["label"] != "HSTS" and f["severity"] in ac.ISSUE_SEVERITIES
+              for f in rated.values()), "sample should keep a rated non-Website finding")
+
     data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
-    check("Bot challenge:" in atr._render_text(data), "text report should carry the challenge note")
+    txt = atr._render_text(data)
+    check("Bot challenge:" in txt and "shown as Informational" in txt, "text report should carry the challenge note")
+    d2 = dict(d, server_header=dict(d["server_header"], bot_challenge_kind="block"))
+    txt2 = atr._render_text(atr._ReportData("example.com", "example.com", d2, "2026-11-19T04:55:32Z", "2.1.0"))
+    check("Blocked: Cloudflare answered this audit with its block page (HTTP 403)." in txt2, "text report should name the block page")
     try:
         from vendor_audit.web import render_html
     except Exception:
@@ -305,10 +341,118 @@ def test_bot_challenge():
     check("Bot challenge:" in page, "page should carry the challenge note")
 
 
+def test_www_apex():
+    """The two forms are unified only when both end on the same host."""
+    from unittest import mock
+    def run(apex, www):
+        finals = {"https://example.com": (apex, None if apex else "timeout"),
+                  "https://www.example.com": (www, None if www else "timeout")}
+        with mock.patch.object(ac, "_has_a_or_aaaa", return_value=True), \
+             mock.patch.object(ac, "_probe_final_host", side_effect=lambda u, **k: finals[u]):
+            return ac.check_www_apex_unification("example.com")["outcome"]
+    check(run("example.com", "www.example.com") == "split", "each form staying on itself is two sites")
+    check(run("www.example.com", "www.example.com") == "unified", "both landing on www is unified")
+    check(run("example.com", "example.com") == "unified", "both landing on the apex is unified")
+    check(run("example.com", None) == "not_scored", "a silent www can't be rated")
+    check(run("www.example.com", None) == "unified", "apex sending visitors to www is unified")
+
+
+def test_mta_sts_policy_fetch():
+    """Deep MTA-STS: a fetch the audit couldn't make passes on the record;
+    a policy sending servers couldn't use either fails like a missing one."""
+    import httpx
+    from unittest import mock
+    good = b"version: STSv1\nmode: enforce\nmx: mx.example.com\nmax_age: 604800\n"
+    real_client = httpx.Client
+
+    def fetch(handler, resolves=True):
+        def client(**kw):
+            return real_client(transport=httpx.MockTransport(handler), **kw)
+        with mock.patch.object(ac.httpx, "Client", side_effect=client), \
+             mock.patch.object(ac, "_has_a_or_aaaa", return_value=resolves):
+            return ac.check_mta_sts_policy("example.com")
+
+    def raise_(exc):
+        def h(req):
+            raise exc
+        return h
+
+    ok = fetch(lambda r: httpx.Response(200, content=good))
+    check(ok.get("fetched") and ok.get("mode") == "enforce" and not ok.get("problems"), f"good policy: {ok}")
+    cases = {
+        "unreachable": fetch(raise_(httpx.ConnectTimeout("timed out"))),
+        "blocked": fetch(lambda r: httpx.Response(403, headers={"cf-mitigated": "challenge"}, content=b"x")),
+        "no_host": fetch(lambda r: httpx.Response(200, content=good), resolves=False),
+        "http_error": fetch(lambda r: httpx.Response(404, content=b"not found")),
+        "bad_cert": fetch(raise_(httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"))),
+    }
+    for want, got in cases.items():
+        check(got.get("failure") == want, f"{want}: got {got}")
+    bad = fetch(lambda r: httpx.Response(200, content=b"<html>parked</html>"))
+    check(bad.get("fetched") and bad.get("problems"), f"an HTML page is not a policy: {bad}")
+
+    def severity(policy):
+        d = sample()
+        d["mta_sts"] = {"present": True, "id": "1"}
+        d["mta_sts_policy"] = policy
+        return {f["label"]: f["severity"] for f in ac.assess_results(d)}.get("MTA-STS")
+    missing = ac.RUBRIC["findings"]["MTA-STS"]["missing"][0]
+    check(severity(ok) == "pass", "enforcing policy passes")
+    for want in ("unreachable", "blocked"):
+        check(severity(cases[want]) == "pass", f"{want} policy should pass on the record")
+    for want in ("no_host", "http_error", "bad_cert"):
+        check(severity(cases[want]) == missing, f"{want} policy should be rated like a missing one")
+    check(severity(bad) == missing, "an unusable policy should be rated like a missing one")
+    check(severity({}) == "pass", "without a deep fetch the record alone passes")
+
+
+def test_cors_wording():
+    import httpx
+    from unittest import mock
+    def run(acao, acac=None, echo=False):
+        def h(req):
+            o = req.headers.get("Origin")
+            hdr = {}
+            if acao:
+                hdr["Access-Control-Allow-Origin"] = o if echo else acao
+            if acac:
+                hdr["Access-Control-Allow-Credentials"] = acac
+            return httpx.Response(200, headers=hdr)
+        client = httpx.Client(transport=httpx.MockTransport(h))
+        with mock.patch.object(ac, "_get_client", return_value=client):
+            return ac.check_cors("example.com")["outcome"]
+    check(run(None) == "no_cors", "no ACAO is no_cors")
+    check(run("*") == "public_wildcard", "ACAO * is public_wildcard")
+    check(run("*", "true") == "weak_wildcard_with_credentials", "* with credentials stays weak")
+    check(run("https://partner.example") == "allow_listed", "a fixed origin is allow_listed")
+    check(run("x", echo=True) == "weak_reflective", "an echoed origin is reflective")
+    f = ac.RUBRIC["findings"]["CORS configuration"]
+    check(f["public_wildcard"][0] == "pass" and "No CORS headers" not in f["public_wildcard"][1],
+          "ACAO * must not read as 'no CORS headers'")
+
+
+def test_rhel_php():
+    """PHP on RHEL and its rebuilds follows Red Hat's stream dates."""
+    def php(server, xpb):
+        r = ac.check_tech_eol({"server": server, "x_powered_by": xpb}, today="2026-11-20")
+        return [t["eol_status"] for t in r["techs"] if t["tech"] == "php"]
+    check(php("Apache/2.4.37 (Red Hat Enterprise Linux) OpenSSL/1.1.1k", "PHP/7.4.33") == [],
+          "PHP 7.4 on RHEL 8 is supported until 2029")
+    check(php("Apache/2.4.57 (Rocky Linux)", "PHP/8.0.30") == [], "PHP 8.0 on RHEL 9 is full-life")
+    check(php("Apache/2.4.37 (AlmaLinux)", "PHP/8.0.30") == ["eol"], "PHP 8.0 on RHEL 8 retired 2024-11")
+    check(php("Apache/2.4.6 (CentOS)", "PHP/7.4.33") == ["eol"], "CentOS Linux gets no Red Hat streams")
+    check(php("nginx", "PHP/7.4.33") == ["eol"], "no distro named: php.net decides")
+    asp = ac.check_tech_eol({"server": "Microsoft-IIS/10.0", "x_aspnet_version": "2.0.50727"})
+    check([t["eol_status"] for t in asp["techs"]] == ["undetermined"], f"2.0.50727 is undetermined: {asp}")
+    d = sample(); d["tech_eol"] = asp
+    sev = {f["label"]: f["severity"] for f in ac.assess_results(d)}
+    check(sev.get("EOL tech: asp.net 2.0.50727") == "info", f"undetermined ASP.NET should be info: {sev}")
+
+
 def test_records():
     """Every check becomes one record with something to say about it."""
     from vendor_audit import audit_records as ar
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.0.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.1.0"}
     data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
     recs = ar.build_records(data)
     check(len(recs) == len(data.finding_rows), "one record per finding row")
@@ -337,7 +481,8 @@ def test_records():
 
 def run():
     for fn in (test_rubric_integrity, test_sample_counts, test_spf_everywhere, test_one_cause_one_finding,
-               test_certificate_thresholds, test_mta_sts_default_mode, test_page_budget, test_saved_copy, test_bot_challenge, test_records):
+               test_certificate_thresholds, test_mta_sts_default_mode, test_page_budget, test_saved_copy, test_bot_challenge, test_www_apex, test_mta_sts_policy_fetch,
+               test_cors_wording, test_rhel_php, test_records):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")
