@@ -1,5 +1,6 @@
 # Runs the test suite on every push and pull request, on each Python
-# version the package supports (pyproject.toml: requires-python >= 3.10).
+# version the package supports (pyproject.toml: requires-python >= 3.12).
+# It can also be started by hand: Actions → tests → Run workflow.
 #
 # The tests make no network requests and run in a few seconds per version.
 # A red cross on a commit means a test failed: open the run on GitHub, then
@@ -13,6 +14,7 @@ name: tests
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

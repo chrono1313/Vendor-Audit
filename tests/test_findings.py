@@ -226,7 +226,7 @@ def test_page_budget():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped page budget: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "2.3.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.0.0"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     scripts = re.findall(r"<script\b[^>]*>", page)
@@ -259,7 +259,7 @@ def test_saved_copy():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped saved copy: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "2.3.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.0.0"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     check('href="/audit/example.com.html?deep=1"' in page, "site page should link the .html download")
@@ -292,7 +292,7 @@ def test_bot_challenge():
     miss = ac.check_server_header("example.com", _cached_response=resp(403, {"Server": "cloudflare"}))
     check(hit.get("bot_challenge") is True and hit.get("status_code") == 403, "challenge response should be recorded")
     check(miss.get("bot_challenge") is False, "a plain 403 is not a challenge")
-    d = sample(); d["_scan"] = {"deep": True, "version": "2.3.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.0.0"}
     d["server_header"] = dict(d["server_header"], bot_challenge=True, status_code=403)
     data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
     check("Bot challenge:" in atr._render_text(data), "text report should carry the challenge note")
@@ -308,7 +308,7 @@ def test_bot_challenge():
 def test_records():
     """Every check becomes one record with something to say about it."""
     from vendor_audit import audit_records as ar
-    d = sample(); d["_scan"] = {"deep": True, "version": "2.3.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.0.0"}
     data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
     recs = ar.build_records(data)
     check(len(recs) == len(data.finding_rows), "one record per finding row")

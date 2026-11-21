@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vendor-audit"
-version = "2.3.0"
+version = "3.0.0"
 description = "A lightweight, fast, passive best-practice audit for a domain or list of domains."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     { name = "chrono1313" },
 ]
@@ -31,10 +31,9 @@ classifiers = [
     "Intended Audience :: System Administrators",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: Name Service (DNS)",
     "Topic :: Security",
     "Topic :: System :: Networking :: Monitoring",

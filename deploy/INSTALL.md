@@ -13,7 +13,7 @@ If those aren't done, do them first. This guide picks up from there.
 
 ## 1. System prerequisites
 
-The web service needs Python 3.10+ (Ubuntu 26.04 ships 3.13, fine), a venv,
+The web service needs Python 3.12+ (Ubuntu 26.04 ships 3.13, fine), a venv,
 and a few build tools that some Python deps may want when wheels aren't
 available for them.
 

@@ -102,6 +102,16 @@ a one-line verdict taken from the worst severity present. Nothing is added
 up, and one cause is one finding: a missing HSTS header is a single High
 finding, not three.
 
+In the detail sections of the plain-text and terminal reports, each line
+starts with a word that follows the same severities:
+
+| Word | Meaning |
+| --- | --- |
+| CRITICAL, HIGH, MEDIUM, LOW, INFO | The line reports a finding of that severity |
+| PASS | This part of a check is met (a check can pass in one part and fail in another) |
+| NOTE | Observed, but not rated: accessibility signals, CSP details beyond `script-src`, SSL Labs' own conditions |
+| (none) | A plain fact, such as an address or a response time |
+
 ### Sorting a CSV of many domains
 
 The CSV carries a few columns meant for sorting:
@@ -197,7 +207,7 @@ pipx uninstall vendor-audit
 
 ### From a clone (for development)
 
-Python 3.10 or later. Use this method if you intend to modify the code.
+Python 3.12 or later. Use this method if you intend to modify the code.
 
 ```bash
 git clone https://github.com/chrono1313/Vendor-Audit.git
@@ -224,7 +234,7 @@ python -m pytest
 
 Each test file also runs on its own, without pytest:
 `python3 tests/test_findings.py`. GitHub runs the full suite on every push
-and pull request, on Python 3.10 through 3.14
+and pull request, on Python 3.12 through 3.14
 (`.github/workflows/tests.yml`).
 
 ## Usage
@@ -289,8 +299,8 @@ by default (override with `--ssl-no-cache`).
 
 Three output formats, used independently or together:
 
-- **Terminal report** (default) — color-coded, scrollable, suitable for
-  interactive review.
+- **Terminal report** (default) — the plain-text report's detail lines in
+  colour, without its explanation paragraphs, followed by a summary.
 - **CSV** (`--outcsv`) — one row per domain with every measured field. The CSV
   schema is versioned (`meta_schema_version`); upgrades that change the schema
   cause Vendor Audit to refuse to append to the old file.
