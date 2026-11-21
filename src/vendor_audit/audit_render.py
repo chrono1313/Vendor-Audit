@@ -32,7 +32,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 import sys
 from collections import defaultdict
@@ -679,7 +679,7 @@ def render(original_domain, audit_domain, r, dns_server):
         # there's nothing to redirect FROM at the apex. Communicate that
         # accurately so the report doesn't read as "apex redirects to www".
         fb_host = redirect.get("www_fallback_host", audit_domain)
-        print(f"{c(YELLOW, f'  Apex {original_domain} has no DNS records \u2014 auditing {fb_host} for web/TLS')}")
+        print(c(YELLOW, f"  Apex {original_domain} has no DNS records \u2014 auditing {fb_host} for web/TLS"))
         print(f"{c(YELLOW, f'  Email still audited against {original_domain}')}")
     elif redirected:
         print(f"{c(YELLOW, f'  Website redirects to: {audit_domain}')}")

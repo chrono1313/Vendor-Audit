@@ -213,6 +213,20 @@ venv, the dependencies are also packaged by Debian/Ubuntu:
 sudo apt install python3-dnspython python3-requests python3-httpx python3-tldextract
 ```
 
+### Running the tests
+
+The tests make no network requests and take a few seconds:
+
+```bash
+pip install -e '.[web,dev]'
+python -m pytest
+```
+
+Each test file also runs on its own, without pytest:
+`python3 tests/test_findings.py`. GitHub runs the full suite on every push
+and pull request, on Python 3.10 through 3.14
+(`.github/workflows/tests.yml`).
+
 ## Usage
 
 ### Single domain

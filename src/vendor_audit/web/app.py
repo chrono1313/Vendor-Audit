@@ -42,6 +42,7 @@ import functools
 import logging
 import os
 import time
+import zlib
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -153,8 +154,9 @@ for _deprecated in ("VENDOR_AUDIT_TXT_CACHE_TTL_S", "VENDOR_AUDIT_TXT_CACHE_MAX"
 HTML_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_TTL_S", "86400"))
 
 # Hard cap on the number of result-page cache entries. Each entry holds
-# both the HTML and the TXT rendering — ~80KB combined — so 5000 entries
-# = ~400MB max. Sized for sustained worldwide use beyond a single viral
+# both the HTML and the TXT rendering, compressed: about 45-50KB for a
+# domain with many findings (the page is ~200KB and the txt ~25KB before
+# compression), so 5000 entries is roughly 250MB at most. Sized for sustained worldwide use beyond a single viral
 # link burst: technical users auditing their vendor lists collectively
 # touch thousands of distinct domains over a 24-hour window. At 1000 the
 # cache would fill within a few days of broad usage and start evicting
@@ -180,17 +182,34 @@ HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "5000
 # and a cached 12-hour-old HTML view would show a fresh audit's txt
 # (which contradicts what the user is reading on screen).
 #
-# Entries: {domain: (html, txt, txt_headers, audit_ts, expires)}
-#   html         — rendered result-page HTML with <!--AGO--> placeholder
-#   txt          — rendered .txt report (final, no placeholder)
+# Entries: {domain: (html_z, txt_z, txt_headers, audit_ts, expires)}
+#   html_z       — rendered result-page HTML with <!--AGO--> placeholder,
+#                  UTF-8 and zlib-compressed
+#   txt_z        — rendered .txt report (final, no placeholder), likewise
 #   txt_headers  — Content-Disposition etc. for the txt response
 #   audit_ts     — unix timestamp of the audit; powers "ago" display
 #   expires      — unix timestamp; eviction trigger
 #
 # Eviction: lazy on read (expired entries are dropped when accessed),
 # plus an explicit prune on write when len(_result_cache) hits the cap.
+#
+# Compression: Python keeps a str that contains any character outside
+# Latin-1 (the page has "—", "·" and "✓") at two bytes per character, so
+# an uncompressed entry is about 440KB in memory and a full cache over
+# 2GB, close to the service's MemoryMax. Compressed, it is ~10% of that.
+# Compressing costs a few ms once per audit; unpacking on a hit costs
+# well under a millisecond. Callers see plain strings either way.
 
 _result_cache: dict = {}
+_CACHE_ZLIB_LEVEL = 6
+
+
+def _pack(text: str) -> bytes:
+    return zlib.compress(text.encode("utf-8"), _CACHE_ZLIB_LEVEL)
+
+
+def _unpack(blob: bytes) -> str:
+    return zlib.decompress(blob).decode("utf-8")
 
 
 def _result_cache_get(key: str):
@@ -204,12 +223,12 @@ def _result_cache_get(key: str):
     entry = _result_cache.get(key)
     if entry is None:
         return None
-    html, txt, txt_headers, audit_ts, expires = entry
+    html_z, txt_z, txt_headers, audit_ts, expires = entry
     if time.time() >= expires:
         # Lazy eviction — drop and return miss
         _result_cache.pop(key, None)
         return None
-    return (html, txt, txt_headers, audit_ts)
+    return (_unpack(html_z), _unpack(txt_z), txt_headers, audit_ts)
 
 
 def _result_cache_set(key: str, html: str, txt: str, txt_headers: dict, audit_ts: float):
@@ -224,7 +243,7 @@ def _result_cache_set(key: str, html: str, txt: str, txt_headers: dict, audit_ts
     if len(_result_cache) >= HTML_CACHE_MAX_ENTRIES and key not in _result_cache:
         oldest_key = min(_result_cache, key=lambda k: _result_cache[k][4])
         _result_cache.pop(oldest_key, None)
-    _result_cache[key] = (html, txt, txt_headers, audit_ts, expires)
+    _result_cache[key] = (_pack(html), _pack(txt), txt_headers, audit_ts, expires)
 
 
 def _format_age(seconds: float) -> str:
@@ -834,7 +853,9 @@ async def _run_audit_and_render(request: Request, domain: str, *,
     # Cache miss (or fresh=True): full validation with DNS / SSRF guard
     # before running the audit. This is the slow path.
     try:
-        validated = validate_domain_input(domain)
+        # In a thread: the DNS lookups block, and this process serves
+        # every request on one event loop.
+        validated = await asyncio.to_thread(validate_domain_input, domain)
     except ValidationError as exc:
         return templates.TemplateResponse(
             request=request,
@@ -957,7 +978,9 @@ async def _cached_or_audit(request: Request, domain: str, deep: bool):
     # Cache miss: full validation with DNS / SSRF guard before running
     # the audit.
     try:
-        validated = validate_domain_input(domain)
+        # In a thread: the DNS lookups block, and this process serves
+        # every request on one event loop.
+        validated = await asyncio.to_thread(validate_domain_input, domain)
     except ValidationError as exc:
         return None, (status.HTTP_400_BAD_REQUEST, str(exc), exc.code)
 
@@ -1047,510 +1070,6 @@ async def download_html(request: Request, domain: str, deep: int = 0):
     if disposition.endswith('.txt"'):
         disposition = disposition[: -len('.txt"')] + '.html"'
     return HTMLResponse(content=body, headers={"Content-Disposition": disposition})
-
-
-app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
-app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
-app.add_exception_handler(Exception, _server_error_handler)
-
-
-# ── Security headers middleware ──────────────────────────────────────────────
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Apply baseline security headers to every response.
-
-    Vendor Audit's whole purpose is grading other domains on their security
-    headers. Our own headers being right is table stakes — and the tool
-    will (correctly) flag itself otherwise.
-
-    The CSP is intentionally tight because the result page renders
-    user-provided domain names. We don't reflect them in any way that
-    allows HTML injection (Jinja autoescapes), but a strict CSP is the
-    right belt-and-suspenders.
-
-    All our pages are JS-free except for the result page, which loads
-    /static/result.js for the check filters and the check detail panel.
-    The CSP for the result page allows script-src 'self' (own-origin
-    only, no inline, no eval); every other page stays at script-src
-    'none'. The strongest possible setting per page.
-    """
-
-    async def dispatch(self, request: Request, call_next):
-        response: Response = await call_next(request)
-
-        # Most pages are JS-free → script-src 'none' (the strictest
-        # setting, blocking even legitimate scripts on the page). The
-        # result page loads /static/result.js for the check filters and
-        # detail panel, so for that path we allow script-src
-        # 'self' — own-origin scripts only, no inline, no 'unsafe-eval',
-        # no third-party.
-        #
-        # We match by URL path. The result page is served from
-        # /audit/result; the /static/result.js path itself doesn't need
-        # script-src for its own response (it IS the script, not a page
-        # that loads scripts), but it doesn't hurt to keep the headers
-        # consistent.
-        path = request.url.path
-        is_result_page = (
-            path == "/audit/result" or path == "/static/result.js"
-        )
-        if is_result_page:
-            script_src = "script-src 'self'"
-        else:
-            script_src = "script-src 'none'"
-
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            f"{script_src}; "
-            "style-src 'self' 'unsafe-inline'; "  # inline styles in templates
-            "img-src 'self' data:; "
-            "object-src 'none'; "
-            "frame-ancestors 'none'; "
-            "base-uri 'self'; "
-            "form-action 'self'"
-        )
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Permissions-Policy"] = (
-            "geolocation=(), camera=(), microphone=(), payment=()"
-        )
-        # X-Frame-Options redundant with frame-ancestors but cheap insurance
-        # for older browsers / proxies.
-        response.headers["X-Frame-Options"] = "DENY"
-
-        # Cross-Origin isolation headers. We set the strictest values
-        # because the site has no cross-origin embedding needs:
-        #   COOP=same-origin: a top-level browsing context with this
-        #     header cannot share a browsing-context group with cross-
-        #     origin pages — defends against tab-nabbing and Spectre.
-        #   CORP=same-origin: any cross-origin loader (image, iframe,
-        #     script tag elsewhere) cannot embed our resources at all.
-        # Together these enable cross-origin isolation; we don't actually
-        # need that capability (no SharedArrayBuffer), but the headers
-        # are also good defense in depth on their own.
-        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
-
-        # HSTS is set by Cloudflare at the edge. We don't set it here because
-        # it's the proxy that terminates TLS; setting it on the upstream
-        # plain-HTTP response is meaningless.
-        return response
-
-
-app.add_middleware(SecurityHeadersMiddleware)
-
-
-# ── Endpoints ────────────────────────────────────────────────────────────────
-
-@app.get("/", response_class=HTMLResponse)
-@limiter.limit(LIMIT_FORM)
-async def form_page(request: Request):
-    """The audit input form."""
-    return templates.TemplateResponse(
-        request=request,
-        name="form.html",
-        context={"version": audit.__version__},
-    )
-
-
-@app.get("/audit", include_in_schema=False)
-@app.get("/audit/", include_in_schema=False)
-@limiter.limit(LIMIT_FORM)
-async def audit_get(
-    request: Request,
-    domain: str = "",
-    fresh: int = 0,
-    deep: int = 0,
-    from_: str = Query("", alias="from"),
-):
-    """GET entry point — bookmarkable / shareable URL.
-
-    With no `?domain=` query param, redirects to the form page (303).
-    With a domain, returns a small "Auditing example.com..." loading
-    page that meta-refreshes to /audit/result?domain=foo where the
-    audit actually runs. The two-step gives the user immediate visual
-    feedback during slow audits (blackholed hosts in particular)
-    instead of staring at a blank page until the audit's deadline
-    fires.
-
-    The shareable URL is /audit?domain=foo — recipients always see the
-    loading page first, then the result. The result URL itself is also
-    bookmarkable for power users who want to skip the brief loading
-    flash.
-
-    fresh=1 is forwarded through to /audit/result, so the re-audit
-    button (which submits here with fresh=1) shows the loading page
-    too — important now that re-audit always runs a fresh audit (the
-    cache is 24h, so re-audit is a real 3-5s operation, not the
-    sub-second cache hit it used to be when TTL was 60s).
-
-    `from` is an optional hidden field set by the inline audit-another-
-    domain form on the result page. It carries the domain currently
-    displayed in the report. When the submitted `domain` matches
-    `from` (case-insensitive, trimmed), we promote the request to
-    fresh=1 — the user is asking to re-audit the same domain and
-    expects a real re-audit, not a cache hit. Equivalent to clicking
-    a "Re-audit this domain" button without needing one. Without
-    this, typing the current domain and clicking Audit would just
-    return the same cached page.
-
-    deep=1 enables --deep-mode checks (DANE, STARTTLS-MX, page parse).
-    The form's optional checkbox sends this; it adds 3-5 seconds and
-    is opt-in to keep the default audit fast. The flag is forwarded
-    through to /audit/result and contributes to the cache key, so
-    deep and non-deep results don't poison each other's cache.
-
-    Rate-limited under LIMIT_FORM (60/min) since this endpoint does no
-    audit work — the actual audit happens at /audit/result, where
-    LIMIT_AUDIT (3/10s) applies. If we used LIMIT_AUDIT here too, every
-    form submission would burn TWO tokens (loading + result), cutting
-    user capacity in half.
-
-    We do basic shape validation here (cheap, no network) so obviously-
-    bad input goes straight to the error page without the loading
-    detour. The /audit/result endpoint re-validates with the full
-    SSRF-guard pipeline before doing any audit work.
-    """
-    if not domain or not domain.strip():
-        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-
-    # Same-domain re-audit: when the form's `from` field matches the
-    # submitted `domain`, promote to fresh=1 so the cache is bypassed.
-    # The form on the result page sets `from` to the displayed domain;
-    # the home form does not set it. Comparison is case-insensitive
-    # and whitespace-trimmed, so 'Example.com' submitted against a
-    # report for 'example.com' still triggers the bypass.
-    if from_ and domain.strip().lower() == from_.strip().lower():
-        fresh = 1
-
-    # Cheap pre-flight: catch obviously bad input here so the user
-    # doesn't see a loading page that resolves to an error. The full
-    # SSRF/DNS validation runs in /audit/result; if THAT fails (e.g.
-    # private IP), the user lands on the error page after the loading
-    # flash. Slightly worse UX than catching everything here, but
-    # keeping this endpoint network-free preserves the "instant
-    # response" property we want.
-    try:
-        validate_domain_input(domain, dns_check=False)
-    except ValidationError as exc:
-        return templates.TemplateResponse(
-            request=request,
-            name="error.html",
-            context={
-                "title": "That input couldn't be audited",
-                "message": str(exc),
-                "code": exc.code,
-                "version": audit.__version__,
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # Pass the domain (and the fresh / deep flags if set) through. We
-    # URL-encode the domain to be safe against any character that might
-    # survive shape validation but confuse the URL parser.
-    from urllib.parse import quote
-    result_url = f"/audit/result?domain={quote(domain.strip())}"
-    if fresh:
-        result_url += "&fresh=1"
-    if deep:
-        result_url += "&deep=1"
-    return templates.TemplateResponse(
-        request=request,
-        name="loading.html",
-        context={
-            "display_domain": domain.strip(),
-            "result_url": result_url,
-        },
-    )
-
-
-@app.get("/audit/result", include_in_schema=False)
-@limiter.limit(LIMIT_AUDIT)
-async def audit_result(request: Request, domain: str = "", fresh: int = 0, deep: int = 0):
-    """Actual audit-running endpoint. Renders the result page.
-
-    Shape: same as the old /audit GET — validate, run audit, render.
-    Reachable directly (e.g. bookmarked from the URL bar) and reached
-    via meta refresh from /audit. Also where the form page submits
-    its result requests via the GET form.
-
-    fresh=1 bypasses the result-page HTML cache (and refreshes the
-    cache entry with the new result). The re-audit form submits with
-    fresh=1 so a user explicitly asking for a fresh audit always gets
-    one, not a 60-second-old cache hit.
-
-    deep=1 enables the audit's --deep-mode checks. Becomes part of the
-    cache key — a deep-mode result and a regular result for the same
-    domain are stored separately so the user always sees what they
-    asked for, not an opportunistically-cached different mode.
-    """
-    if not domain or not domain.strip():
-        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-    return await _run_audit_and_render(request, domain,
-                                        fresh=bool(fresh), deep=bool(deep))
-
-
-async def _run_audit_and_render(request: Request, domain: str, *,
-                                 fresh: bool = False, deep: bool = False):
-    """Shared audit→render flow used by both POST and GET /audit.
-
-    Returns:
-        - HTMLResponse on success (the result page)
-        - TemplateResponse(error.html, 400) on validation failure
-        - TemplateResponse(error.html, 5xx-ish) on audit failure
-
-    The validation step runs synchronously (DNS resolution included via
-    the SSRF guard); the audit itself goes to the worker pool.
-
-    fresh=True bypasses the HTML cache check; the audit runs and the
-    new result is stored in the cache. fresh=False (default) returns a
-    cached result if one exists, otherwise runs the audit and caches.
-
-    deep=True enables the audit's --deep-mode checks (DANE, STARTTLS-MX,
-    page parse). Cache lookup honors deep-as-superset: a regular
-    request first checks its own slot, then falls back to the deep
-    slot if present. A deep request only checks the deep slot — it
-    never serves a regular-cached result, because the regular result
-    doesn't have the deep checks the user asked for.
-    """
-    # Two-stage validation: shape-only first (cheap, no I/O) so we can
-    # check the cache without a DNS round-trip. Full validation with the
-    # SSRF guard runs only on cache miss, before we actually run the
-    # audit. Without this split, every request — even cache hits — would
-    # block on DNS for 1-5s, defeating the cache's purpose.
-    try:
-        shape_only = validate_domain_input(domain, dns_check=False)
-    except ValidationError as exc:
-        return templates.TemplateResponse(
-            request=request,
-            name="error.html",
-            context={
-                "title": "That input couldn't be audited",
-                "message": str(exc),
-                "code": exc.code,
-                "version": audit.__version__,
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # Cache keys: regular at <domain>, deep at <domain>::deep.
-    cache_key = shape_only.domain + ("::deep" if deep else "")
-
-    # Cache check, with deep-as-superset fallback.
-    #
-    # Lookup order:
-    #   - Regular request: own slot first; if miss, deep slot.
-    #     Rationale: a deep audit ran every check a regular audit
-    #     would have, plus more. Serving deep-cached to a regular
-    #     requester is honest (the page declares --deep) and avoids
-    #     a redundant audit run when we already have the answer.
-    #   - Deep request: only the deep slot. Never falls back to
-    #     regular — that would silently downgrade what the user
-    #     asked for.
-    # Skipped when fresh=True (re-audit / explicit cache bypass).
-    if not fresh:
-        cached = _result_cache_get(cache_key)
-        cache_hit_kind = "exact" if cached else None
-        if cached is None and not deep:
-            # Regular request, regular cache missed → try the deep slot.
-            cached = _result_cache_get(shape_only.domain + "::deep")
-            if cached is not None:
-                cache_hit_kind = "deep-fallback"
-        if cached is not None:
-            cached_html, _, _, cached_audit_ts = cached
-            log.info("audit cache hit (%s): domain=%r ip=%s%s",
-                     cache_hit_kind, shape_only.domain, _client_ip(request),
-                     " deep=1" if deep else "")
-            return HTMLResponse(content=_inject_age(cached_html, cached_audit_ts))
-
-    # Cache miss (or fresh=True): full validation with DNS / SSRF guard
-    # before running the audit. This is the slow path.
-    try:
-        validated = validate_domain_input(domain)
-    except ValidationError as exc:
-        return templates.TemplateResponse(
-            request=request,
-            name="error.html",
-            context={
-                "title": "That input couldn't be audited",
-                "message": str(exc),
-                "code": exc.code,
-                "version": audit.__version__,
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    log.info(
-        "audit request: original=%r normalized=%r addresses=%s ip=%s%s%s",
-        validated.original, validated.domain,
-        ",".join(validated.addresses), _client_ip(request),
-        " fresh=1" if fresh else "",
-        " deep=1" if deep else "",
-    )
-
-    envelope = await _run_audit_in_pool(
-        request.app.state.pool, validated.domain, deep=deep)
-
-    if envelope["ok"]:
-        body = render_html.render_result(envelope)
-        # Convert audit timestamp (ISO 8601 UTC) to unix seconds for the
-        # cache and the age-injection helper. Falls back to "now" if the
-        # timestamp can't be parsed (defensive — would mean a worker bug).
-        try:
-            audit_ts = datetime.fromisoformat(
-                envelope["timestamp"].replace("Z", "+00:00")
-            ).timestamp()
-        except (ValueError, AttributeError):
-            audit_ts = time.time()
-        # Render the .txt eagerly and cache it alongside the HTML, so a
-        # download triggered later from this cached page returns the txt
-        # corresponding to *exactly* this audit run. ~tens of ms of extra
-        # work per audit, in exchange for consistency between the on-
-        # screen view and the downloadable artifact.
-        txt = _render_txt_to_string(
-            original_domain=validated.original,
-            audit_domain=envelope["audit_domain"],
-            results=envelope["results"],
-            timestamp=envelope["timestamp"],
-        )
-        txt_headers = {
-            "Content-Disposition": (
-                f'attachment; filename="{validated.domain}_'
-                f'{envelope["timestamp"].replace(":", "-")}.txt"'
-            ),
-        }
-        # Store in cache regardless of fresh flag — fresh requests should
-        # update the cache so subsequent hits get the latest result. Use
-        # the deep-aware cache_key, not the bare domain.
-        _result_cache_set(cache_key, body, txt, txt_headers, audit_ts)
-
-        # On a fresh audit, redirect to the canonical URL (without
-        # fresh=1, but keeping deep=1 if it was set). Otherwise the
-        # browser's address bar shows the ?fresh=1 query, and any reload
-        # or shared link forces another cache-bypassing audit. The
-        # redirect strips the fresh flag so the next hit is a normal
-        # cache lookup. The follow-up request finds the entry we just
-        # populated and serves it instantly (~tens of ms), so the extra
-        # round-trip is negligible.
-        if fresh:
-            from urllib.parse import quote
-            canonical = f"/audit/result?domain={quote(validated.domain)}"
-            if deep:
-                canonical += "&deep=1"
-            return RedirectResponse(
-                url=canonical,
-                status_code=status.HTTP_303_SEE_OTHER,
-            )
-
-        return HTMLResponse(content=_inject_age(body, audit_ts))
-    else:
-        return templates.TemplateResponse(
-            request=request,
-            name="error.html",
-            context={
-                "title": "Audit could not be completed",
-                "message": envelope["error"]["message"],
-                "code": envelope["error"]["kind"],
-                "version": audit.__version__,
-            },
-            status_code=_status_for_error_kind(envelope["error"]["kind"]),
-        )
-
-
-@app.get("/audit/{domain}.txt", response_class=PlainTextResponse)
-@limiter.limit(LIMIT_AUDIT)
-async def download_txt(request: Request, domain: str, deep: int = 0):
-    """Plain-text report. Serves from the unified result cache on hit;
-    runs the audit on miss (and populates both HTML and txt entries
-    so a subsequent HTML view of the same domain returns the page that
-    matches this txt).
-
-    Rate-limited under LIMIT_AUDIT, the same limit as /audit/result,
-    because a cache miss here runs a full audit. Without it this URL was
-    an unmetered way to make the service audit arbitrary domains.
-    Cloudflare applies its own limits in front, but the application does
-    not rely on them. A normal download follows a page view, is a cache
-    hit, and stays far under the limit.
-
-    Cache: shared with the HTML serve path. Same TTL, same key. Deep
-    and non-deep audits use distinct cache keys so the .txt always
-    matches the HTML view that linked to it.
-    Cache survives only as long as the process; restart purges it.
-    """
-    # Two-stage validation: shape-only first (cheap, no I/O) so a cache
-    # hit doesn't pay the DNS round-trip. Same pattern as the HTML
-    # serve path. The cache key is the normalized domain (plus the
-    # ::deep suffix when applicable) — matches what the HTML handler
-    # uses, so a cache entry seeded by either handler is visible to
-    # the other.
-    try:
-        shape_only = validate_domain_input(domain, dns_check=False)
-    except ValidationError as exc:
-        return PlainTextResponse(
-            content=f"# Vendor Audit\n\nInput rejected: {exc}\n",
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    deep_flag = bool(deep)
-    cache_key = shape_only.domain + ("::deep" if deep_flag else "")
-    # Cache lookup with deep-as-superset fallback. A regular .txt request
-    # falls back to the deep slot if the regular slot misses; a deep
-    # request only checks the deep slot. Same logic as the HTML serve
-    # path — see _run_audit_and_render for the rationale.
-    cached = _result_cache_get(cache_key)
-    if cached is None and not deep_flag:
-        cached = _result_cache_get(shape_only.domain + "::deep")
-    if cached is not None:
-        _, txt, txt_headers, _ = cached
-        return PlainTextResponse(content=txt, headers=txt_headers)
-
-    # Cache miss: full validation with DNS / SSRF guard before running
-    # the audit.
-    try:
-        validated = validate_domain_input(domain)
-    except ValidationError as exc:
-        return PlainTextResponse(
-            content=f"# Vendor Audit\n\nInput rejected: {exc}\n",
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    envelope = await _run_audit_in_pool(
-        request.app.state.pool, validated.domain, deep=deep_flag)
-    if not envelope["ok"]:
-        return PlainTextResponse(
-            content=(
-                f"# Vendor Audit — {validated.domain}\n\n"
-                f"Audit could not be completed: {envelope['error']['message']}\n"
-            ),
-            status_code=_status_for_error_kind(envelope["error"]["kind"]),
-        )
-
-    # Render BOTH forms and cache them together. We always render the
-    # HTML too — even on a .txt-first request — so a subsequent visit
-    # to the result page returns the matching cached page rather than
-    # re-running the audit. The eager double-render is bounded (~tens
-    # of ms) and pays off across any later view of the same domain.
-    body = render_html.render_result(envelope)
-    txt = _render_txt_to_string(
-        original_domain=validated.original,
-        audit_domain=envelope["audit_domain"],
-        results=envelope["results"],
-        timestamp=envelope["timestamp"],
-    )
-    txt_headers = {
-        "Content-Disposition": (
-            f'attachment; filename="{validated.domain}_'
-            f'{envelope["timestamp"].replace(":", "-")}.txt"'
-        ),
-    }
-    try:
-        audit_ts = datetime.fromisoformat(
-            envelope["timestamp"].replace("Z", "+00:00")
-        ).timestamp()
-    except (ValueError, AttributeError):
-        audit_ts = time.time()
-    _result_cache_set(cache_key, body, txt, txt_headers, audit_ts)
-    return PlainTextResponse(content=txt, headers=txt_headers)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)

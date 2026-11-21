@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vendor-audit"
-version = "2.2.0"
+version = "2.3.0"
 description = "A lightweight, fast, passive best-practice audit for a domain or list of domains."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -63,6 +63,11 @@ web = [
     "python-multipart>=0.0.9",
     "slowapi>=0.1.9",
 ]
+# Install with: pip install -e '.[web,dev]'
+# For running the tests. CI installs both extras so the web tests run too.
+dev = [
+    "pytest>=8",
+]
 
 [project.scripts]
 vendor-audit = "vendor_audit:main"
@@ -86,3 +91,7 @@ vendor_audit = [
 "vendor_audit.web" = [
     "templates/*.html",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

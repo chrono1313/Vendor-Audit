@@ -259,8 +259,9 @@ MemoryDenyWriteExecute=yes
 # ─────────────────────────────────────────────────────────────────────────
 
 # Memory cap. Sized for 16 workers (~80MB resident each, ~1.3GB total)
-# plus the FastAPI parent, the unified result cache (up to ~400MB at
-# 5000 entries), and headroom for transients. 4 GiB is comfortable on
+# plus the FastAPI parent, the unified result cache (entries are stored
+# compressed, ~50KB each, so up to ~250MB at 5000 entries), and headroom
+# for transients. 4 GiB is comfortable on
 # any host with ≥4GB RAM and forces a kill-and-restart if the service
 # leaks, rather than letting it swap the host into oblivion.
 MemoryMax=4G
