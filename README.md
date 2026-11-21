@@ -1,55 +1,64 @@
 # Vendor Audit
 
-A passive, lightweight, fast audit of how closely a domain follows
-published best practices. Audits DNS, email, TLS, HTTP, and web delivery,
-and produces findings rated Critical, High, Medium or Low, a CSV row, and
-an optional plain-text report suitable for sharing with the vendor.
-See `example_reports_and_screenshots/` for a console screenshot and
-sample `.txt` and `.csv` outputs.
+**Try it at [vendoraudit.org](https://vendoraudit.org)** — type a domain, get a
+report in a few seconds. Nothing to install.
 
-A default-mode run makes about 60 checks in roughly a second.
-`--deep` adds 3–5 seconds. In bulk mode (`--file`), domains are audited
-10 at a time in parallel — over 200 domains in under a minute is typical.
-`--ssl` is sequential and adds 1–2 minutes per domain because SSL Labs
-runs the assessment server-side.
+Vendor Audit is a passive, fast check of how closely a domain follows
+published best practices for DNS, email, TLS, HTTP and the website itself.
+Each finding is rated Critical, High, Medium or Low and cites the RFC, W3C
+specification, OWASP guidance or CA/Browser Forum requirement it is measured
+against.
 
-## Web version
+<a href="docs/report-page.png"><img src="docs/report-page.png" width="720" alt="The vendoraudit.org report page: a headline with the finding counts, cards for end-of-life software, certificate expiry and email authentication, a ring showing 71% of checks passed, findings by severity, and a ranked list of findings to fix first."></a>
 
-A hosted version of Vendor Audit runs at
-[vendoraudit.org](https://vendoraudit.org). It's the same audit logic,
-no install required — type a domain, get a report, optionally download
-it as a `.txt` for sharing with the vendor, or as an `.html` file: a saved
+*The report page on [vendoraudit.org](https://vendoraudit.org). Select the
+image to see it full size.*
+
+## On the web
+
+[vendoraudit.org](https://vendoraudit.org) runs the same audit as the
+command-line tool. The report is one page:
+
+- a summary with the share of checks passed and the findings by severity
+- the findings to fix first
+- a table of every check, filtered by severity or category, and searchable
+- a detail panel for each check: what was found, what the practice is, why
+  it matters and how to fix it
+
+A link to a report can point at one check. Every report can be downloaded
+as a `.txt` file to share with the vendor, or as an `.html` file: a saved
 copy of the report page that works offline, with its filters and check
-details, and makes no network requests when opened. The web version supports an
-opt-in **Deep checks** checkbox (DANE, STARTTLS-MX, page parse) that
-adds 3–5 seconds when enabled. SSL Labs (`--ssl`) and bulk mode
-(`--file`) remain CLI-only — the SSL Labs Terms of Use don't permit
-exposing their API on a public website, and bulk mode is meant for
-batch CSV generation.
+details, and makes no network requests when opened.
 
-The report is one page: a summary with the share of checks passed and the
-findings by severity, the findings to fix first, and a table of every
-check that can be filtered by severity or category and searched. Selecting
-a check opens its detail: what was found, what the practice is, why it
-matters and how to fix it. A link to a report can point at one check.
+The **Deep** checkbox adds DANE, the STARTTLS check on mail servers and a
+read of the home page, for 3–5 extra seconds. SSL Labs grades (`--ssl`) and
+bulk mode (`--file`) are command-line only: the SSL Labs Terms of Use don't
+permit exposing their API on a public website, and bulk mode is meant for
+generating a CSV of many domains.
 
-If you want to self-host the web service, see
-[`deploy/INSTALL.md`](deploy/INSTALL.md). It's an optional, separate install
-path — the CLI you get from `pipx install` does not start a web server and
-never imports the web stack. Only `pip install -e '.[web]'` (with the
-explicit `[web]` extra) pulls in FastAPI, uvicorn, and the rest.
+To run your own copy of the website, see
+[`deploy/INSTALL.md`](deploy/INSTALL.md). It's a separate, optional install:
+the command-line tool from `pipx install` doesn't start a web server or
+import the web packages. Only `pip install -e '.[web]'` (with the `[web]`
+extra) pulls in FastAPI, uvicorn and the rest.
 
-## Demo Video
+## On the command line
+
+The command-line version audits one domain or a whole list, and writes the
+same findings to the terminal, a plain-text report, a CSV row per domain or
+JSON:
 
 ```bash
-vendor-audit --ssl email@example.com --deep --report --domain addy.io
+vendor-audit example.com --deep --report
+vendor-audit --file domains.txt --outcsv results.csv
 ```
 
-[vendor_audit_example.webm](https://github.com/user-attachments/assets/a35e5c2f-12ad-42db-957f-41ac44dee42d)
-
-In this example, the full output is generated in about 2 seconds and a report is created.
-See `example_reports_and_screenshots/` for this report.
-
+A default run makes about 60 checks in roughly a second, and `--deep` adds
+3–5 seconds. In bulk mode (`--file`) domains are audited 10 at a time, so
+200 domains usually take under a minute. `--ssl` adds an SSL Labs grade;
+it runs one domain at a time and adds 1–2 minutes per domain, because SSL
+Labs runs the assessment on its own servers. See
+[Installation](#installation) and [Usage](#usage).
 
 ## How it's meant to be used
 
