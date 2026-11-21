@@ -83,6 +83,9 @@ from .audit_checks import (
     check_mx,
     check_ns_soa,
     check_ns_health,
+    check_infra_routing,
+    check_dangling_cname,
+    check_https_rr,
     check_os_eol,
     check_page_security_signals,
     check_redirect,
@@ -91,13 +94,14 @@ from .audit_checks import (
     check_spf,
     check_starttls_mx,
     check_tls,
+    check_tls_legacy,
     check_tls_rpt,
     check_tech_eol,
     check_versioned_libraries,
     check_www_apex_unification,
 )
 
-__version__ = "3.3.0"
+__version__ = "3.4.0"
 
 log = logging.getLogger(__name__)
 
@@ -335,6 +339,8 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
         ("ip_routing",       lambda d: check_ip_routing(d)),
         ("dnssec",           lambda d: check_dnssec(d)),
         ("tls",              lambda d: check_tls(d)),
+        # 3.4: deprecated protocols and weak key exchange, one handshake each.
+        ("tls_legacy",       lambda d: check_tls_legacy(d)),
         ("http_version",     lambda d: check_http_version(d)),
         ("hsts",             lambda d: check_hsts(d, _cached_response=cached_resp)),
         ("http_redirect",    lambda d: check_http_redirect(d)),
@@ -351,6 +357,14 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
         # as www/apex unification below: a redirect-target audit
         # shouldn't ask "is your customer's NS lame?")
         ("ns_health",        lambda _d: check_ns_health(domain)),
+        # 3.4: nameserver and mail server addresses (IPv6, network, RPKI),
+        # keyed off the original domain like ns_health. Runs alongside
+        # ip_routing, which takes about as long.
+        ("infra_routing",    lambda _d: check_infra_routing(domain)),
+        # 3.4: CNAMEs of what the user typed and its www form that point
+        # at names which no longer exist (subdomain takeover).
+        ("dangling_cname",   lambda _d: check_dangling_cname(domain)),
+        ("https_rr",         lambda d: check_https_rr(d)),
         # The www/apex-unification probe is keyed off the ORIGINAL input
         # domain, not audit_domain — we want to ask "do the apex and www
         # forms of what the user typed unify?" Routing this through

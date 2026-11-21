@@ -1,5 +1,5 @@
 {
-  "rubric_version": "3.3.0",
+  "rubric_version": "3.4.0",
   "compatible_with": "vendor_audit 2.x",
   "_comment": "Severity rubric. There are no points and nothing is added up. 'findings' maps each check label to its possible outcomes, and each outcome to [severity, text]. Severities: critical = broken or unsupported today; high = an important protection is missing or weak; medium = an expected practice is missing; low = a refinement; info = optional, or could not be determined (listed, never counted); pass = the practice is met. audit_checks.assess_results() decides WHICH outcome applies; this file decides how serious it is and how it reads. An outcome that is not listed produces no finding. One cause, one finding: HSTS, DNSSEC and clickjacking protection are each a single check. End-of-life findings carry a dynamic label ('EOL OS: ubuntu 18.04') and take their severity from 'eol_severity'.",
   "severities": [
@@ -20,7 +20,8 @@
     "clock_skew_bad_seconds": 300,
     "csp_nonce_min_bytes": 8,
     "response_slow_ms": 1000,
-    "response_fast_ms": 200
+    "response_fast_ms": 200,
+    "mta_sts_min_max_age": 604800
   },
   "dkim_common_selectors": [
     "google",
@@ -90,12 +91,21 @@
     "Email": [
       "SPF policy",
       "SPF lookup count",
+      "SPF single record",
+      "SPF mechanisms",
       "DMARC policy",
       "DMARC sp",
       "DMARC pct",
       "DMARC rua reporting",
+      "DMARC single record",
+      "DMARC external reports",
       "MX target hygiene",
+      "MX hosts resolve",
+      "MX reverse DNS",
+      "Null MX on no-mail domain",
       "MTA-STS",
+      "MTA-STS policy MX match",
+      "MTA-STS max_age",
       "TLS-RPT",
       "DANE TLSA on MX",
       "STARTTLS-MX",
@@ -106,32 +116,44 @@
     "DNS": [
       "DNSSEC",
       "DNSSEC TLD signed",
+      "DNSSEC algorithm",
       "CAA records",
       "Nameserver count",
       "Authoritative delegation",
-      "NS not open resolver"
+      "NS not open resolver",
+      "SOA timers",
+      "Nameservers on IPv6",
+      "Nameserver networks",
+      "Dangling CNAME"
     ],
     "Routing": [
       "IPv6",
       "IPv4 RPKI",
       "IPv4 IRR/RIS",
       "IPv6 RPKI",
-      "IPv6 IRR/RIS"
+      "IPv6 IRR/RIS",
+      "Nameserver RPKI",
+      "Mail servers on IPv6",
+      "Mail server RPKI"
     ],
     "TLS": [
       "TLS connection",
       "TLS 1.3",
+      "Legacy TLS disabled",
+      "Forward secrecy",
       "Certificate lifetime",
       "Certificate renewal",
       "Certificate name match",
       "Cert covers www variant",
       "Cert chain completeness",
+      "Certificate key strength",
       "HSTS",
       "HSTS preload",
       "SSL Labs grade"
     ],
     "HTTP": [
       "HTTP version",
+      "HTTPS DNS record",
       "HTTP→HTTPS redirect",
       "Redirect first-hop hygiene",
       "www and apex unified"
@@ -144,19 +166,25 @@
       "Referrer-Policy",
       "Permissions-Policy",
       "CSP script-src safety",
+      "CSP object-src",
+      "CSP base-uri",
       "Cross-Origin-Opener-Policy",
       "Cross-Origin-Resource-Policy",
       "X-XSS-Protection deprecated",
+      "Deprecated security headers",
       "Cookie Secure",
       "Cookie HttpOnly",
       "Cookie SameSite",
       "Cookie name prefixes",
       "security.txt",
+      "security.txt location",
+      "security.txt Canonical",
       "Default error page",
       "CORS configuration",
       "Server clock accuracy",
       "Subresource Integrity",
-      "Mixed content (in-page)"
+      "Mixed content (in-page)",
+      "Page language declared"
     ]
   },
   "eol_severity": {
@@ -855,6 +883,10 @@
       "missing": [
         "high",
         "No Content-Security-Policy restricting scripts"
+      ],
+      "report_only": [
+        "high",
+        "CSP is only sent as Report-Only — nothing is enforced"
       ]
     },
     "Cross-Origin-Opener-Policy": {
@@ -946,7 +978,11 @@
       ],
       "present_no_expiry": [
         "info",
-        "security.txt present but Expires: field missing or expired"
+        "security.txt has no Expires: field (required by RFC 9116)"
+      ],
+      "expired": [
+        "info",
+        "security.txt has expired"
       ],
       "missing": [
         "low",
@@ -1049,6 +1085,340 @@
       "active": [
         "high",
         "Mixed content: scripts or styles loaded over HTTP on an HTTPS page"
+      ]
+    },
+    "SPF single record": {
+      "single": [
+        "pass",
+        "One SPF record published"
+      ],
+      "multiple": [
+        "high",
+        "More than one SPF record published — receivers treat SPF as broken"
+      ]
+    },
+    "SPF mechanisms": {
+      "clean": [
+        "pass",
+        "SPF record has no empty lookups or deprecated mechanisms"
+      ],
+      "uses_ptr": [
+        "low",
+        "SPF uses the deprecated ptr mechanism"
+      ],
+      "too_many_void": [
+        "medium",
+        "SPF has more than two lookups that return nothing — receivers may treat it as broken"
+      ],
+      "missing_include": [
+        "high",
+        "SPF includes a domain with no SPF record — receivers treat SPF as broken"
+      ]
+    },
+    "DMARC single record": {
+      "single": [
+        "pass",
+        "One DMARC record published"
+      ],
+      "multiple": [
+        "high",
+        "More than one DMARC record published — receivers ignore DMARC entirely"
+      ]
+    },
+    "DMARC external reports": {
+      "authorized": [
+        "pass",
+        "DMARC reports sent to other domains are authorized by them"
+      ],
+      "unauthorized": [
+        "low",
+        "DMARC reports go to a domain that has not authorized them — those reports are not sent"
+      ]
+    },
+    "MX hosts resolve": {
+      "all": [
+        "pass",
+        "Every MX host has an address"
+      ],
+      "some_missing": [
+        "high",
+        "An MX host has no A or AAAA record — mail routed to it bounces"
+      ]
+    },
+    "MX reverse DNS": {
+      "all_confirmed": [
+        "pass",
+        "Mail server addresses have reverse DNS that maps back to them"
+      ],
+      "missing_or_mismatch": [
+        "low",
+        "A mail server address has no reverse DNS, or it does not map back"
+      ]
+    },
+    "Null MX on no-mail domain": {
+      "published": [
+        "pass",
+        "Null MX published: the domain declares it receives no mail"
+      ],
+      "missing": [
+        "medium",
+        "No MX records and no null MX — senders try to deliver to the domain's web address"
+      ]
+    },
+    "MTA-STS policy MX match": {
+      "all_covered": [
+        "pass",
+        "MTA-STS policy names every MX host"
+      ],
+      "uncovered_testing": [
+        "medium",
+        "MTA-STS policy does not name every MX host — mail to them fails once enforced"
+      ],
+      "uncovered_enforce": [
+        "high",
+        "MTA-STS policy does not name every MX host — senders refuse to deliver to them"
+      ]
+    },
+    "MTA-STS max_age": {
+      "ok": [
+        "pass",
+        "MTA-STS policy is cached for a week or longer"
+      ],
+      "short": [
+        "low",
+        "MTA-STS policy max_age is under a week"
+      ]
+    },
+    "Dangling CNAME": {
+      "none": [
+        "pass",
+        "No CNAME on the domain or its www form points at a missing name"
+      ],
+      "dangling": [
+        "high",
+        "A CNAME points at a name that no longer exists — subdomain takeover risk"
+      ]
+    },
+    "DNSSEC algorithm": {
+      "modern": [
+        "pass",
+        "DNSSEC uses a current signing algorithm"
+      ],
+      "not_recommended": [
+        "low",
+        "DNSSEC signs with RSASHA512, which is not recommended for signing"
+      ],
+      "deprecated": [
+        "medium",
+        "DNSSEC signs only with a forbidden algorithm (such as SHA-1) — validators treat the zone as unsigned"
+      ]
+    },
+    "SOA timers": {
+      "within_guidance": [
+        "pass",
+        "SOA timers within RFC guidance"
+      ],
+      "outside_guidance": [
+        "info",
+        "SOA timers outside RFC guidance"
+      ]
+    },
+    "Nameservers on IPv6": {
+      "two_or_more": [
+        "pass",
+        "At least two nameservers reachable over IPv6"
+      ],
+      "fewer_than_two": [
+        "low",
+        "Fewer than two nameservers reachable over IPv6"
+      ]
+    },
+    "Nameserver networks": {
+      "diverse": [
+        "pass",
+        "Nameservers spread over more than one network"
+      ],
+      "single_network": [
+        "info",
+        "All nameservers checked are in one network"
+      ]
+    },
+    "Nameserver RPKI": {
+      "valid": [
+        "pass",
+        "Nameserver routes are RPKI-valid"
+      ],
+      "not-found": [
+        "medium",
+        "A nameserver route has no RPKI ROA — it can be hijacked"
+      ],
+      "invalid": [
+        "high",
+        "A nameserver route is RPKI-invalid"
+      ],
+      "lookup_failed": [
+        "info",
+        "Nameserver RPKI could not be checked"
+      ]
+    },
+    "Mail servers on IPv6": {
+      "all": [
+        "pass",
+        "Every mail server reachable over IPv6"
+      ],
+      "partial": [
+        "low",
+        "Some mail servers have no IPv6 address"
+      ],
+      "none": [
+        "low",
+        "No mail server has an IPv6 address"
+      ]
+    },
+    "Mail server RPKI": {
+      "valid": [
+        "pass",
+        "Mail server routes are RPKI-valid"
+      ],
+      "not-found": [
+        "medium",
+        "A mail server route has no RPKI ROA — it can be hijacked"
+      ],
+      "invalid": [
+        "high",
+        "A mail server route is RPKI-invalid"
+      ],
+      "lookup_failed": [
+        "info",
+        "Mail server RPKI could not be checked"
+      ]
+    },
+    "HTTPS DNS record": {
+      "present": [
+        "pass",
+        "HTTPS DNS record published"
+      ],
+      "missing": [
+        "info",
+        "No HTTPS DNS record (optional)"
+      ]
+    },
+    "Legacy TLS disabled": {
+      "disabled": [
+        "pass",
+        "TLS 1.0 and 1.1 refused"
+      ],
+      "tls1_1_accepted": [
+        "high",
+        "TLS 1.1 still accepted (deprecated by RFC 8996)"
+      ],
+      "tls1_0_accepted": [
+        "high",
+        "TLS 1.0 still accepted (deprecated by RFC 8996)"
+      ],
+      "unprobed": [
+        "info",
+        "TLS 1.0 / 1.1 could not be tested from this system"
+      ]
+    },
+    "Forward secrecy": {
+      "required": [
+        "pass",
+        "Forward secrecy required for every connection"
+      ],
+      "static_rsa": [
+        "medium",
+        "Static RSA key exchange accepted — those connections have no forward secrecy"
+      ],
+      "null_cipher": [
+        "high",
+        "NULL cipher accepted — traffic can be sent unencrypted"
+      ],
+      "unprobed": [
+        "info",
+        "Key exchange could not be tested from this system"
+      ]
+    },
+    "Certificate key strength": {
+      "strong": [
+        "pass",
+        "Certificate key and signature are strong"
+      ],
+      "weak_key": [
+        "high",
+        "Certificate key is too short (under 2048-bit RSA or 256-bit EC)"
+      ],
+      "weak_signature": [
+        "high",
+        "Certificate is signed with SHA-1 or MD5"
+      ]
+    },
+    "CSP object-src": {
+      "none_or_self": [
+        "pass",
+        "CSP restricts object-src"
+      ],
+      "missing": [
+        "low",
+        "CSP does not restrict object-src"
+      ],
+      "unrestricted": [
+        "medium",
+        "CSP object-src allows any source"
+      ]
+    },
+    "CSP base-uri": {
+      "set": [
+        "pass",
+        "CSP restricts base-uri"
+      ],
+      "missing": [
+        "low",
+        "CSP does not restrict base-uri"
+      ]
+    },
+    "security.txt location": {
+      "well_known": [
+        "pass",
+        "security.txt is at /.well-known/security.txt"
+      ],
+      "legacy_path": [
+        "info",
+        "security.txt is only at the legacy /security.txt path"
+      ]
+    },
+    "security.txt Canonical": {
+      "match": [
+        "pass",
+        "security.txt Canonical lists where the file was found"
+      ],
+      "mismatch": [
+        "low",
+        "security.txt Canonical does not list where the file was found"
+      ]
+    },
+    "Deprecated security headers": {
+      "none": [
+        "pass",
+        "No deprecated HPKP or Expect-CT headers"
+      ],
+      "expect_ct": [
+        "info",
+        "Expect-CT is set — deprecated and has no effect"
+      ],
+      "hpkp": [
+        "low",
+        "Public-Key-Pins (HPKP) is set — deprecated and risky"
+      ]
+    },
+    "Page language declared": {
+      "set": [
+        "pass",
+        "Page declares its language (<html lang>)"
+      ],
+      "missing": [
+        "info",
+        "Page does not declare its language (<html lang>)"
       ]
     }
   }

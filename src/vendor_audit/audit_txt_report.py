@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.3.0"
+__version__ = "3.4.0"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -134,6 +134,14 @@ ISSUE_SEVERITIES = ("critical", "high", "medium", "low")
 SEVERITY_TITLES = {
     "critical": "CRITICAL", "high": "HIGH", "medium": "MEDIUM", "low": "LOW",
     "info": "INFORMATIONAL", "pass": "PASSING",
+}
+
+
+# DNSKEY algorithm numbers (IANA registry), for the DNSSEC detail line.
+_DNSSEC_ALG_NAMES = {
+    1: "RSAMD5", 3: "DSA", 5: "RSASHA1", 6: "DSA-NSEC3-SHA1", 7: "RSASHA1-NSEC3-SHA1",
+    8: "RSASHA256", 10: "RSASHA512", 12: "ECC-GOST", 13: "ECDSAP256SHA256",
+    14: "ECDSAP384SHA384", 15: "ED25519", 16: "ED448",
 }
 
 
@@ -747,6 +755,25 @@ EXPLANATIONS = {
             "Subresource Integrity (SRI, W3C standard) is a hash attribute on <script> and <link> tags that lets the browser verify the resource's bytes match an expected hash before executing it. Without SRI, a third-party CDN compromise injects code into every page that loads from it — the 2018 British Airways, Newegg, and Ticketmaster compromises all chained through the same Magecart pattern. With SRI on every external resource, the same compromise causes scripts to fail to load instead of executing attacker code.",
             "Mixed content is HTTP resources loaded by an HTTPS page. Browsers block it by default for scripts and stylesheets (active mixed content) but allow it for images and audio with a console warning (passive mixed content). Either way, a network attacker can substitute the unencrypted resource — for a script that's RCE on every page view; for an image it's smaller but still a tracking and tampering vector.",
             "The accessibility signals are not a substitute for a proper a11y audit: empty buttons, missing alt= attributes, missing form labels, missing <html lang=>. They're the kind of thing a quick visual scan catches that automated WAVE/Axe/pa11y tooling would catch in much more depth. A clean signal here means nothing structural is obviously broken; it doesn't mean the site is fully accessible.",
+        ],
+    },
+    "dangling_dns": {
+        "what": "A CNAME record points one name at another. A dangling CNAME points at a name that no longer exists, usually a cloud bucket, app or CDN endpoint that was deleted.",
+        "why":  "At many providers anyone can create a resource with the freed name. Whoever does then serves their own content on this domain, with a valid certificate (subdomain takeover).",
+        "fix":  "Delete CNAME records for services that are no longer used, or re-create the resource at the provider before the name is claimed.",
+        "details": [
+            "This audit follows the CNAME chain of the domain as entered and of its www form, and reports a chain whose last name returns NXDOMAIN (does not exist). A timeout or server error is not counted, since it does not show that the name is free.",
+            "Only these two names are checked. A takeover can happen on any subdomain, so an inventory of the zone's CNAME records, checked when a cloud resource is removed, is the lasting fix.",
+        ],
+    },
+    "infra_routing": {
+        "what": "The addresses of the domain's nameservers and mail servers: whether they are on IPv6, which networks they sit in, and whether their routes are protected by RPKI.",
+        "why":  "A route hijack of the nameservers or mail servers redirects the whole domain's DNS or mail, not just its website. Nameservers on one network share every outage of that network, and servers without IPv6 cannot be reached by IPv6-only clients.",
+        "fix":  "Ask the DNS and mail providers to publish ROAs for their prefixes and to offer IPv6, or move to providers that do. Spread nameservers over more than one network.",
+        "details": [
+            "For up to four nameservers and three mail servers, one IPv4 and one IPv6 address each are looked up in RIPEstat (at most eight lookups per audit): the announcing network (ASN) and the RPKI origin validation of the route.",
+            "RPKI \"not-found\" means no Route Origin Authorization covers the prefix, so nothing stops another network announcing it. \"invalid\" means the route contradicts the published ROA, which is either a misconfiguration or a hijack in progress.",
+            "Large anycast DNS providers often run all of a domain's nameservers from one network. That is reported as Informational: RFC 2182 asks for network diversity, but a well-run anycast network is resilient in practice.",
         ],
     },
 }
@@ -1388,6 +1415,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
     `prefix` picks the results keys ("redirect_target_" for the domain a
     site redirects to); `chk` is the matching prefix of the finding labels
     the status lines report on ("redirect target: SPF policy")."""
+    from .audit_checks import _mx_pattern_match
     chk = "redirect target: " if prefix else ""
     out = []
 
@@ -1448,6 +1476,34 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
             else:
                 out.append(_status("pass",
                     f"SPF lookup count: {lc}", check=chk + "SPF lookup count"))
+
+        # 3.4: one record only, and no lookups that fail or are deprecated.
+        n_spf = spf.get("record_count")
+        if n_spf and n_spf > 1:
+            out.append(_status("fail",
+                f"{n_spf} SPF records published — receivers treat SPF as broken (RFC 7208 §3.2)",
+                check=chk + "SPF single record"))
+        elif n_spf == 1:
+            out.append(_status("pass", "One SPF record published", check=chk + "SPF single record"))
+        if "void_lookups" in spf:
+            missing_inc = spf.get("missing_includes") or []
+            voids = spf.get("void_lookups") or 0
+            if missing_inc:
+                out.append(_status("fail",
+                    "SPF includes a domain with no SPF record — receivers treat SPF as broken",
+                    sub_lines=[f"include:{t}" for t in missing_inc], check=chk + "SPF mechanisms"))
+            elif voids > 2:
+                out.append(_status("fail",
+                    f"{voids} SPF lookups return nothing — more than the 2 allowed (RFC 7208 §4.6.4)",
+                    check=chk + "SPF mechanisms"))
+            elif spf.get("uses_ptr"):
+                out.append(_status("warn",
+                    "SPF uses the ptr mechanism — deprecated (RFC 7208 §5.5)", check=chk + "SPF mechanisms"))
+            else:
+                out.append(_status("pass",
+                    "SPF lookups all resolve; no deprecated mechanisms" if not voids
+                    else f"SPF has {voids} lookup(s) that return nothing — within the limit of 2",
+                    check=chk + "SPF mechanisms"))
 
         if spf.get("redirect_target"):
             rec = spf.get("redirect_record") or ""
@@ -1520,6 +1576,25 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 out.append(_status("warn",
                     "No rua= tag — no aggregate reporting destination set; operator cannot see spoofing attempts or legit-mail rejections", check=chk + "DMARC rua reporting"))
 
+            # 3.4: one record only; reports to other organisations authorized.
+            n_dmarc = dmarc.get("record_count")
+            if n_dmarc and n_dmarc > 1:
+                out.append(_status("fail",
+                    f"{n_dmarc} DMARC records published — receivers ignore DMARC entirely (RFC 7489 §6.6.3)",
+                    check=chk + "DMARC single record"))
+            elif n_dmarc == 1:
+                out.append(_status("pass", "One DMARC record published", check=chk + "DMARC single record"))
+            policy_domain = dmarc.get("inherited_from") or domain_label
+            for ext in dmarc.get("rua_external") or []:
+                if ext.get("authorized") is True:
+                    out.append(_status("pass",
+                        f"Reports to {ext['domain']} are authorized by that domain", check=chk + "DMARC external reports"))
+                elif ext.get("authorized") is False:
+                    out.append(_status("warn",
+                        f"Reports to {ext['domain']} are not authorized — no record at "
+                        f"{policy_domain}._report._dmarc.{ext['domain']}, so they are not sent",
+                        check=chk + "DMARC external reports"))
+
         if dmarc.get("record"):
             out.append("")
             out.append(_raw_value("Record published:", dmarc["record"]))
@@ -1538,9 +1613,17 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 f"DNS query failed: {mx['error']}", check=chk + "MX target hygiene"))
         elif mx.get("null_mx"):
             out.append(_status("pass",
-                "Null MX (RFC 7505) — domain explicitly does not send or receive mail", check=chk + "MX target hygiene"))
+                "Null MX (RFC 7505) — domain explicitly does not send or receive mail", check=chk + "Null MX on no-mail domain"))
         elif not mx.get("entries"):
-            out.append("    No MX records — domain does not receive email.")
+            ipr = results.get("ip_routing") or {}
+            has_address = bool((ipr.get("v4") or {}).get("address") or (ipr.get("v6") or {}).get("address"))
+            if not prefix and has_address:
+                out.append(_status("fail",
+                    "No MX records and no null MX — senders fall back to the domain's web address",
+                    sub_lines=["Publish MX 0 . (RFC 7505) if the domain receives no mail"],
+                    check=chk + "Null MX on no-mail domain"))
+            else:
+                out.append("    No MX records — domain does not receive email.")
         else:
             # Plain table, two columns: Priority + Host. Lower priority
             # = preferred — note this once for users who don't know.
@@ -1566,6 +1649,33 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 out.append(_status("fail",
                     f"MX target is a CNAME: {tgt} \u2014 violates RFC 2181 \u00a710.3; "
                     f"some receivers may bounce", check=chk + "MX target hygiene"))
+
+            # 3.4: every MX host has an address, with reverse DNS that maps back.
+            hosts = mx.get("mx_hosts") or {}
+            if hosts:
+                out.append("")
+                missing = [h for h, i in hosts.items() if i.get("resolves") is False]
+                for h in missing:
+                    out.append(_status("fail",
+                        f"MX host {h} has no A or AAAA record — mail routed to it bounces",
+                        check=chk + "MX hosts resolve"))
+                if not missing and all(i.get("resolves") for i in hosts.values()):
+                    out.append(_status("pass", "Every MX host has an address", check=chk + "MX hosts resolve"))
+                bad, good = [], 0
+                for h, i in hosts.items():
+                    for p in i.get("ptr") or []:
+                        if p.get("confirmed") is True:
+                            good += 1
+                        elif p.get("confirmed") is False:
+                            bad.append(f"{p['address']} ({h}): " + (
+                                f"reverse name {p['name']} does not resolve back" if p.get("name") else "no reverse DNS"))
+                if bad:
+                    out.append(_status("warn", "Mail server reverse DNS missing or not matching",
+                                       sub_lines=bad, check=chk + "MX reverse DNS"))
+                elif good:
+                    out.append(_status("pass",
+                        f"Reverse DNS confirmed for {good} mail server address{'es' if good > 1 else ''}",
+                        check=chk + "MX reverse DNS"))
     else:
         out.append("    No MX data collected.")
 
@@ -1608,12 +1718,38 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                         f"MTA-STS DNS record published{id_str}",
                         sub_lines=[f"Policy file not reachable from this audit ({mta_sts_policy.get('error')});",
                                    "taken as published"], check=chk + "MTA-STS"))
-                elif mode == "enforce":
-                    items.append(_status("pass",
-                        f"MTA-STS published — mode=enforce{id_str}", check=chk + "MTA-STS"))
-                elif mode == "testing":
-                    items.append(_status("warn",
-                        f"MTA-STS in mode=testing — failures reported, not enforced{id_str}", check=chk + "MTA-STS"))
+                elif mode in ("enforce", "testing"):
+                    if mode == "enforce":
+                        items.append(_status("pass",
+                            f"MTA-STS published — mode=enforce{id_str}", check=chk + "MTA-STS"))
+                    else:
+                        items.append(_status("warn",
+                            f"MTA-STS in mode=testing — failures reported, not enforced{id_str}", check=chk + "MTA-STS"))
+                    # 3.4: the policy must name every MX host, and be cached for weeks.
+                    patterns = mta_sts_policy.get("mx") or []
+                    uncovered = [e["host"] for e in mx.get("entries") or []
+                                 if not any(_mx_pattern_match(p, e["host"]) for p in patterns)]
+                    if uncovered:
+                        items.append(_status("fail",
+                            "MTA-STS policy does not name every MX host"
+                            + (" — senders refuse to deliver to them" if mode == "enforce"
+                               else " — mail to them fails once enforced"),
+                            sub_lines=[f"Not covered: {', '.join(uncovered)}",
+                                       f"Policy mx: {', '.join(patterns) or 'none'}"],
+                            check=chk + "MTA-STS policy MX match"))
+                    else:
+                        items.append(_status("pass", "MTA-STS policy names every MX host",
+                                             check=chk + "MTA-STS policy MX match"))
+                    max_age = mta_sts_policy.get("max_age")
+                    if isinstance(max_age, int):
+                        days = max_age / 86400
+                        if max_age < 604800:
+                            items.append(_status("warn",
+                                f"MTA-STS max_age {max_age} ({days:.1f} days) — under a week",
+                                check=chk + "MTA-STS max_age"))
+                        else:
+                            items.append(_status("pass", f"MTA-STS max_age {max_age} ({days:.0f} days)",
+                                                 check=chk + "MTA-STS max_age"))
                 elif mode == "none":
                     items.append(_status("warn",
                         f"MTA-STS mode=none — explicit opt-out{id_str}", check=chk + "MTA-STS"))
@@ -1853,6 +1989,20 @@ def _render_dns_section(data):
             parts.append(_status("warn", "Domain DNSSEC not detected (no DNSKEY)", check="DNSSEC"))
             parts.append(_status("warn",
                 "DNSSEC chain not validated (AD flag not set)", check="DNSSEC"))
+        algs = dom_d.get("algorithms") or []
+        if dom_d.get("dnskey") and algs:
+            from .audit_checks import _DNSSEC_MODERN_ALGS
+            names = ", ".join(f"{a} ({_DNSSEC_ALG_NAMES.get(a, 'unknown')})" for a in algs)
+            if set(algs) & _DNSSEC_MODERN_ALGS:
+                parts.append(_status("pass", f"Signing algorithm: {names}", check="DNSSEC algorithm"))
+            elif 10 in algs:
+                parts.append(_status("warn", f"Signing algorithm: {names} — not recommended (RFC 8624)",
+                                     check="DNSSEC algorithm"))
+            else:
+                parts.append(_status("fail",
+                    f"Signing algorithm: {names} — must not be used (RFC 8624, RFC 9905)",
+                    sub_lines=["Validating resolvers treat a zone signed only with it as unsigned"],
+                    check="DNSSEC algorithm"))
         parts.append("")
         parts.append("")
 
@@ -1886,7 +2036,17 @@ def _render_dns_section(data):
             parts.append(_kv([
                 ("SOA primary", soa.get("primary", "")),
                 ("SOA serial",  soa.get("serial",  "")),
+                ("SOA timers",  f"refresh {soa.get('refresh')} · retry {soa.get('retry')} · "
+                                f"expire {soa.get('expire')} · minimum {soa.get('minimum')}"),
             ]))
+            from .audit_checks import _soa_issues
+            issues = _soa_issues(soa)
+            parts.append("")
+            if issues:
+                parts.append(_status("info", "SOA timers outside RFC 1912 / RFC 2308 guidance",
+                                     sub_lines=issues, check="SOA timers"))
+            else:
+                parts.append(_status("pass", "SOA timers within RFC 1912 / RFC 2308 guidance", check="SOA timers"))
 
         # ── NS health: lame delegation + open recursive resolver (1.2) ──
         ns_health = r.get("ns_health", {}) or {}
@@ -1927,6 +2087,33 @@ def _render_dns_section(data):
                     parts.append(_status("info",
                         f"Could not probe {ns_host}: {reason}"))
 
+        # 3.4: the nameservers' own addresses — IPv6 and network spread.
+        ns_i = ((r.get("infra_routing") or {}).get("ns")) or {}
+        if ns_i.get("hosts") and not ns_i.get("error"):
+            parts.append("")
+            hosts = ns_i["hosts"]
+            with_v6 = [h for h, i in hosts.items() if i.get("v6")]
+            if len(with_v6) >= 2:
+                parts.append(_status("pass", f"{len(with_v6)} of {len(hosts)} nameservers reachable over IPv6",
+                                     check="Nameservers on IPv6"))
+            else:
+                parts.append(_status("warn",
+                    f"{len(with_v6)} of {len(hosts)} nameservers reachable over IPv6 — at least two should be",
+                    check="Nameservers on IPv6"))
+            by_asn = {}
+            for l in ns_i.get("lookups") or []:
+                if l.get("asn") is not None:
+                    by_asn.setdefault(l["asn"], set()).add(l["host"])
+            if len(by_asn) >= 2:
+                parts.append(_status("pass", f"Nameservers spread over {len(by_asn)} networks",
+                                     sub_lines=[f"AS{a}: {', '.join(sorted(h))}" for a, h in sorted(by_asn.items())],
+                                     check="Nameserver networks"))
+            elif by_asn:
+                a = next(iter(by_asn))
+                parts.append(_status("info", f"All nameservers checked are in one network (AS{a})",
+                                     sub_lines=["One network outage or misrouting affects all of them (RFC 2182)"],
+                                     check="Nameserver networks"))
+
         parts.append("")
         parts.append("")
 
@@ -1959,6 +2146,24 @@ def _render_dns_section(data):
             # marker for this 0/2 fail row. The TXT render uses fail.
             parts.append(_status("fail",
                 "No CAA records — any public CA can issue certificates for this domain", check="CAA records"))
+
+    # 3.4: CNAMEs pointing at names that no longer exist.
+    dangling = r.get("dangling_cname") or {}
+    named = {n: i for n, i in (dangling.get("names") or {}).items() if i.get("end") != "error"}
+    if named:
+        parts.append("")
+        parts.append("")
+        parts.extend(_subheading_with_explanation("Dangling CNAMEs", "dangling_dns"))
+        for n, i in sorted(named.items()):
+            chain = " → ".join([n] + i.get("chain", []))
+            if i.get("end") == "nxdomain":
+                parts.append(_status("fail", f"{chain} — the target does not exist",
+                                     sub_lines=["Whoever registers that name at the provider can serve content here"],
+                                     check="Dangling CNAME"))
+            elif i.get("chain"):
+                parts.append(_status("pass", f"{chain} — target exists", check="Dangling CNAME"))
+        if not any(i.get("chain") for i in named.values()):
+            parts.append(_status("pass", "No CNAMEs on the domain or its www form", check="Dangling CNAME"))
 
     return "\n".join(parts)
 
@@ -2049,6 +2254,42 @@ def _render_routing_section(data):
     parts.append("")
     parts.extend(_af_block("IPv6", ipr.get("v6", {}) or {}))
 
+    # 3.4: nameserver and mail server addresses — RPKI, and mail on IPv6.
+    infra = data.results.get("infra_routing") or {}
+    rows = []
+    for kind, label in (("ns", "Nameserver"), ("mx", "Mail server")):
+        block = infra.get(kind) or {}
+        lookups = block.get("lookups") or []
+        if kind == "mx" and block.get("hosts") and not block.get("error"):
+            hosts = block["hosts"]
+            n6 = [h for h, i in hosts.items() if i.get("v6")]
+            if len(n6) == len(hosts):
+                rows.append(_status("pass", f"All {len(hosts)} mail servers reachable over IPv6",
+                                    check="Mail servers on IPv6"))
+            else:
+                rows.append(_status("warn", f"{len(n6)} of {len(hosts)} mail servers reachable over IPv6",
+                                    sub_lines=[f"No IPv6: {', '.join(sorted(h for h in hosts if h not in n6))}"],
+                                    check="Mail servers on IPv6"))
+        for l in lookups:
+            st = l.get("rpki_status")
+            where = f"{l['host']} {l['address']}" + (f" ({l['prefix']}, AS{l['asn']})" if l.get("prefix") else "")
+            if st == "valid":
+                rows.append(_status("pass", f"{label} RPKI valid: {where}", check=f"{label} RPKI"))
+            elif st == "invalid":
+                rows.append(_status("fail", f"{label} RPKI invalid: {where} — the route contradicts its ROA",
+                                    check=f"{label} RPKI"))
+            elif st == "not-found":
+                rows.append(_status("warn", f"{label} RPKI not-found: {where} — no ROA published",
+                                    check=f"{label} RPKI"))
+            else:
+                rows.append(_status("info", f"{label} RPKI check failed: {l['host']} {l['address']}"
+                                    + (f" ({l['error']})" if l.get("error") else ""), check=f"{label} RPKI"))
+    if rows:
+        parts.append("")
+        parts.append("")
+        parts.extend(_subheading_with_explanation("Nameserver and mail server addresses", "infra_routing"))
+        parts.extend(rows)
+
     return "\n".join(parts)
 
 
@@ -2078,6 +2319,50 @@ def _render_tls_section(data):
         else:
             parts.append(_status("fail",
                 f"Negotiated {ver} — upgrade required", check="TLS 1.3"))
+
+        # 3.4: what else the server accepts when asked for it.
+        from .audit_checks import _legacy_tls_outcome, _forward_secrecy_outcome, _cert_key_outcome
+        legacy = r.get("tls_legacy") or {}
+        lo = _legacy_tls_outcome(legacy) if legacy else None
+        if lo in ("tls1_0_accepted", "tls1_1_accepted"):
+            accepted = [v for k, v in (("tls1_0", "TLS 1.0"), ("tls1_1", "TLS 1.1")) if legacy.get(k) == "accepted"]
+            parts.append(_status("fail", f"{' and '.join(accepted)} still accepted — deprecated by RFC 8996",
+                                 check="Legacy TLS disabled"))
+        elif lo == "disabled":
+            parts.append(_status("pass", "TLS 1.0 and 1.1 refused", check="Legacy TLS disabled"))
+        elif lo == "unprobed":
+            parts.append(_status("info", "TLS 1.0 / 1.1 not tested — this system's OpenSSL cannot offer them",
+                                 check="Legacy TLS disabled"))
+        elif legacy:
+            parts.append(_status("info", "TLS 1.0 / 1.1 not determined — the probe got no answer",
+                                 check="Legacy TLS disabled"))
+        fo = _forward_secrecy_outcome(legacy) if legacy else None
+        if fo == "null_cipher":
+            parts.append(_status("fail", "NULL cipher accepted — traffic can be sent unencrypted",
+                                 check="Forward secrecy"))
+        elif fo == "static_rsa":
+            parts.append(_status("fail", "Static RSA key exchange accepted — no forward secrecy for those connections",
+                                 sub_lines=["A stolen server key decrypts recorded traffic"], check="Forward secrecy"))
+        elif fo == "required":
+            parts.append(_status("pass", "Forward secrecy required (static RSA and NULL ciphers refused)",
+                                 check="Forward secrecy"))
+        elif fo == "unprobed":
+            parts.append(_status("info", "Key exchange not tested — this system's OpenSSL cannot offer it",
+                                 check="Forward secrecy"))
+
+        ko = _cert_key_outcome(tls)
+        if ko:
+            kind, bits, sig = tls.get("cert_key_type"), tls.get("cert_key_bits"), tls.get("cert_sig_alg") or "?"
+            key = f"{kind} {bits}-bit" if bits else str(kind)
+            if ko == "weak_signature":
+                parts.append(_status("fail", f"Certificate signed with {sig} — SHA-1/MD5 signatures are broken",
+                                     check="Certificate key strength"))
+            elif ko == "weak_key":
+                parts.append(_status("fail", f"Certificate key {key} — below 2048-bit RSA / 256-bit EC",
+                                     check="Certificate key strength"))
+            else:
+                parts.append(_status("pass", f"Certificate key {key}, signed with {sig}",
+                                     check="Certificate key strength"))
 
         names_match = tls.get("cert_names_match")
         san_names   = tls.get("cert_san_names", []) or []
@@ -2252,6 +2537,19 @@ def _render_http_section(data):
     elif hv.get("error"):
         parts.append(_status("info",
             f"HTTP version check failed: {hv['error']}", check="HTTP version"))
+
+    # 3.4: HTTPS (SVCB) DNS record, RFC 9460.
+    https_rr = r.get("https_rr") or {}
+    if https_rr.get("present"):
+        extra = []
+        if https_rr.get("alpn"):
+            extra.append("alpn " + ",".join(https_rr["alpn"]))
+        if https_rr.get("ech"):
+            extra.append("Encrypted ClientHello key")
+        parts.append(_status("pass", "HTTPS DNS record published" + (f" ({'; '.join(extra)})" if extra else ""),
+                             check="HTTPS DNS record"))
+    elif https_rr.get("present") is False:
+        parts.append(_status("info", "No HTTPS DNS record (RFC 9460) — optional", check="HTTPS DNS record"))
 
     hr_status = http_redir.get("status")
     hr_detail = http_redir.get("detail", "")
@@ -2602,6 +2900,10 @@ def _render_browser_security_headers_section(data):
     elif csp_q == "permissive":
         parts.append(_status("warn",
             "Content-Security-Policy present but appears permissive (wildcard src detected)"))
+    elif srv.get("csp_report_only"):
+        parts.append(_status("fail",
+            "Content-Security-Policy is only sent as Report-Only — violations are logged, nothing is blocked",
+            check="CSP script-src safety"))
     else:
         parts.append(_status("warn", "Content-Security-Policy not set", check="CSP script-src safety"))
 
@@ -2626,21 +2928,23 @@ def _render_browser_security_headers_section(data):
         oso = csp_a.get("object_src_outcome")
         if oso == "none_or_self":
             parts.append(_status("pass",
-                "CSP object-src restricted ('none' or 'self')"))
+                "CSP object-src restricted ('none' or 'self')", check="CSP object-src"))
         elif oso == "unrestricted":
             parts.append(_status("fail",
-                "CSP object-src unrestricted — plugin XSS likely"))
+                "CSP object-src unrestricted — <object> and <embed> can load scripts from anywhere",
+                check="CSP object-src"))
         else:
             parts.append(_status("warn",
-                "CSP object-src missing — plugins (Flash, Java) can be injected"))
+                "CSP object-src not restricted — <object> and <embed> can load content (set object-src 'none')",
+                check="CSP object-src"))
 
         buo = csp_a.get("base_uri_outcome")
         if buo == "set":
             parts.append(_status("pass",
-                "CSP base-uri restricted (prevents <base> hijack)"))
+                "CSP base-uri restricted (prevents <base> hijack)", check="CSP base-uri"))
         else:
             parts.append(_status("warn",
-                "CSP base-uri missing — <base> tag injection can hijack relative URLs"))
+                "CSP base-uri missing — <base> tag injection can hijack relative URLs", check="CSP base-uri"))
 
         fao     = csp_a.get("frame_ancestors_outcome")
         xfo_now = srv.get("x_frame_options")
@@ -2763,6 +3067,20 @@ def _render_browser_security_headers_section(data):
         parts.append(_status("warn",
             f"X-XSS-Protection: {xxp} — header is deprecated; setting it can introduce XSS in older browsers. Recommended: remove or set to 0", check="X-XSS-Protection deprecated"))
 
+    # 3.4: HPKP and Expect-CT — deprecated headers to remove.
+    if "public_key_pins" in srv:
+        if srv.get("public_key_pins"):
+            parts.append(_status("warn",
+                "Public-Key-Pins (HPKP) set — browsers dropped it, and lost pinned keys lock visitors out",
+                sub_lines=[f"Public-Key-Pins: {srv['public_key_pins'][:120]}"],
+                check="Deprecated security headers"))
+        if srv.get("expect_ct"):
+            parts.append(_status("info", f"Expect-CT: {srv['expect_ct'][:80]} — deprecated, has no effect; remove it",
+                                 check="Deprecated security headers"))
+        if not srv.get("public_key_pins") and not srv.get("expect_ct"):
+            parts.append(_status("pass", "No deprecated HPKP or Expect-CT headers",
+                                 check="Deprecated security headers"))
+
     # Raw CSP value(s)
     if csp_header:
         parts.append("")
@@ -2829,8 +3147,11 @@ def _render_security_txt_section(data):
     elif sectxt.get("present") and sectxt.get("contact"):
         found_at = sectxt.get("found_at", "")
         if found_at and "/security.txt" in found_at and "/.well-known/" not in found_at:
-            parts.append(_status("warn",
-                f"Found at legacy path: {found_at} (consider moving to /.well-known/security.txt)", check="security.txt"))
+            parts.append(_status("info",
+                f"Found at legacy path: {found_at} (RFC 9116 places it at /.well-known/security.txt)",
+                check="security.txt location"))
+        else:
+            parts.append(_status("pass", f"Found at {found_at}", check="security.txt location"))
         for contact in sectxt.get("contact", []) or []:
             parts.append(_status("pass", f"Contact: {contact}", check="security.txt"))
         if sectxt.get("policy"):
@@ -2845,6 +3166,16 @@ def _render_security_txt_section(data):
         elif expires is None:
             parts.append(_status("warn",
                 "Expires field missing — required by RFC 9116", check="security.txt"))
+        canon = sectxt.get("canonical") or []
+        if canon:
+            here = {found_at, sectxt.get("final_url") or found_at}
+            if here & set(canon):
+                parts.append(_status("pass", "Canonical: matches where the file was found",
+                                     check="security.txt Canonical"))
+            else:
+                parts.append(_status("warn", "Canonical: does not list where the file was found",
+                                     sub_lines=[f"Found at {found_at}"] + [f"Canonical: {c}" for c in canon],
+                                     check="security.txt Canonical"))
     elif sectxt.get("present"):
         parts.append(_status("warn",
             "security.txt present but no Contact: field found", check="security.txt"))
@@ -3127,10 +3458,11 @@ def _render_page_analysis_section(data):
         parts.append("")
         if not a.get("html_lang_set"):
             parts.append(_status("warn",
-                "<html> has no lang attribute"))
+                "<html> has no lang attribute — screen readers can't pick the language",
+                check="Page language declared"))
         else:
             parts.append(_status("pass",
-                f'<html lang="{a.get("html_lang") or "?"}">'))
+                f'<html lang="{a.get("html_lang") or "?"}">', check="Page language declared"))
 
         total  = a.get("images_total", 0)
         no_alt = a.get("images_missing_alt", 0)

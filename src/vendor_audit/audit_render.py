@@ -32,7 +32,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.3.0"
+__version__ = "3.4.0"
 
 import sys
 from datetime import datetime, timezone

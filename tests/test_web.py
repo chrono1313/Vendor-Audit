@@ -161,13 +161,13 @@ def _pages():
     for name, url in (("form", "/"), ("error", "/no-such-page"), ("bad input", "/audit/result?domain=not a domain")):
         r = _request("GET", url)
         out.append((name, r.text, r.headers.get("content-security-policy", "")))
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.3.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.0"}
     page = appmod.render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                              "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     out.append(("result", page, f"{appmod._STYLE_SRC};"))
     loading = appmod.templates.get_template("loading.html").render(
         display_domain="example.com", result_url="/audit/result?domain=example.com", refresh_url="x",
-        version="3.3.0", request=None)
+        version="3.4.0", request=None)
     out.append(("loading", loading, _request("GET", "/").headers.get("content-security-policy", "")))
     return out
 

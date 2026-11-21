@@ -53,7 +53,7 @@ vendor-audit example.com --deep --report
 vendor-audit --file domains.txt --outcsv results.csv
 ```
 
-A default run makes about 60 checks in roughly a second, and `--deep` adds
+A default run makes about 85 checks in one to two seconds, and `--deep` adds
 3–5 seconds. In bulk mode (`--file`) domains are audited 10 at a time, so
 200 domains usually take under a minute. `--ssl` adds an SSL Labs grade;
 it runs one domain at a time and adds 1–2 minutes per domain, because SSL
@@ -118,7 +118,7 @@ starts with a word that follows the same severities:
 | --- | --- |
 | CRITICAL, HIGH, MEDIUM, LOW, INFO | The line reports a finding of that severity |
 | PASS | This part of a check is met (a check can pass in one part and fail in another) |
-| NOTE | Observed, but not rated: accessibility signals, CSP details beyond `script-src`, SSL Labs' own conditions |
+| NOTE | Observed, but not rated: accessibility signals, SSL Labs' own conditions |
 | (none) | A plain fact, such as an address or a response time |
 
 ### Sorting a CSV of many domains
@@ -144,36 +144,52 @@ Vendor Audit groups checks into six categories. Every check maps to a published
 standard (RFC, W3C spec, OWASP, or CA/Browser Forum baseline requirement) — no
 made-up checks.
 
-**Email** — SPF (record presence, lookup count, `redirect=` resolution),
-DKIM (common-selector probe), DMARC (presence, `p=` policy, `pct=`, `sp=`,
-`rua=` reporting address), MX records, MTA-STS, TLS-RPT, DANE TLSA on MX
-(`--deep`), STARTTLS-MX (`--deep`).
+**Email** — SPF (one record, ending, lookup count, lookups that return
+nothing, `ptr`, includes with no SPF record, `redirect=` resolution), DKIM
+(common-selector probe, key strength), DMARC (one record, `p=` policy, `pct=`,
+`sp=`, `rua=` reporting address, authorization of reports sent to other
+domains), MX records (hygiene, hosts that don't resolve, reverse DNS), null MX
+for domains that receive no mail, MTA-STS (record, policy fetch, policy
+covering every MX host, `max_age`), TLS-RPT, BIMI, DANE TLSA on MX (`--deep`),
+STARTTLS-MX (`--deep`).
 
-**DNS** — DNSSEC chain validation (TLD signing, DNSKEY, AD flag), CAA records,
-nameserver count. SOA serial is reported for change tracking only.
+**DNS** — DNSSEC chain validation (TLD signing, DNSKEY, AD flag) and signing
+algorithm, CAA records, nameserver count, authoritative delegation, open
+resolvers, SOA timers, nameservers on IPv6 and spread over networks, and
+CNAMEs that point at names which no longer exist (subdomain takeover).
 
 **Routing** — IPv6 reachability, IPv4 / IPv6 RPKI ROA coverage, IPv4 / IPv6
-IRR/RIS presence (via RIPEstat). ASN is reported for context only.
+IRR/RIS presence (via RIPEstat), and RPKI for the nameservers' and mail
+servers' addresses, plus mail servers on IPv6. ASN is reported for context only.
 
 **TLS** — Cert validity, SAN coverage, lifetime (91 days or less reads as
 automated issuance), renewal headroom (under 10% of the lifetime left is
-overdue), name match, `www`-variant coverage, TLS 1.3 support, HSTS (presence, `includeSubDomains`, preload list,
-`max-age` strength), and an optional SSL Labs grade with per-condition
-findings (`--ssl`).
+overdue), name match, `www`-variant coverage, key size and signature, TLS 1.3
+support, TLS 1.0 / 1.1 still accepted, forward secrecy (static RSA and NULL
+ciphers refused), HSTS (presence, `includeSubDomains`, preload list, `max-age`
+strength), and an optional SSL Labs grade with per-condition findings (`--ssl`).
 
-**HTTP** — HTTP/2 / HTTP/3 (Alt-Svc) support, HTTP→HTTPS redirect presence,
-first-hop redirect hygiene. Response time is reported for context only.
+**HTTP** — HTTP/2 / HTTP/3 (Alt-Svc) support, HTTPS DNS record (RFC 9460),
+HTTP→HTTPS redirect presence, first-hop redirect hygiene, `www` / apex
+unification. Response time is reported for context only.
 
 **Website** — Server / X-Powered-By header disclosure, security headers (CSP
-analyzed Google-Evaluator-style, covering `script-src`,
-`object-src`, `base-uri`, `frame-ancestors`, and enforcement mode;
+analyzed Google-Evaluator-style: `script-src`, `object-src`, `base-uri`,
+`frame-ancestors`, and Report-Only-only policies;
 X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy,
-Cross-Origin-Opener-Policy, Cross-Origin-Resource-Policy, X-XSS-Protection
-deprecation), cookie attributes (Secure, HttpOnly, SameSite, `__Host-` /
-`__Secure-` prefixes), security.txt, end-of-life detection for the operating
-system, server software and client-side libraries, and under `--deep` a regex-light
-page parse for Subresource Integrity, mixed content, third-party origins,
-and a basic accessibility subset.
+Cross-Origin-Opener-Policy, Cross-Origin-Resource-Policy, and the deprecated
+X-XSS-Protection, Public-Key-Pins and Expect-CT), cookie attributes (Secure,
+HttpOnly, SameSite, `__Host-` / `__Secure-` prefixes), security.txt (contact,
+expiry, location, Canonical), default error page, CORS, server clock,
+end-of-life detection for the operating system, server software and
+client-side libraries, and under `--deep` a regex-light page parse for
+Subresource Integrity, mixed content, page language, third-party origins, and
+a basic accessibility subset.
+
+The checks that open extra connections to the audited server are the TLS
+1.0 / 1.1 and cipher probes: four handshakes, in parallel, each capped at 1.5
+seconds. OpenSSL 3 can no longer offer RC4, 3DES or export ciphers, so those
+are not tested.
 
 ## Installation
 

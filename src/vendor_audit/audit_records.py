@@ -77,6 +77,33 @@ _TOPIC = {
     "Default error page": "error_page",
     "CORS configuration": "cors",
     "Subresource Integrity": "page_analysis", "Mixed content (in-page)": "page_analysis",
+    "SPF single record": "spf",
+    "SPF mechanisms": "spf",
+    "DMARC single record": "dmarc",
+    "DMARC external reports": "dmarc",
+    "MX hosts resolve": "mx",
+    "MX reverse DNS": "mx",
+    "Null MX on no-mail domain": "mx",
+    "MTA-STS policy MX match": "mta_sts",
+    "MTA-STS max_age": "mta_sts",
+    "Dangling CNAME": "dangling_dns",
+    "DNSSEC algorithm": "dnssec",
+    "SOA timers": "nameservers",
+    "Nameservers on IPv6": "ipv6",
+    "Nameserver networks": "nameservers",
+    "Nameserver RPKI": "rpki",
+    "Mail servers on IPv6": "ipv6",
+    "Mail server RPKI": "rpki",
+    "HTTPS DNS record": "http_version",
+    "Legacy TLS disabled": "tls",
+    "Forward secrecy": "tls",
+    "Certificate key strength": "tls",
+    "CSP object-src": "csp",
+    "CSP base-uri": "csp",
+    "security.txt location": "security_txt",
+    "security.txt Canonical": "security_txt",
+    "Deprecated security headers": "security_headers",
+    "Page language declared": "page_analysis",
 }
 
 # Short display names for topics, used to title the background reading.
@@ -93,6 +120,7 @@ TOPIC_TITLES = {
     "eol_tech": "End-of-life server software", "error_page": "Default error pages",
     "cors": "CORS", "rpki": "RPKI", "routing": "Routing", "ipv6": "IPv6",
     "page_analysis": "Page analysis",
+    "dangling_dns": "Dangling DNS records", "infra_routing": "Nameserver and mail server addresses",
 }
 
 
@@ -134,6 +162,33 @@ _STANDARD = {
     "Default error page": "OWASP WSTG",
     "CORS configuration": "WHATWG Fetch",
     "Subresource Integrity": "W3C SRI", "Mixed content (in-page)": "W3C Mixed Content",
+    "SPF single record": "RFC 7208 §3.2",
+    "SPF mechanisms": "RFC 7208 §4.6.4, §5.5",
+    "DMARC single record": "RFC 7489 §6.6.3",
+    "DMARC external reports": "RFC 7489 §7.1",
+    "MX hosts resolve": "RFC 5321 §5.1",
+    "MX reverse DNS": "M3AAWG; RFC 1912 §2.1",
+    "Null MX on no-mail domain": "RFC 7505",
+    "MTA-STS policy MX match": "RFC 8461 §4.1",
+    "MTA-STS max_age": "RFC 8461 §3.2",
+    "Dangling CNAME": "RFC 1034; OWASP WSTG-CONF-10",
+    "DNSSEC algorithm": "RFC 8624; RFC 9905",
+    "SOA timers": "RFC 1912 §2.2; RFC 2308 §5",
+    "Nameservers on IPv6": "RFC 3901",
+    "Nameserver networks": "RFC 2182 §3.1",
+    "Nameserver RPKI": "RFC 6480; RFC 6811",
+    "Mail servers on IPv6": "RFC 8200",
+    "Mail server RPKI": "RFC 6480; RFC 6811",
+    "HTTPS DNS record": "RFC 9460",
+    "Legacy TLS disabled": "RFC 8996",
+    "Forward secrecy": "RFC 9325 §4.1",
+    "Certificate key strength": "CA/B Forum BR §6.1.5",
+    "CSP object-src": "CSP Level 3",
+    "CSP base-uri": "CSP Level 3",
+    "security.txt location": "RFC 9116 §3",
+    "security.txt Canonical": "RFC 9116 §2.5.2",
+    "Deprecated security headers": "RFC 7469 (obsolete); RFC 9163",
+    "Page language declared": "WCAG 2.1 SC 3.1.1",
 }
 
 
@@ -242,6 +297,114 @@ _CHECK_TEXT = {
         "A page served over HTTPS should load every resource over HTTPS.",
         "A resource loaded over plain HTTP can be read or changed in transit, and browsers block or warn about it.",
         "Change the http:// addresses to https://, or host the resource on the site itself."),
+    "SPF single record": (
+        "A domain may publish only one TXT record that starts with v=spf1.",
+        "With two or more, receivers stop with a permanent error and treat the domain as having no usable SPF.",
+        "Merge the records into one, keeping every sender they list."),
+    "SPF mechanisms": (
+        "Each name an SPF record looks up should exist, and the ptr mechanism should not be used.",
+        "An include: of a domain with no SPF record makes the whole check fail, more than two lookups that return nothing may make receivers give up, and ptr is slow and unreliable.",
+        "Remove include:, a: and mx: entries for names that no longer exist, and replace ptr with ip4:, ip6: or include: entries."),
+    "DMARC single record": (
+        "A domain may publish only one DMARC record at _dmarc.<domain>.",
+        "With more than one, receivers ignore DMARC for the domain, as if it had none.",
+        "Delete the extra records and keep a single v=DMARC1 record."),
+    "DMARC external reports": (
+        "When DMARC reports go to an address at another organisation, that organisation must publish a record saying it accepts them.",
+        "Without that record, receivers do not send the reports, so the domain owner gets no visibility from that address.",
+        "Ask the report provider to publish <your domain>._report._dmarc.<their domain> TXT \"v=DMARC1\", or send reports to an address in your own domain."),
+    "MX hosts resolve": (
+        "Every host an MX record names must have an A or AAAA record.",
+        "Mail sent to a host with no address is delayed and then bounced.",
+        "Remove MX records for hosts that no longer exist, or give the host its address records back."),
+    "MX reverse DNS": (
+        "Each mail server address should have a reverse DNS (PTR) name that resolves back to the same address.",
+        "Large mail providers check this for servers that send mail, and junk or refuse mail from servers that fail it.",
+        "Ask whoever controls the address range (usually the hosting provider) to set a PTR record to a name whose A or AAAA record is that address."),
+    "Null MX on no-mail domain": (
+        "A domain that receives no mail should publish a null MX record (0 .) to say so.",
+        "Without any MX, senders fall back to the domain's A or AAAA address and queue mail for it, and spammers forging the domain get no clear signal that its mail is never legitimate.",
+        "Publish MX 0 . together with v=spf1 -all and a DMARC record with p=reject."),
+    "MTA-STS policy MX match": (
+        "Every MX host must match an mx: line in the MTA-STS policy.",
+        "In enforce mode, sending servers refuse to deliver to an MX host the policy does not name, so mail routed there fails.",
+        "Add an mx: line for each MX host (a *.example.com pattern covers one label), then change the policy id."),
+    "MTA-STS max_age": (
+        "max_age tells sending servers how long to keep the MTA-STS policy.",
+        "A short value means senders refetch it often, and an attacker who blocks the refetch can make them fall back to delivering without TLS. RFC 8461 suggests weeks or more.",
+        "Set max_age to at least 604800 (one week); 1209600 or more is common."),
+    "Dangling CNAME": (
+        "A CNAME on the domain or its www form should point at a name that still exists.",
+        "When the target was a deleted cloud resource, anyone who re-creates it at the provider can serve content on this domain.",
+        "Delete the CNAME, or re-create the resource it points at."),
+    "DNSSEC algorithm": (
+        "The algorithm the zone's DNSSEC keys sign with.",
+        "RFC 9905 forbids SHA-1 signing (algorithms 5 and 7), and validating resolvers now treat a zone signed only with it as unsigned, so DNSSEC no longer protects it.",
+        "Roll the keys over to ECDSAP256SHA256 (algorithm 13) or RSASHA256 (8). Most DNS providers do this with a setting change."),
+    "SOA timers": (
+        "The SOA record's timers tell secondary nameservers how often to refresh the zone, when to give up on the primary, and how long resolvers keep a 'does not exist' answer.",
+        "An expire under a week drops the zone from secondaries during a short outage of the primary, and a long negative TTL keeps newly added names unresolvable for a day or more.",
+        "Keep retry shorter than refresh, expire at two weeks or more, and the minimum (negative TTL) at one to three hours."),
+    "Nameservers on IPv6": (
+        "Nameservers should have IPv6 addresses, at least two of them.",
+        "Resolvers that reach the internet only over IPv6 cannot look up a domain whose nameservers have no IPv6 address, and one IPv6 nameserver is a single point of failure for them.",
+        "Ask the DNS provider for IPv6 on its nameservers, or move to a provider that offers it."),
+    "Nameserver networks": (
+        "The networks (ASNs) the nameservers' addresses sit in.",
+        "Nameservers in one network share its outages and routing problems. RFC 2182 asks for diversity, though a large anycast network is resilient in practice.",
+        "Add a secondary DNS provider on a different network, or accept the risk of a well-run anycast provider."),
+    "Nameserver RPKI": (
+        "Whether the routes to the nameservers' addresses are covered by a Route Origin Authorization.",
+        "A hijacked route to the nameservers lets someone answer DNS for the whole domain: web, mail and certificates.",
+        "Ask the DNS provider to publish ROAs for its prefixes, or move to one that does."),
+    "Mail servers on IPv6": (
+        "Mail servers should have IPv6 addresses.",
+        "Senders that reach the internet only over IPv6 cannot deliver to a mail server without one.",
+        "Enable IPv6 on the mail servers, or ask the mail provider to."),
+    "Mail server RPKI": (
+        "Whether the routes to the mail servers' addresses are covered by a Route Origin Authorization.",
+        "A hijacked route to the mail servers lets someone receive the domain's mail.",
+        "Ask the mail provider to publish ROAs for its prefixes, or move to one that does."),
+    "HTTPS DNS record": (
+        "An HTTPS DNS record (RFC 9460) tells browsers, before they connect, that the site speaks HTTPS and which protocols it offers.",
+        "It lets browsers go straight to HTTPS and HTTP/3, and it carries the key for Encrypted ClientHello. It is optional.",
+        "Many DNS providers publish it automatically; otherwise add an HTTPS record with alpn=\"h2,h3\"."),
+    "Legacy TLS disabled": (
+        "Whether the server still accepts TLS 1.0 or 1.1 when a client asks for them.",
+        "Both are deprecated (RFC 8996) and fail PCI DSS. A server that accepts them lets an attacker who can interfere with the connection push clients down to the weaker protocol.",
+        "Set the server's minimum TLS version to 1.2."),
+    "Forward secrecy": (
+        "Whether the server accepts TLS 1.2 key exchanges without forward secrecy, or ciphers without encryption.",
+        "With static RSA key exchange, anyone who later obtains the server's private key can decrypt recorded traffic. RFC 9325 says these cipher suites should not be used.",
+        "Allow only ECDHE (or DHE) key exchange with AES-GCM or ChaCha20-Poly1305 for TLS 1.2, and remove NULL ciphers."),
+    "Certificate key strength": (
+        "The size of the certificate's public key and the hash it is signed with.",
+        "An RSA key under 2048 bits can be factored, and a SHA-1 or MD5 signature can be forged; public CAs stopped issuing both years ago, so one usually means a private CA or a very old certificate.",
+        "Issue a new certificate with an RSA 2048-bit or larger key, or ECDSA P-256, from a CA that signs with SHA-256."),
+    "CSP object-src": (
+        "object-src controls what <object> and <embed> elements may load.",
+        "Left open, an attacker who can inject HTML can load script through them and get around script-src.",
+        "Add object-src 'none' to the policy."),
+    "CSP base-uri": (
+        "base-uri controls which <base> element a page may use.",
+        "Without it, an injected <base href> makes every relative script and link on the page load from the attacker's server, even under a nonce-based script-src.",
+        "Add base-uri 'none' (or 'self' if the site uses a <base> element)."),
+    "security.txt location": (
+        "RFC 9116 places security.txt at /.well-known/security.txt; /security.txt is a fallback.",
+        "Tools and researchers look in /.well-known/ first, and some look only there.",
+        "Serve the file at /.well-known/security.txt; the root copy can stay as a redirect."),
+    "security.txt Canonical": (
+        "The Canonical field names the URLs where the file is meant to be found.",
+        "When it does not list the URL the file was served from, readers can't tell whether the file is the owner's or a stale copy, and RFC 9116 says to treat its contents with caution.",
+        "Make Canonical list the file's real URL, for example https://example.com/.well-known/security.txt."),
+    "Deprecated security headers": (
+        "Public-Key-Pins (HPKP) and Expect-CT are security headers browsers no longer support.",
+        "HPKP locks visitors out of the site for the pin's lifetime if the pinned keys are lost or rotated, in the browsers that still honour a cached pin. Expect-CT is harmless but does nothing.",
+        "Remove both headers. Certificate Transparency is enforced by browsers without them."),
+    "Page language declared": (
+        "The lang attribute on <html> names the page's language.",
+        "Screen readers use it to pick a voice and pronunciation, and browsers to offer translation. WCAG 2.1 requires it (success criterion 3.1.1).",
+        "Add lang to the <html> element, for example <html lang=\"en\">."),
 }
 _CHECK_TEXT["IPv6 IRR/RIS"] = _CHECK_TEXT["IPv4 IRR/RIS"]
 
@@ -360,7 +523,7 @@ def _ev_mta_sts(G):
         out += _list("MX hosts named in the policy", pol.get("mx"))
     elif rec.get("present"):
         out += _kv(("Policy file", f'could not be fetched ({pol.get("error")})'
-                    if pol.get("error") else "not fetched (runs with --deep)"))
+                    if pol.get("error") else "not fetched"))
     return out
 
 
@@ -623,8 +786,9 @@ def _ev_security_txt(G):
     s = G("security_txt")
     if not s.get("present"):
         return _kv(("/.well-known/security.txt", "not found"), ("Error", s.get("error")))
-    return _kv(("Found at", s.get("found_at")), ("Contact", ", ".join(s.get("contact") or [])),
-               ("Expires", s.get("expires")), ("Policy", s.get("policy")))
+    return (_kv(("Found at", s.get("found_at")), ("Contact", ", ".join(s.get("contact") or [])),
+                ("Expires", s.get("expires")), ("Policy", s.get("policy")))
+            + _list("Canonical", s.get("canonical")))
 
 
 def _ev_error_page(G):
@@ -668,6 +832,123 @@ def _ev_mixed(G):
             + _list("Loaded over plain HTTP", p.get("mixed_active")))
 
 
+# ── Evidence for the checks added in 3.4 ─────────────────────────────────────
+
+def _ev_spf_mechanisms(G):
+    spf = G("spf")
+    return (_kv(("SPF records published", spf.get("record_count")),
+                ("Lookups that return nothing", None if "void_lookups" not in spf
+                 else f'{spf["void_lookups"]} (2 allowed)'),
+                ("Uses ptr", "yes" if spf.get("uses_ptr") else None))
+            + _list("Included domains with no SPF record", spf.get("missing_includes"))
+            + _code("SPF record published", spf.get("record")))
+
+
+def _ev_dmarc_extra(G):
+    d = G("dmarc")
+    rows = [f'{e["domain"]}: ' + {True: "authorized", False: "not authorized", None: "lookup failed"}[e.get("authorized")]
+            for e in d.get("rua_external") or []]
+    return (_kv(("DMARC records published", d.get("record_count")))
+            + _list("Report destinations at other domains", rows)
+            + _code("DMARC record published", d.get("record")))
+
+
+def _ev_mx_hosts(G):
+    mx = G("mx")
+    rows, ptrs = [], []
+    for host, info in (mx.get("mx_hosts") or {}).items():
+        addrs = ", ".join((info.get("v4") or []) + (info.get("v6") or [])) or "no A or AAAA record"
+        rows.append(f"{host}: {addrs}")
+        for p in info.get("ptr") or []:
+            state = {True: "maps back", False: "does not map back" if p.get("name") else "no PTR record",
+                     None: "lookup failed"}[p.get("confirmed")]
+            ptrs.append(f'{p["address"]} → {p.get("name") or "—"} ({state})')
+    return _list("MX hosts and their addresses", rows) + _list("Reverse DNS", ptrs)
+
+
+def _ev_null_mx(G):
+    mx = G("mx")
+    return _kv(("MX records", "null MX (0 .)" if mx.get("null_mx") else
+                ("none" if not mx.get("entries") else f'{len(mx["entries"])} published')))
+
+
+def _ev_mta_sts_mx(G):
+    pol, mx = G("mta_sts_policy"), G("mx")
+    return (_list("MX hosts", [e.get("host") for e in mx.get("entries") or []])
+            + _list("mx lines in the policy", pol.get("mx"))
+            + _kv(("Policy mode", pol.get("mode")), ("max_age",
+                   None if pol.get("max_age") is None else f'{pol["max_age"]} s ({pol["max_age"] / 86400:.1f} days)')))
+
+
+def _ev_dangling(G):
+    d = G("dangling_cname")
+    rows = []
+    for name, info in (d.get("names") or {}).items():
+        chain = " → ".join([name] + (info.get("chain") or []))
+        rows.append(f'{chain}  ({ {"nxdomain": "target does not exist", "ok": "target exists", "none": "no CNAME", "absent": "name does not exist", "error": "lookup failed"}.get(info.get("end"), info.get("end")) })')
+    return _list("CNAME chains checked", rows)
+
+
+def _ev_dnssec_alg(G):
+    algs = (G("dnssec").get("domain") or {}).get("algorithms") or []
+    from .audit_txt_report import _DNSSEC_ALG_NAMES
+    return _list("DNSKEY algorithms", [f"{a} ({_DNSSEC_ALG_NAMES.get(a, 'unknown')})" for a in algs])
+
+
+def _ev_soa(G):
+    soa = G("ns_soa").get("soa") or {}
+    from .audit_checks import _soa_issues
+    return (_kv(("Refresh", soa.get("refresh")), ("Retry", soa.get("retry")), ("Expire", soa.get("expire")),
+                ("Minimum (negative TTL)", soa.get("minimum")))
+            + _list("Outside guidance", _soa_issues(soa) if soa else []))
+
+
+def _ev_infra(kind):
+    def build(G):
+        block = (G("infra_routing").get(kind) or {})
+        hosts = [f'{h}: ' + (", ".join((i.get("v4") or []) + (i.get("v6") or [])) or "no address")
+                 for h, i in (block.get("hosts") or {}).items()]
+        looks = [f'{l["host"]} {l["address"]}: ' + (f'AS{l["asn"]} {l["prefix"]}, RPKI {l.get("rpki_status") or "unknown"}'
+                                                     if l.get("prefix") else (l.get("error") or "no data"))
+                 for l in block.get("lookups") or []]
+        return _list("Hosts and addresses", hosts) + _list("Routing (RIPEstat)", looks)
+    return build
+
+
+def _ev_https_rr(G):
+    h = G("https_rr")
+    return (_kv(("HTTPS record", "published" if h.get("present") else "none"),
+                ("Protocols (alpn)", ", ".join(h.get("alpn") or [])),
+                ("Encrypted ClientHello key", "yes" if h.get("ech") else None))
+            + _list("Records", h.get("records")))
+
+
+def _ev_tls_legacy(G):
+    l = G("tls_legacy")
+    word = {"accepted": "accepted", "refused": "refused", "unreachable": "no answer",
+            "unprobed": "not tested (this OpenSSL cannot offer it)"}
+    return _kv(("TLS 1.0", word.get(l.get("tls1_0"))), ("TLS 1.1", word.get(l.get("tls1_1"))),
+               ("Static RSA key exchange", word.get(l.get("static_rsa"))),
+               ("NULL ciphers", word.get(l.get("null_cipher"))))
+
+
+def _ev_cert_key(G):
+    t = G("tls")
+    return _kv(("Key", f'{t.get("cert_key_type")} {t.get("cert_key_bits")}-bit' if t.get("cert_key_bits")
+                else t.get("cert_key_type")), ("Signature", t.get("cert_sig_alg")))
+
+
+def _ev_deprecated_headers(G):
+    s = G("server_header")
+    return _kv(("Public-Key-Pins", s.get("public_key_pins") or "not sent"),
+               ("Expect-CT", s.get("expect_ct") or "not sent"))
+
+
+def _ev_lang(G):
+    a = G("page_signals").get("a11y") or {}
+    return _kv(("<html lang>", a.get("html_lang") or "not set"))
+
+
 _EVIDENCE = {
     "SPF policy": _ev_spf, "SPF lookup count": _ev_spf,
     "DMARC policy": _ev_dmarc, "DMARC sp": _ev_dmarc, "DMARC pct": _ev_dmarc,
@@ -709,6 +990,23 @@ _EVIDENCE = {
     "CORS configuration": _ev_cors,
     "Server clock accuracy": _ev_clock,
     "Subresource Integrity": _ev_sri, "Mixed content (in-page)": _ev_mixed,
+    # 3.4
+    "SPF single record": _ev_spf_mechanisms, "SPF mechanisms": _ev_spf_mechanisms,
+    "DMARC single record": _ev_dmarc_extra, "DMARC external reports": _ev_dmarc_extra,
+    "MX hosts resolve": _ev_mx_hosts, "MX reverse DNS": _ev_mx_hosts,
+    "Null MX on no-mail domain": _ev_null_mx,
+    "MTA-STS policy MX match": _ev_mta_sts_mx, "MTA-STS max_age": _ev_mta_sts_mx,
+    "Dangling CNAME": _ev_dangling, "DNSSEC algorithm": _ev_dnssec_alg, "SOA timers": _ev_soa,
+    "Nameservers on IPv6": _ev_infra("ns"), "Nameserver networks": _ev_infra("ns"),
+    "Nameserver RPKI": _ev_infra("ns"),
+    "Mail servers on IPv6": _ev_infra("mx"), "Mail server RPKI": _ev_infra("mx"),
+    "HTTPS DNS record": _ev_https_rr,
+    "Legacy TLS disabled": _ev_tls_legacy, "Forward secrecy": _ev_tls_legacy,
+    "Certificate key strength": _ev_cert_key,
+    "CSP object-src": _ev_csp, "CSP base-uri": _ev_csp,
+    "security.txt location": _ev_security_txt, "security.txt Canonical": _ev_security_txt,
+    "Deprecated security headers": _ev_deprecated_headers,
+    "Page language declared": _ev_lang,
 }
 
 

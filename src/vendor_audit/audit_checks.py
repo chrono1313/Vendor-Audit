@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.3.0"
+__version__ = "3.4.0"
 
 import os
 import re
@@ -63,6 +63,7 @@ import dns.rdatatype
 import dns.flags
 import dns.rcode
 import dns.exception
+import dns.reversename
 
 import httpx
 import tldextract as _tldextract
@@ -581,88 +582,128 @@ def _org_domain(domain):
 # Mechanisms that each cost one DNS lookup toward the RFC 7208 limit of 10.
 _SPF_DNS_MECHANISMS = frozenset(("a", "mx", "include", "exists", "ptr"))
 
-# Process-wide cache for SPF lookup counts, keyed on the resolved record content.
-# Keying on the record content (not the target name) means two different domains
-# that include the same upstream provider share a count, AND a target whose
-# record content has changed during a long-running scan re-counts naturally.
+# Process-wide cache for SPF evaluation stats, keyed on the resolved record
+# content and the domain it was published at (a bare "a" or "mx" refers to
+# that domain). Two domains that include the same upstream provider share
+# its stats, and a target whose record changes during a long scan is
+# re-walked naturally.
 _spf_cache_lock = threading.Lock()
-_spf_cache: dict[str, int] = {}
+_spf_cache: dict[tuple[str, str], dict] = {}
 
 
-def _count_spf_lookups(record, visited=None):
-    """Recursively count DNS-querying mechanisms in an SPF record.
+def _spf_void(name, rtypes):
+    """True when `name` answers none of `rtypes` (NXDOMAIN or no data) —
+    an RFC 7208 §4.6.4 void lookup. A DNS error is not counted."""
+    for rtype in rtypes:
+        recs = resolve(name, rtype, lifetime=2.0)
+        if resolve_error(recs):
+            return False
+        if recs:
+            return False
+    return True
 
-    Mechanisms that cost a lookup: a, mx, include, exists, ptr, redirect.
-    Follows both include: and redirect= targets recursively. The `visited` set
-    prevents cycles within a single top-level evaluation.
 
-    Sub-record counts are cached process-wide keyed on record content; this is
-    thread-safe and dramatically faster on bulk runs where many domains share
-    common SPF providers (Google, Microsoft, etc).
+def _spf_stats(record, domain=None, visited=None):
+    """Walk an SPF record and the records it includes.
 
-    Returns the total count of DNS lookups consumed.
+    Returns {"lookups", "void", "ptr", "missing_includes"}:
+      lookups           DNS-querying terms (a, mx, include, exists, ptr,
+                        redirect), counted toward the RFC 7208 limit of 10
+      void              lookups that returned no records (NXDOMAIN or no
+                        data): an include: target with no SPF record, or
+                        an a / mx term whose name has no A/AAAA or MX.
+                        RFC 7208 §4.6.4 limits these to two.
+      ptr               whether any record uses the ptr mechanism, which
+                        RFC 7208 §5.5 says SHOULD NOT be used
+      missing_includes  include: targets that publish no SPF record. Each
+                        one makes evaluation a permanent error.
+
+    exists: and macro (%{...}) targets are counted as lookups but not
+    resolved, since their names depend on the message being checked.
+    `visited` prevents cycles within one top-level evaluation.
     """
     if visited is None:
         visited = set()
-    count = 0
+    stats = {"lookups": 0, "void": 0, "ptr": False, "missing_includes": []}
 
     include_targets = []
     redirect_target = None
-    for term in record.split():
-        term = term.lstrip("+~-?").lower()
-        mech = term.split(":")[0].split("=")[0]
+    direct = []                       # (name, rtypes) for a / mx terms
+    for raw in record.split():
+        term = raw.lstrip("+~-?").lower()
+        mech = term.split(":")[0].split("=")[0].split("/")[0]
         if mech in _SPF_DNS_MECHANISMS:
-            count += 1
-            if mech == "include":
-                target = term.split(":", 1)[1] if ":" in term else None
+            stats["lookups"] += 1
+            target = term.split(":", 1)[1].split("/")[0] if ":" in term else None
+            if mech == "ptr":
+                stats["ptr"] = True
+            elif mech == "include":
                 if target and target not in visited:
                     visited.add(target)
                     include_targets.append(target)
+            elif mech in ("a", "mx"):
+                name = target or domain
+                if name and "%" not in name:
+                    direct.append((name, ("A", "AAAA") if mech == "a" else ("MX",)))
         elif mech == "redirect":
-            count += 1
+            stats["lookups"] += 1
             target = term.split("=", 1)[1] if "=" in term else None
             if target and target not in visited:
                 visited.add(target)
                 redirect_target = target
 
-    def _fetch_and_count(target):
-        """Fetch target's SPF record and return its recursive lookup count.
-
-        Each call gets a snapshot of the current visited set rather than the
-        shared reference. Without the snapshot, concurrent siblings would race
-        on visited.add() and could double-count shared sub-domains. Combined
-        with the content-keyed cache below, this is both correct and fast.
-        """
+    def _sub(target):
+        """Stats for an include:/redirect= target, or None when it publishes
+        no SPF record. A snapshot of `visited` keeps siblings from racing."""
         sub = resolve(target, "TXT")
         if resolve_error(sub):
-            return 0
+            return {"lookups": 0, "void": 0, "ptr": False, "missing_includes": []}
         for r in sub:
-            if "v=spf1" in r:
-                # Cache key: the record content itself. Keeps the cache stable
-                # even if the same content is reachable via multiple aliases.
+            if r.lower().startswith("v=spf1"):
+                key = (r, target)
                 with _spf_cache_lock:
-                    cached = _spf_cache.get(r)
+                    cached = _spf_cache.get(key)
                 if cached is not None:
                     return cached
-                computed = _count_spf_lookups(r, set(visited))
+                computed = _spf_stats(r, target, set(visited))
                 with _spf_cache_lock:
-                    _spf_cache[r] = computed
+                    _spf_cache[key] = computed
                 return computed
-        return 0
+        return None
 
-    all_targets = include_targets + ([redirect_target] if redirect_target else [])
-    if not all_targets:
-        return count
+    jobs = [("include", t) for t in include_targets]
+    if redirect_target:
+        jobs.append(("redirect", redirect_target))
+    if not jobs and not direct:
+        return stats
 
     # Cap the pool at 10 to avoid spawning dozens of threads for pathological records.
-    with ThreadPoolExecutor(max_workers=min(len(all_targets), 10)) as ex:
-        futs = [ex.submit(_fetch_and_count, t) for t in all_targets]
-    count += sum(f.result() for f in futs)
-    return count
+    with ThreadPoolExecutor(max_workers=min(len(jobs) + len(direct), 10)) as ex:
+        sub_futs = [(kind, t, ex.submit(_sub, t)) for kind, t in jobs]
+        void_futs = [ex.submit(_spf_void, name, rtypes) for name, rtypes in direct]
+    for kind, target, fut in sub_futs:
+        sub = fut.result()
+        if sub is None:
+            stats["void"] += 1
+            if kind == "include":
+                stats["missing_includes"].append(target)
+            continue
+        stats["lookups"] += sub["lookups"]
+        stats["void"] += sub["void"]
+        stats["ptr"] = stats["ptr"] or sub["ptr"]
+        stats["missing_includes"] += sub["missing_includes"]
+    stats["void"] += sum(1 for f in void_futs if f.result())
+    return stats
 
 
-def _parse_spf_record(record):
-    """Return dict with status, redirect_target, lookup_count."""
+def _count_spf_lookups(record, visited=None):
+    """DNS lookups an SPF record costs toward the RFC 7208 limit of 10."""
+    return _spf_stats(record, None, visited)["lookups"]
+
+
+def _parse_spf_record(record, domain=None):
+    """Return dict with status, redirect_target, lookup_count and the walk's
+    other stats (void lookups, ptr use, includes with no SPF record)."""
     result = {"redirect_target": None}
     tokens = [t.lower() for t in record.split()]
 
@@ -684,21 +725,37 @@ def _parse_spf_record(record):
         result["status"] = "neutral"
     else:
         result["status"] = "no_all_mechanism"
-    result["lookup_count"] = _count_spf_lookups(record)
+    stats = _spf_stats(record, domain)
+    result["lookup_count"] = stats["lookups"]
+    result["void_lookups"] = stats["void"]
+    result["uses_ptr"] = stats["ptr"]
+    result["missing_includes"] = sorted(set(stats["missing_includes"]))
     return result
 
 
 def check_spf(domain):
+    """SPF record for `domain`.
+
+    record_count is how many TXT records start with v=spf1. RFC 7208 §3.2
+    allows one: with two or more, evaluation is a permanent error and
+    receivers treat the domain as having no usable SPF.
+    """
     records = resolve(domain, "TXT")
     err = resolve_error(records)
     if err:
         return {"status": "error", "error": err, "record": None, "lookup_count": None}
 
-    for record in records:
-        if "v=spf1" not in record:
-            continue
+    spf_records = [r for r in records if r.lower().startswith("v=spf1")
+                   and (len(r) == 6 or r[6] == " ")]
+    count = len(spf_records)
 
-        parsed = _parse_spf_record(record)
+    def _stats(parsed):
+        return {"void_lookups": parsed.get("void_lookups", 0),
+                "uses_ptr": parsed.get("uses_ptr", False),
+                "missing_includes": parsed.get("missing_includes", [])}
+
+    for record in spf_records:
+        parsed = _parse_spf_record(record, domain)
 
         if parsed["status"] == "redirect":
             target = parsed["redirect_target"]
@@ -707,28 +764,36 @@ def check_spf(domain):
             sub_err = resolve_error(sub_records)
             if sub_err:
                 return {"status": "error", "error": f"redirect target {target}: {sub_err}",
-                        "record": record, "lookup_count": None, "redirect_target": target}
+                        "record": record, "lookup_count": None, "redirect_target": target,
+                        "record_count": count}
             for sub in sub_records:
-                if "v=spf1" in sub:
-                    sub_parsed = _parse_spf_record(sub)
+                if sub.lower().startswith("v=spf1"):
+                    sub_parsed = _parse_spf_record(sub, target)
                     status = sub_parsed["status"]
                     if status == "no_all_mechanism":
                         status = "redirect_no_all"
                     total = 1 + sub_parsed["lookup_count"]
+                    merged = _stats(sub_parsed)
+                    merged["void_lookups"] += parsed.get("void_lookups", 0)
+                    merged["uses_ptr"] = merged["uses_ptr"] or parsed.get("uses_ptr", False)
                     return {
                         "status":          status,
                         "record":          record,
                         "redirect_target": target,
                         "redirect_record": sub,
                         "lookup_count":    total,
+                        "record_count":    count,
+                        **merged,
                     }
             return {"status": "redirect_target_no_spf", "record": record,
-                    "redirect_target": target, "lookup_count": None}
+                    "redirect_target": target, "lookup_count": None, "record_count": count}
 
         return {"status": parsed["status"], "record": record,
-                "lookup_count": parsed["lookup_count"], "redirect_target": None}
+                "lookup_count": parsed["lookup_count"], "redirect_target": None,
+                "record_count": count, **_stats(parsed)}
 
-    return {"status": "missing", "record": None, "lookup_count": None, "redirect_target": None}
+    return {"status": "missing", "record": None, "lookup_count": None, "redirect_target": None,
+            "record_count": 0}
 
 
 # ── DMARC ─────────────────────────────────────────────────────────────────────
@@ -772,37 +837,79 @@ def _parse_dmarc_record(record):
 def check_dmarc(domain):
     """Check DMARC for domain, following the RFC 7489 organisational-domain
     fallback when the subdomain has no record of its own.
+
+    record_count: TXT records at _dmarc.<domain> starting with v=DMARC1.
+    RFC 7489 §6.6.3 says to ignore DMARC entirely when there is more than one.
+
+    rua_external: for each rua=mailto: address outside the policy domain's
+    organisation, whether the receiving domain has authorized the reports
+    with a <policy domain>._report._dmarc.<receiving domain> record
+    (RFC 7489 §7.1). Without that record, reports are not sent there.
     """
     def _lookup(d):
         recs = resolve(f"_dmarc.{d}", "TXT")
         err  = resolve_error(recs)
         if err:
             return {"present": False, "policy": None, "record": None, "error": err}
-        for rec in recs:
-            if "v=DMARC1" in rec:
-                return _parse_dmarc_record(rec)
+        found = [rec for rec in recs if rec.replace(" ", "").lower().startswith("v=dmarc1")]
+        if found:
+            parsed = _parse_dmarc_record(found[0])
+            parsed["record_count"] = len(found)
+            return parsed
         return None
 
-    result = _lookup(domain)
-    if result is not None:
-        result.setdefault("inherited_from", None)
-        if result.get("present"):
-            return result
-        if result.get("error"):
-            return {**result, "inherited_from": None}
-        # Absent — fall through
+    result = None
+    first = _lookup(domain)
+    if first is not None:
+        first.setdefault("inherited_from", None)
+        if first.get("present"):
+            result = first
+        elif first.get("error"):
+            return {**first, "inherited_from": None}
 
-    org = _org_domain(domain)
-    if org and org != domain:
-        org_result = _lookup(org)
-        if org_result is not None and org_result.get("present"):
-            return {**org_result, "inherited_from": org}
-        if org_result is not None and org_result.get("error"):
-            return {**org_result, "inherited_from": None}
+    if result is None:
+        org = _org_domain(domain)
+        if org and org != domain:
+            org_result = _lookup(org)
+            if org_result is not None and org_result.get("present"):
+                result = {**org_result, "inherited_from": org}
+            elif org_result is not None and org_result.get("error"):
+                return {**org_result, "inherited_from": None}
 
-    return {"present": False, "policy": None, "pct": None, "sp": None,
-            "rua": [], "ruf": [],
-            "record": None, "inherited_from": None}
+    if result is None:
+        return {"present": False, "policy": None, "pct": None, "sp": None,
+                "rua": [], "ruf": [], "record_count": 0,
+                "record": None, "inherited_from": None}
+
+    result["rua_external"] = _dmarc_external_reports(result.get("inherited_from") or domain,
+                                                     result.get("rua") or [])
+    return result
+
+
+def _dmarc_external_reports(policy_domain, rua):
+    """[{address, domain, authorized}] for rua addresses outside the policy
+    domain's organisation. authorized is None when the lookup failed."""
+    org = _org_domain(policy_domain) or policy_domain
+    out, seen = [], set()
+    for uri in rua:
+        if not uri.lower().startswith("mailto:"):
+            continue
+        address = uri[7:].split("!", 1)[0].strip()       # drop a !size limit
+        if "@" not in address:
+            continue
+        dest = address.rsplit("@", 1)[1].lower().rstrip(".")
+        if dest in seen or (_org_domain(dest) or dest) == org:
+            continue
+        if len(seen) >= 3:              # bound the lookups; three is plenty
+            break
+        seen.add(dest)
+        recs = resolve(f"{policy_domain}._report._dmarc.{dest}", "TXT", lifetime=2.0)
+        if resolve_error(recs):
+            authorized = None
+        else:
+            authorized = any(r.replace(" ", "").lower().startswith("v=dmarc1") for r in recs)
+        out.append({"address": address, "domain": dest, "authorized": authorized})
+    return out
 
 
 # ── MX ────────────────────────────────────────────────────────────────────────
@@ -829,6 +936,15 @@ def check_mx(domain):
 
     Both are detected via an extra A/AAAA-then-CNAME lookup per MX target,
     parallelised. Cost: ~2 DNS queries per MX, ~100ms typical.
+
+    mx_hosts (3.4): for each MX host (first five), its addresses and
+    whether they have reverse DNS that maps back:
+      {"mail.example.com": {"v4": [...], "v6": [...], "resolves": True,
+                            "ptr": [{"address", "name", "confirmed"}]}}
+    resolves is False when the host has no A or AAAA record (mail to it
+    bounces) and None when the lookups failed. A reverse name is
+    "confirmed" when it resolves back to the same address (forward-
+    confirmed reverse DNS, which large mail providers check).
     """
     records = resolve(domain, "MX")
     err = resolve_error(records)
@@ -876,6 +992,8 @@ def check_mx(domain):
     mx_targets_cname: list[str] = []
     cname_lock = threading.Lock()
 
+    mx_hosts: dict = {}
+
     def _probe_cname(host):
         # Skip IP-literal targets; they can't be CNAMEs.
         try:
@@ -888,21 +1006,82 @@ def check_mx(domain):
             with cname_lock:
                 mx_targets_cname.append(host)
 
+    def _probe_host(host):
+        try:
+            ipaddress.ip_address(host)
+            return
+        except (ValueError, TypeError):
+            pass
+        info = {"v4": [], "v6": [], "resolves": None, "ptr": []}
+        a, aaaa = resolve(host, "A", lifetime=1.5), resolve(host, "AAAA", lifetime=1.5)
+        a_err, aaaa_err = resolve_error(a), resolve_error(aaaa)
+        info["v4"] = [] if a_err else a
+        info["v6"] = [] if aaaa_err else aaaa
+        if info["v4"] or info["v6"]:
+            info["resolves"] = True
+        elif not a_err and not aaaa_err:
+            info["resolves"] = False
+        for addr in info["v4"][:1] + info["v6"][:1]:
+            info["ptr"].append(_reverse_dns(addr))
+        with cname_lock:
+            mx_hosts[host] = info
+
     threads = []
     for entry in parsed:
         t = threading.Thread(target=_probe_cname, args=(entry["host"],),
                              daemon=True)
         t.start()
         threads.append(t)
+    for entry in parsed[:5]:
+        t = threading.Thread(target=_probe_host, args=(entry["host"],), daemon=True)
+        t.start()
+        threads.append(t)
+    deadline = time.monotonic() + 4.0
     for t in threads:
-        t.join(timeout=3.0)
+        t.join(timeout=max(0.0, deadline - time.monotonic()))
 
+    with cname_lock:
+        hosts = dict(mx_hosts)
     return {
         "entries":          parsed,
         "null_mx":          False,
         "mx_targets_ip":    sorted(set(mx_targets_ip)),
         "mx_targets_cname": sorted(set(mx_targets_cname)),
+        "mx_hosts":         hosts,
     }
+
+
+def _reverse_dns(address):
+    """{"address", "name", "confirmed"} for one IP: its PTR name, and whether
+    that name resolves back to the address. name is None with no PTR record;
+    confirmed is None when a lookup failed."""
+    out = {"address": address, "name": None, "confirmed": None}
+    try:
+        rev = dns.reversename.from_address(address).to_text()
+    except Exception:
+        return out
+    ptr = resolve(rev, "PTR", lifetime=1.5)
+    if resolve_error(ptr):
+        return out
+    if not ptr:
+        out["confirmed"] = False
+        return out
+    name = ptr[0].rstrip(".")
+    out["name"] = name
+    rtype = "AAAA" if ":" in address else "A"
+    fwd = resolve(name, rtype, lifetime=1.5)
+    if resolve_error(fwd):
+        return out
+    want = ipaddress.ip_address(address)
+    out["confirmed"] = any(_same_ip(f, want) for f in fwd)
+    return out
+
+
+def _same_ip(text, want):
+    try:
+        return ipaddress.ip_address(text) == want
+    except ValueError:
+        return False
 
 
 # ── CAA records ──────────────────────────────────────────────────────────────
@@ -1081,6 +1260,8 @@ def check_mta_sts_policy(domain):
         problems.append(f"mode is {mode!r}" if mode else "no mode line")
     if max_age is None:
         problems.append("no valid max_age")
+    elif max_age > 31557600:
+        problems.append(f"max_age {max_age} is over the RFC 8461 maximum of 31557600")
     if mode in ("enforce", "testing") and not mx:
         problems.append("no mx lines")
     return {"fetched": True, "mode": mode, "max_age": max_age, "mx": mx, "problems": problems}
@@ -1871,6 +2052,225 @@ def check_ip_routing(domain):
 
 # ── DNSSEC ────────────────────────────────────────────────────────────────────
 
+def _run_bounded(jobs, budget, workers):
+    """Run {key: (fn, args)} in threads; return {key: result} for those that
+    finish within `budget` seconds. Unfinished ones are abandoned (their own
+    network timeouts end them), so a slow upstream can't hold the audit."""
+    from concurrent.futures import wait as _wait
+    if not jobs:
+        return {}
+    ex = ThreadPoolExecutor(max_workers=min(len(jobs), workers))
+    try:
+        futs = {ex.submit(fn, *args): key for key, (fn, args) in jobs.items()}
+        done, _pending = _wait(futs, timeout=budget)
+        out = {}
+        for fut in done:
+            try:
+                out[futs[fut]] = fut.result()
+            except Exception as e:      # noqa: BLE001
+                out[futs[fut]] = e
+        return out
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+
+
+# ── Nameserver and mail server addresses (3.4) ───────────────────────────────
+# The website's own address gets the full routing check (check_ip_routing).
+# Nameservers and mail servers matter just as much — a domain whose mail
+# servers or nameservers sit in unprotected address space can be hijacked
+# the same way — so their addresses get IPv6 presence, the network (ASN)
+# they sit in, and RPKI origin validation, as internet.nl does.
+#
+# Bounded on purpose: the first 4 nameservers and 3 MX hosts, one IPv4 and
+# one IPv6 address each, at most 8 RIPEstat lookups (prefix + RPKI), run 6
+# at a time. It runs alongside check_ip_routing, which takes about as long.
+# Hard budget: 1.5 s for the address lookups and 4 s for RIPEstat; lookups
+# still running then are reported as failed rather than holding the audit.
+
+_INFRA_ADDR_BUDGET = 1.5
+_INFRA_RIPE_BUDGET = 4.0
+_INFRA_MAX_NS = 4
+_INFRA_MAX_MX = 3
+_INFRA_MAX_LOOKUPS = 8
+
+
+def _ripe_prefix_rpki(ip):
+    """{"address", "prefix", "asn", "rpki_status", "error"} for one address
+    from RIPEstat (prefix-overview, then rpki-validation)."""
+    base = "https://stat.ripe.net/data"
+    out = {"address": ip, "prefix": None, "asn": None, "rpki_status": None, "error": None}
+
+    def get(endpoint, params):
+        last = None
+        for _ in range(2):
+            try:
+                resp = _get_client().get(f"{base}/{endpoint}/data.json",
+                                         params={**params, "sourceapp": "vendoraudit-org"}, timeout=2.5)
+                resp.raise_for_status()
+                return resp.json().get("data", {})
+            except Exception as e:      # noqa: BLE001
+                last = e
+        raise last
+
+    try:
+        data = get("prefix-overview", {"resource": ip})
+        out["prefix"] = data.get("resource")
+        asns = data.get("asns") or []
+        if asns:
+            out["asn"] = asns[0].get("asn")
+    except Exception as e:              # noqa: BLE001
+        out["error"] = f"prefix-overview: {e}"
+        return out
+    if not out["prefix"] or out["asn"] is None:
+        out["error"] = "no BGP prefix announced for this address"
+        return out
+    try:
+        data = get("rpki-validation", {"resource": str(out["asn"]), "prefix": out["prefix"]})
+        status = (data.get("status") or "").lower()
+        out["rpki_status"] = "not-found" if status == "unknown" else (status or None)
+    except Exception as e:              # noqa: BLE001
+        out["error"] = f"rpki-validation: {e}"
+    return out
+
+
+def check_infra_routing(domain):
+    """IPv6, network and RPKI for the domain's nameservers and MX hosts.
+
+    Returns {"ns": {...}, "mx": {...}}, each:
+      {"hosts": {name: {"v4": [...], "v6": [...]}},
+       "lookups": [{"host", "address", "prefix", "asn", "rpki_status", "error"}],
+       "error": None}
+    """
+    out = {"ns": {"hosts": {}, "lookups": [], "error": None},
+           "mx": {"hosts": {}, "lookups": [], "error": None}}
+
+    ns = resolve(domain, "NS")
+    if resolve_error(ns):
+        out["ns"]["error"] = resolve_error(ns)
+        ns = []
+    mx = resolve(domain, "MX")
+    if resolve_error(mx):
+        out["mx"]["error"] = resolve_error(mx)
+        mx = []
+    ns_hosts = sorted({r.rstrip(".").lower() for r in ns})[:_INFRA_MAX_NS]
+    mx_hosts = []
+    for rec in sorted(mx, key=lambda r: int(r.split()[0]) if r.split()[0].isdigit() else 99):
+        parts = rec.split()
+        if len(parts) == 2 and parts[1] not in (".", ""):
+            mx_hosts.append(parts[1].rstrip(".").lower())
+    mx_hosts = mx_hosts[:_INFRA_MAX_MX]
+
+    def addrs(host):
+        a, aaaa = resolve(host, "A", lifetime=1.5), resolve(host, "AAAA", lifetime=1.5)
+        return host, ([] if resolve_error(a) else a), ([] if resolve_error(aaaa) else aaaa)
+
+    jobs = [("ns", h) for h in ns_hosts] + [("mx", h) for h in mx_hosts]
+    if not jobs:
+        return out
+    got = _run_bounded({(kind, h): (addrs, (h,)) for kind, h in jobs}, _INFRA_ADDR_BUDGET, 8)
+    targets, seen = [], set()
+    for kind, h in jobs:
+        res = got.get((kind, h))
+        if not isinstance(res, tuple):
+            continue                    # timed out: host left out rather than guessed
+        host, v4, v6 = res
+        out[kind]["hosts"][host] = {"v4": v4, "v6": v6}
+        for ip in v4[:1] + v6[:1]:
+            if ip not in seen:
+                seen.add(ip)
+                targets.append((kind, host, ip))
+    # Alternate NS and MX so both get lookups when the cap is reached.
+    ns_t = [t for t in targets if t[0] == "ns"]
+    mx_t = [t for t in targets if t[0] == "mx"]
+    interleaved = [t for pair in zip(ns_t, mx_t) for t in pair]
+    interleaved += ns_t[len(mx_t):] + mx_t[len(ns_t):]
+    picked = interleaved[:_INFRA_MAX_LOOKUPS]
+    if picked:
+        got = _run_bounded({t: (_ripe_prefix_rpki, (t[2],)) for t in picked}, _INFRA_RIPE_BUDGET, 6)
+        for kind, host, ip in picked:
+            res = got.get((kind, host, ip))
+            if not isinstance(res, dict):
+                res = {"address": ip, "prefix": None, "asn": None, "rpki_status": None,
+                       "error": "RIPEstat did not answer in time"}
+            out[kind]["lookups"].append({"host": host, **res})
+    return out
+
+
+# ── Dangling CNAME (3.4) ─────────────────────────────────────────────────────
+# A www (or apex-subdomain) CNAME that points at a name which no longer
+# exists — a deleted cloud bucket, app or CDN endpoint — can often be
+# claimed by whoever re-creates that name at the provider, who then serves
+# content on this domain (subdomain takeover). Only an NXDOMAIN answer for
+# the end of the chain counts; a timeout or SERVFAIL is "unknown".
+
+def _cname_chain(name, max_hops=8):
+    """(chain, end) for `name`: the CNAME targets followed, and how the
+    chain ended: "ok" (the last name exists), "nxdomain" (it doesn't),
+    "none" (name has no CNAME and exists), "absent" (name itself doesn't
+    exist) or "error"."""
+    res = _get_resolver()
+    chain, cur = [], name
+    for _ in range(max_hops):
+        try:
+            ans = res.resolve(cur, "CNAME", raise_on_no_answer=False)
+        except dns.resolver.NXDOMAIN:
+            return chain, ("nxdomain" if chain else "absent")
+        except Exception:               # noqa: BLE001 — timeouts, SERVFAIL
+            return chain, "error"
+        if ans.rrset:
+            cur = ans.rrset[0].target.to_text().rstrip(".").lower()
+            chain.append(cur)
+            continue
+        break
+    if not chain:
+        return chain, "none"
+    try:
+        res.resolve(cur, "A", raise_on_no_answer=False)
+    except dns.resolver.NXDOMAIN:
+        return chain, "nxdomain"
+    except Exception:                   # noqa: BLE001
+        return chain, "error"
+    return chain, "ok"
+
+
+def check_dangling_cname(domain):
+    """CNAME chains for the domain and its www form.
+
+    Returns {"names": {name: {"chain": [...], "end": ...}}, "dangling": [names]}.
+    """
+    d = (domain or "").lower().rstrip(".")
+    apex = d[4:] if d.startswith("www.") else d
+    names = sorted({d, f"www.{apex}"})
+    out = {"names": {}, "dangling": []}
+    got = _run_bounded({n: (_cname_chain, (n,)) for n in names}, 3.0, len(names))
+    for n in names:
+        res = got.get(n)
+        chain, end = res if isinstance(res, tuple) else ([], "error")
+        out["names"][n] = {"chain": chain, "end": end}
+        if end == "nxdomain":
+            out["dangling"].append(n)
+    return out
+
+
+def check_https_rr(domain):
+    """The HTTPS (SVCB) DNS record (RFC 9460) for the domain, if any.
+
+    It tells browsers before they connect that the site speaks HTTPS and
+    which protocols it offers (h2, h3), and carries the key for Encrypted
+    ClientHello. Returns {"present", "records", "alpn", "ech", "error"}."""
+    recs = resolve(domain, "HTTPS", lifetime=2.0)
+    err = resolve_error(recs)
+    if err:
+        return {"present": None, "records": [], "alpn": [], "ech": False, "error": err}
+    alpn = set()
+    for r in recs:
+        m = re.search(r'alpn="?([^"\s]+)"?', r)
+        if m:
+            alpn.update(x for x in m.group(1).split(",") if x)
+    return {"present": bool(recs), "records": recs, "alpn": sorted(alpn),
+            "ech": any("ech=" in r for r in recs), "error": None}
+
+
 def check_dnssec(domain):
     """Check DNSSEC at TLD level (parent zone signing) and at the domain
     itself (DNSKEY presence + AD flag from a validating resolver).
@@ -1897,6 +2297,14 @@ def check_dnssec(domain):
 
     def _check_domain_dnskey():
         records = resolve(domain, "DNSKEY")
+        if records and not resolve_error(records):
+            # "flags protocol algorithm key" — keep the algorithm numbers.
+            algs = set()
+            for rec in records:
+                parts = rec.split()
+                if len(parts) >= 3 and parts[2].isdigit():
+                    algs.add(int(parts[2]))
+            result["domain"]["algorithms"] = sorted(algs)
         err = resolve_error(records)
         if err:
             return {"error": err, "dnskey": False}
@@ -1994,6 +2402,171 @@ def check_http_version(domain):
     return result
 
 
+# ── Certificate key and signature (3.4) ──────────────────────────────────────
+# getpeercert() leaves out the public key and the signature algorithm, so the
+# leaf certificate's DER is read directly. Only the few fields needed are
+# parsed: the signatureAlgorithm OID and the subjectPublicKeyInfo.
+
+_OID_NAMES = {
+    "1.2.840.113549.1.1.1": "rsaEncryption", "1.2.840.10045.2.1": "ecPublicKey",
+    "1.3.101.112": "Ed25519", "1.3.101.113": "Ed448",
+    "1.2.840.113549.1.1.4": "md5WithRSAEncryption", "1.2.840.113549.1.1.5": "sha1WithRSAEncryption",
+    "1.2.840.113549.1.1.10": "RSASSA-PSS", "1.2.840.113549.1.1.11": "sha256WithRSAEncryption",
+    "1.2.840.113549.1.1.12": "sha384WithRSAEncryption", "1.2.840.113549.1.1.13": "sha512WithRSAEncryption",
+    "1.2.840.10045.4.1": "ecdsa-with-SHA1", "1.2.840.10045.4.3.2": "ecdsa-with-SHA256",
+    "1.2.840.10045.4.3.3": "ecdsa-with-SHA384", "1.2.840.10045.4.3.4": "ecdsa-with-SHA512",
+}
+_EC_CURVE_BITS = {"1.2.840.10045.3.1.7": 256, "1.3.132.0.34": 384, "1.3.132.0.35": 521,
+                  "1.3.132.0.10": 256, "1.2.840.10045.3.1.1": 192, "1.3.132.0.33": 224}
+
+
+def _der(buf, i):
+    """(tag, content start, content end) of the DER element at buf[i]."""
+    tag, n = buf[i], buf[i + 1]
+    i += 2
+    if n & 0x80:
+        k = n & 0x7F
+        n = int.from_bytes(buf[i:i + k], "big")
+        i += k
+    return tag, i, i + n
+
+
+def _der_children(buf, start, end):
+    out, i = [], start
+    while i < end:
+        tag, cs, ce = _der(buf, i)
+        out.append((tag, cs, ce))
+        i = ce
+    return out
+
+
+def _oid(buf, start, end):
+    b = buf[start:end]
+    parts = [b[0] // 40, b[0] % 40]
+    v = 0
+    for x in b[1:]:
+        v = (v << 7) | (x & 0x7F)
+        if not x & 0x80:
+            parts.append(v)
+            v = 0
+    return ".".join(map(str, parts))
+
+
+def _cert_key_info(der):
+    """{"cert_key_type", "cert_key_bits", "cert_sig_alg"} from a DER certificate."""
+    _t, cs, ce = _der(der, 0)
+    tbs, sig_alg = _der_children(der, cs, ce)[:2]
+    alg_oid = _der_children(der, sig_alg[1], sig_alg[2])[0]
+    sig = _oid(der, alg_oid[1], alg_oid[2])
+    fields = _der_children(der, tbs[1], tbs[2])
+    if fields and fields[0][0] == 0xA0:                 # [0] version
+        fields = fields[1:]
+    spki = fields[5]                                    # serial, sig, issuer, validity, subject, spki
+    alg, key = _der_children(der, spki[1], spki[2])[:2]
+    alg_parts = _der_children(der, alg[1], alg[2])
+    key_oid = _oid(der, alg_parts[0][1], alg_parts[0][2])
+    kind = _OID_NAMES.get(key_oid, key_oid)
+    bits = None
+    if kind == "rsaEncryption":
+        kind = "RSA"
+        _t, ms, me = _der_children(der, key[1] + 1, key[2])[0]      # skip unused-bits byte
+        modulus = _der_children(der, ms, me)[0]
+        bits = int.from_bytes(der[modulus[1]:modulus[2]], "big").bit_length()
+    elif kind == "ecPublicKey":
+        kind = "EC"
+        if len(alg_parts) > 1 and alg_parts[1][0] == 0x06:
+            bits = _EC_CURVE_BITS.get(_oid(der, alg_parts[1][1], alg_parts[1][2]))
+    elif kind == "Ed25519":
+        bits = 256
+    elif kind == "Ed448":
+        bits = 456
+    return {"cert_key_type": kind, "cert_key_bits": bits, "cert_sig_alg": _OID_NAMES.get(sig, sig)}
+
+
+# ── Legacy protocols and weak key exchange (3.4) ─────────────────────────────
+# A server can negotiate TLS 1.3 with modern clients and still accept TLS 1.0
+# from anyone who asks; check_tls only sees the best version. These probes
+# offer one thing at a time and see whether the server accepts it:
+#   TLS 1.0 only, TLS 1.1 only (RFC 8996 deprecates both),
+#   TLS 1.2 with only static-RSA key exchange (no forward secrecy),
+#   TLS 1.2 with only NULL ciphers (no encryption).
+# OpenSSL 3 can no longer offer RC4, 3DES or export ciphers at all, so those
+# are not tested here. Each probe is one handshake with a 1.5-second cap,
+# run in parallel; a server that drops the handshake silently costs at most
+# that, and is reported as "not determined", not as a pass.
+
+_LEGACY_PROBE_TIMEOUT = 1.5
+
+
+def _probe_context(min_v, max_v, ciphers):
+    """A client context offering only min_v..max_v with `ciphers`, or None
+    when this OpenSSL can't offer them. Built before any probe thread starts:
+    warnings.catch_warnings() is not thread-safe, and setting TLS 1.0/1.1
+    raises a DeprecationWarning."""
+    import warnings
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            ctx.minimum_version = min_v
+            ctx.maximum_version = max_v
+            ctx.set_ciphers(ciphers)
+        return ctx
+    except (ValueError, ssl.SSLError):
+        return None
+
+
+def _tls_probe(domain, port, ctx, timeout=_LEGACY_PROBE_TIMEOUT):
+    """"accepted", "refused", "unreachable" or "unprobed" (this client
+    cannot offer it) for one handshake."""
+    if ctx is None:
+        return "unprobed"
+    deadline = time.monotonic() + timeout          # connect + handshake together
+    try:
+        sock = socket.create_connection((domain, port), timeout=timeout)
+    except OSError:
+        return "unreachable"
+    try:
+        sock.settimeout(max(0.1, deadline - time.monotonic()))
+        with ctx.wrap_socket(sock, server_hostname=domain):
+            return "accepted"
+    except ssl.SSLError as e:
+        if "NO_PROTOCOLS_AVAILABLE" in str(e).upper() or "NO_CIPHERS_AVAILABLE" in str(e).upper():
+            return "unprobed"
+        return "refused"
+    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, EOFError):
+        return "refused"            # closed on the old ClientHello
+    except OSError:
+        return "unreachable"         # timed out mid-handshake: not determined
+    finally:
+        try:
+            sock.close()
+        except Exception:            # noqa: BLE001
+            pass
+
+
+def check_tls_legacy(domain, port=443):
+    """Which deprecated protocols and weak key exchanges the server accepts.
+
+    Returns {"tls1_0", "tls1_1", "static_rsa", "null_cipher"}, each one of
+    "accepted", "refused", "unreachable", "unprobed"."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        V = ssl.TLSVersion
+        contexts = {
+            "tls1_0":      _probe_context(V.TLSv1, V.TLSv1, "DEFAULT:@SECLEVEL=0"),
+            "tls1_1":      _probe_context(V.TLSv1_1, V.TLSv1_1, "DEFAULT:@SECLEVEL=0"),
+            "static_rsa":  _probe_context(V.TLSv1_2, V.TLSv1_2, "kRSA:@SECLEVEL=0"),
+            "null_cipher": _probe_context(V.TLSv1_2, V.TLSv1_2, "eNULL:@SECLEVEL=0"),
+        }
+    with ThreadPoolExecutor(max_workers=len(contexts)) as ex:
+        futs = {k: ex.submit(_tls_probe, domain, port, ctx) for k, ctx in contexts.items()}
+    return {k: f.result() for k, f in futs.items()}
+
+
 def check_tls(domain, port=443):
     """Negotiate TLS, report version, and inspect the certificate.
 
@@ -2032,6 +2605,10 @@ def check_tls(domain, port=443):
         "chain_status":       None,    # 'complete' | 'incomplete' | 'unsupported' | None
         "chain_sent_count":   None,    # certs the server actually sent
         "chain_verified_count": None,  # certs OpenSSL needed to reach a trust anchor
+        # Public key and signature of the leaf certificate (3.4)
+        "cert_key_type":      None,    # 'RSA' | 'EC' | 'Ed25519' | 'Ed448' | other
+        "cert_key_bits":      None,
+        "cert_sig_alg":       None,    # e.g. 'sha256WithRSAEncryption'
     }
 
     try:
@@ -2059,6 +2636,10 @@ def check_tls(domain, port=443):
                 result["version"] = ssock.version()
                 result["alpn_protocol"] = ssock.selected_alpn_protocol()
                 cert = ssock.getpeercert()
+                try:
+                    result.update(_cert_key_info(ssock.getpeercert(binary_form=True)))
+                except Exception:       # noqa: BLE001 — an odd certificate, not a TLS failure
+                    pass
                 if cert:
                     try:
                         issued_ts  = ssl.cert_time_to_seconds(cert["notBefore"])
@@ -2616,12 +3197,14 @@ def check_security_txt(domain):
     a host that times out on every probe can't dominate the audit budget.
     """
     result = {"present": False, "contact": [], "policy": None,
-              "expires": None, "expired": None, "found_at": None, "error": None}
+              "expires": None, "expired": None, "found_at": None, "error": None,
+              "canonical": [], "final_url": None}
 
     def _parse_body(body):
         contacts = []
         policy = None
         expires_raw = None
+        canonical = []
         for line in body.splitlines():
             line = line.strip()
             ll = line.lower()
@@ -2633,6 +3216,11 @@ def check_security_txt(domain):
                 policy = line[len("policy:"):].strip() or None
             elif ll.startswith("expires:"):
                 expires_raw = line[len("expires:"):].strip() or None
+            elif ll.startswith("canonical:"):
+                value = line[len("canonical:"):].strip()
+                if value:
+                    canonical.append(value)
+        result["canonical"] = canonical
         has_security_fields = contacts or any(
             line.strip().lower().startswith(("expires:", "policy:", "preferred-languages:"))
             for line in body.splitlines()
@@ -2699,6 +3287,7 @@ def check_security_txt(domain):
         contacts, policy, expires_raw = parsed
         result["present"] = True
         result["found_at"] = url
+        result["final_url"] = str(resp.url)
         result["contact"] = contacts
         result["policy"]  = policy
         result["expires"] = expires_raw
@@ -3267,6 +3856,9 @@ def check_server_header(domain, _cached_response=None):
             "corp":                h.get("Cross-Origin-Resource-Policy"),
             "origin_agent_cluster":h.get("Origin-Agent-Cluster"),
             "x_xss_protection":    h.get("X-XSS-Protection"),
+            # 3.4: deprecated security headers that should be removed.
+            "public_key_pins":     h.get("Public-Key-Pins") or h.get("Public-Key-Pins-Report-Only"),
+            "expect_ct":           h.get("Expect-CT"),
             "date":                h.get("Date"),
             "cache_control":       h.get("Cache-Control"),
             "expires":             h.get("Expires"),
@@ -3520,8 +4112,8 @@ def analyze_csp(csp_header, csp_report_only=False):
     object_dir = directives.get("object-src")
     if object_dir is None:
         # Falls back to default-src per spec — but only if default-src is restrictive
-        default_dir = directives.get("default-src", [])
-        if "'none'" in [v.lower() for v in default_dir]:
+        default_dir = [v.lower() for v in directives.get("default-src", [])]
+        if "'none'" in default_dir or default_dir == ["'self'"]:
             result["object_src_outcome"] = "none_or_self"
         else:
             result["findings"].append(("medium",
@@ -5345,7 +5937,88 @@ def _finding_entry(label, outcome):
     return entry[0], entry[1]
 
 
-def _score_mta_sts(record, policy, pts, prefix=""):
+def _mx_pattern_match(pattern, host):
+    """RFC 8461 §4.1: exact match, or "*." covering exactly one left label."""
+    pattern, host = pattern.lower().rstrip("."), host.lower().rstrip(".")
+    if pattern.startswith("*."):
+        rest = pattern[2:]
+        return host.endswith("." + rest) and "." not in host[: -len(rest) - 1]
+    return pattern == host
+
+
+def _legacy_tls_outcome(legacy):
+    """Worst deprecated protocol accepted; None when the probes couldn't tell."""
+    t10, t11 = legacy.get("tls1_0"), legacy.get("tls1_1")
+    if t10 == "accepted":
+        return "tls1_0_accepted"
+    if t11 == "accepted":
+        return "tls1_1_accepted"
+    if t10 == "refused" and t11 == "refused":
+        return "disabled"
+    if "unprobed" in (t10, t11):
+        return "unprobed"
+    return None
+
+
+def _forward_secrecy_outcome(legacy):
+    nul, rsa = legacy.get("null_cipher"), legacy.get("static_rsa")
+    if nul == "accepted":
+        return "null_cipher"
+    if rsa == "accepted":
+        return "static_rsa"
+    if rsa == "refused" and nul in ("refused", "unprobed"):
+        return "required"
+    if rsa == "unprobed":
+        return "unprobed"
+    return None
+
+
+def _cert_key_outcome(tls):
+    kind, bits, sig = tls.get("cert_key_type"), tls.get("cert_key_bits"), tls.get("cert_sig_alg") or ""
+    if not kind:
+        return None
+    low = sig.lower()
+    if "sha1" in low or "md5" in low:
+        return "weak_signature"
+    if (kind == "RSA" and bits is not None and bits < 2048) or (kind == "EC" and bits is not None and bits < 256):
+        return "weak_key"
+    return "strong"
+
+
+# DNSKEY algorithms fit for signing (RFC 8624, RFC 9905): RSASHA256,
+# ECDSAP256SHA256, ECDSAP384SHA384, ED25519, ED448.
+_DNSSEC_MODERN_ALGS = {8, 13, 14, 15, 16}
+
+
+def _soa_issues(soa):
+    """Ways the SOA timers stray from RFC 1912 §2.2 / RFC 2308 guidance."""
+    issues = []
+    if soa.get("retry", 0) >= soa.get("refresh", 1):
+        issues.append("retry is not shorter than refresh")
+    if soa.get("expire", 0) < 604800:
+        issues.append("expire is under 7 days")
+    if soa.get("expire", 0) < soa.get("refresh", 0) + soa.get("retry", 0):
+        issues.append("expire is shorter than refresh + retry")
+    if soa.get("minimum", 0) > 86400:
+        issues.append("minimum (negative-answer TTL) is over 1 day")
+    return issues
+
+
+def _rpki_worst(lookups):
+    """Worst RPKI status over lookups, or "lookup_failed" when none answered."""
+    statuses = [l.get("rpki_status") for l in lookups or []]
+    if not statuses:
+        return None
+    known = [x for x in statuses if x in ("valid", "not-found", "invalid")]
+    if not known:
+        return "lookup_failed"
+    for worst in ("invalid", "not-found"):
+        if worst in known:
+            return worst
+    return "valid"
+
+
+def _score_mta_sts(record, policy, pts, prefix="", mx=None):
     """MTA-STS outcome for one domain from its TXT record and policy fetch."""
     if record.get("error"):
         return
@@ -5364,6 +6037,20 @@ def _score_mta_sts(record, policy, pts, prefix=""):
         # from this audit). The mode is unknown; report it as published.
         outcome = "published"
     pts.append((f"{prefix}MTA-STS", outcome))
+
+    # 3.4: a usable policy must name the domain's real MX hosts, or mail
+    # fails once the policy is enforced; and it should be cached for weeks.
+    if outcome in ("enforce", "testing"):
+        hosts = [e["host"] for e in ((mx or {}).get("entries") or []) if e.get("host")]
+        patterns = policy.get("mx") or []
+        if hosts:
+            uncovered = [h for h in hosts if not any(_mx_pattern_match(p, h) for p in patterns)]
+            pts.append((f"{prefix}MTA-STS policy MX match",
+                        "all_covered" if not uncovered else f"uncovered_{outcome}"))
+        max_age = policy.get("max_age")
+        if isinstance(max_age, int):
+            pts.append((f"{prefix}MTA-STS max_age",
+                        "short" if max_age < _THRESH["mta_sts_min_max_age"] else "ok"))
 
 
 def _score_email(spf, dmarc, mx, pts, prefix=""):
@@ -5403,6 +6090,19 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
             if lc is not None:
                 _p("SPF lookup count",
                    "within_limit" if lc <= _THRESH["spf_lookup_limit"] else "exceeds_limit")
+            # 3.4: one record only (RFC 7208 §3.2), and the terms that make
+            # evaluation fail or are deprecated. Worst first.
+            if spf.get("record_count") is not None:
+                _p("SPF single record", "multiple" if spf["record_count"] > 1 else "single")
+            if "void_lookups" in spf:
+                if spf.get("missing_includes"):
+                    _p("SPF mechanisms", "missing_include")
+                elif spf["void_lookups"] > 2:
+                    _p("SPF mechanisms", "too_many_void")
+                elif spf.get("uses_ptr"):
+                    _p("SPF mechanisms", "uses_ptr")
+                else:
+                    _p("SPF mechanisms", "clean")
 
 
     if not dmarc.get("error"):
@@ -5441,6 +6141,14 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
         if present:
             rua = dmarc.get("rua") or []
             _p("DMARC rua reporting", "present" if rua else "missing")
+            # 3.4: one record only (RFC 7489 §6.6.3), and reports sent to
+            # another organisation must be authorized there (§7.1).
+            if dmarc.get("record_count") is not None:
+                _p("DMARC single record", "multiple" if dmarc["record_count"] > 1 else "single")
+            ext = [e for e in (dmarc.get("rua_external") or []) if e.get("authorized") is not None]
+            if ext:
+                _p("DMARC external reports",
+                   "authorized" if all(e["authorized"] for e in ext) else "unauthorized")
 
     if not mx.get("error") and mx.get("entries"):
         # MX target hygiene (1.2). Two RFC 2181 §10.3 / RFC 5321 §5.1
@@ -5457,6 +6165,19 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
             _p("MX target hygiene", "ip_literal")
         else:
             _p("MX target hygiene", "clean")
+
+        # 3.4: every MX host must have an address, and mail servers
+        # should have reverse DNS that maps back to them.
+        hosts = mx.get("mx_hosts") or {}
+        known = [h for h in hosts.values() if h.get("resolves") is not None]
+        if known:
+            _p("MX hosts resolve",
+               "all" if all(h["resolves"] for h in known) else "some_missing")
+        ptrs = [p for h in hosts.values() for p in (h.get("ptr") or [])
+                if p.get("confirmed") is not None]
+        if ptrs:
+            _p("MX reverse DNS", "all_confirmed" if all(p["confirmed"] for p in ptrs)
+               else "missing_or_mismatch")
 
 
 def _collect_outcomes(results):
@@ -5548,6 +6269,12 @@ def _collect_outcomes(results):
     else:
         v6_present = bool(v6.get("address"))
 
+    # 3.4: HTTPS (SVCB) DNS record, RFC 9460. Optional, so Informational
+    # when absent.
+    https_rr = results.get("https_rr") or {}
+    if not no_web_presence and https_rr.get("present") is not None:
+        _p("HTTPS DNS record", "present" if https_rr["present"] else "missing")
+
     # ── IPv4 routing ─────────────────────────────────────────────────────────
     if not v4.get("error") or v4.get("address"):
         rpki4 = v4.get("rpki_status")
@@ -5588,6 +6315,18 @@ def _collect_outcomes(results):
     if not dom_d.get("error"):
         _p("DNSSEC DNSKEY", "present" if dom_d.get("dnskey") else "missing")
         _p("DNSSEC AD flag", "set" if dom_d.get("ad_flag") else "unset")
+        # 3.4: the signing algorithm. RFC 9905 forbids SHA-1 (5, 7) and RFC
+        # 8624 forbids 1, 3, 6 and 12: validators treat a zone signed only
+        # with those as unsigned. A zone that also carries a modern key
+        # (during a rollover) validates through it.
+        algs = set(dom_d.get("algorithms") or [])
+        if dom_d.get("dnskey") and algs:
+            if algs & _DNSSEC_MODERN_ALGS:
+                _p("DNSSEC algorithm", "modern")
+            elif 10 in algs:
+                _p("DNSSEC algorithm", "not_recommended")
+            else:
+                _p("DNSSEC algorithm", "deprecated")
 
     # ── TLS ───────────────────────────────────────────────────────────────────
     if not tls.get("error"):
@@ -5599,6 +6338,21 @@ def _collect_outcomes(results):
             _p("TLS 1.3", "tls_1_2")
         else:
             _p("TLS 1.3", "older")
+
+        # 3.4: deprecated protocols and weak key exchange still accepted.
+        legacy = results.get("tls_legacy") or {}
+        if legacy and not legacy.get("error"):
+            outcome = _legacy_tls_outcome(legacy)
+            if outcome:
+                _p("Legacy TLS disabled", outcome)
+            outcome = _forward_secrecy_outcome(legacy)
+            if outcome:
+                _p("Forward secrecy", outcome)
+
+        # 3.4: the leaf certificate's key and signature.
+        outcome = _cert_key_outcome(tls)
+        if outcome:
+            _p("Certificate key strength", outcome)
 
         lifetime = tls.get("cert_lifetime_days")
         if lifetime is not None:
@@ -5765,8 +6519,19 @@ def _collect_outcomes(results):
         if sectxt.get("present") and sectxt.get("contact"):
             if sectxt.get("expired") is False:
                 _p("security.txt", "present_with_expiry")
+            elif sectxt.get("expired") is True:
+                # Expired: one step below missing (Low), so Informational.
+                _p("security.txt", "expired")
             else:
                 _p("security.txt", "present_no_expiry")
+            # 3.4: where it was found, and whether it says that is right.
+            found = sectxt.get("found_at") or ""
+            _p("security.txt location",
+               "well_known" if "/.well-known/security.txt" in found else "legacy_path")
+            canon = sectxt.get("canonical") or []
+            if canon:
+                here = {found, sectxt.get("final_url") or found}
+                _p("security.txt Canonical", "match" if here & set(canon) else "mismatch")
         else:
             _p("security.txt", "missing")
 
@@ -5820,6 +6585,8 @@ def _collect_outcomes(results):
         else:
             _p("CAA records", "missing")
 
+    has_mx_any = bool(mx.get("entries")) and not mx.get("null_mx")
+
     # ── Nameserver count ──────────────────────────────────────────────────────
     ns_soa = results.get("ns_soa", {})
     ns_count = ns_soa.get("ns_count", 0)
@@ -5844,16 +6611,51 @@ def _collect_outcomes(results):
             _p("Authoritative delegation", "unprobed")
             _p("NS not open resolver",     "unprobed")
 
+    # ── 3.4: SOA timers, dangling CNAMEs, nameserver and mail addresses ─────
+    soa = ns_soa.get("soa")
+    if soa:
+        _p("SOA timers", "outside_guidance" if _soa_issues(soa) else "within_guidance")
+
+    dangling = results.get("dangling_cname") or {}
+    ends = [n.get("end") for n in (dangling.get("names") or {}).values()]
+    if ends and any(e != "error" for e in ends):
+        _p("Dangling CNAME", "dangling" if dangling.get("dangling") else "none")
+
+    infra = results.get("infra_routing") or {}
+    ns_i = infra.get("ns") or {}
+    if ns_i.get("hosts") and not ns_i.get("error"):
+        with_v6 = sum(1 for h in ns_i["hosts"].values() if h.get("v6"))
+        _p("Nameservers on IPv6", "two_or_more" if with_v6 >= 2 else "fewer_than_two")
+        asns = {l["asn"] for l in ns_i.get("lookups") or [] if l.get("asn") is not None}
+        if asns:
+            _p("Nameserver networks", "diverse" if len(asns) >= 2 else "single_network")
+        outcome = _rpki_worst(ns_i.get("lookups"))
+        if outcome:
+            _p("Nameserver RPKI", outcome)
+    mx_i = infra.get("mx") or {}
+    if has_mx_any and mx_i.get("hosts") and not mx_i.get("error"):
+        hosts = list(mx_i["hosts"].values())
+        n6 = sum(1 for h in hosts if h.get("v6"))
+        _p("Mail servers on IPv6", "all" if n6 == len(hosts) else ("partial" if n6 else "none"))
+        outcome = _rpki_worst(mx_i.get("lookups"))
+        if outcome:
+            _p("Mail server RPKI", outcome)
+
     # ── MTA-STS / TLS-RPT / DANE — only score when MX exists ─────────────────
     has_mx = bool(mx.get("entries")) and not mx.get("null_mx")
+    # 3.4: a domain that receives no mail should say so with a null MX
+    # (RFC 7505). Without any MX, senders fall back to the domain's A/AAAA
+    # address and try to deliver there.
+    if not mx.get("error") and not no_web_presence and not mx.get("entries"):
+        _p("Null MX on no-mail domain", "published" if mx.get("null_mx") else "missing")
     if has_mx:
-        _score_mta_sts(results.get("mta_sts", {}), results.get("mta_sts_policy", {}), pts)
+        _score_mta_sts(results.get("mta_sts", {}), results.get("mta_sts_policy", {}), pts, mx=mx)
     if redirected:
         rt_mx = results.get("redirect_target_mx", {}) or {}
         if rt_mx.get("entries") and not rt_mx.get("null_mx"):
             _score_mta_sts(results.get("redirect_target_mta_sts", {}) or {},
                            results.get("redirect_target_mta_sts_policy", {}) or {},
-                           pts, prefix=_REDIRECT_PREFIX)
+                           pts, prefix=_REDIRECT_PREFIX, mx=rt_mx)
             rt_tls_rpt = results.get("redirect_target_tls_rpt", {}) or {}
             if rt_tls_rpt and not rt_tls_rpt.get("error"):
                 _p(f"{_REDIRECT_PREFIX}TLS-RPT", "present" if rt_tls_rpt.get("present") else "missing")
@@ -6034,10 +6836,21 @@ def _collect_outcomes(results):
     # double-count. script-src already captures "is there a usable CSP"
     # (scores 0/missing when absent), so no detection is lost by not scoring
     # the minor directives.
+    #
+    # 3.4: object-src and base-uri are rated again, but only when an
+    # enforced CSP exists, so a site with no CSP is not counted three times
+    # for one missing header. A CSP sent only as Report-Only blocks nothing:
+    # script-src reports that in its own words, at the "missing" severity.
     csp_a = results.get("csp_analysis")
     if csp_a is not None and not no_web_presence:
-        _p("CSP script-src safety", csp_a.get("script_src_outcome", "missing"))
+        if csp_a.get("enforcement_outcome") == "report_only":
+            _p("CSP script-src safety", "report_only")
+        else:
+            _p("CSP script-src safety", csp_a.get("script_src_outcome", "missing"))
         _p("CSP frame-ancestors",   csp_a.get("frame_ancestors_outcome", "missing"))
+        if csp_a.get("present"):
+            _p("CSP object-src", csp_a.get("object_src_outcome", "missing"))
+            _p("CSP base-uri",   csp_a.get("base_uri_outcome", "missing"))
 
     # ── Cross-Origin headers (COOP/CORP) ──────────────────────────────────────
     if not srv.get("error") and not no_web_presence:
@@ -6065,6 +6878,17 @@ def _collect_outcomes(results):
             _p("X-XSS-Protection deprecated", "absent_or_zero")
         else:
             _p("X-XSS-Protection deprecated", "set_dangerous")
+
+        # 3.4: HPKP can lock visitors out if its pinned keys are lost, and
+        # browsers dropped it; Expect-CT does nothing now. Only rated when
+        # the response was captured with these fields (3.4 and later).
+        if "public_key_pins" in srv:
+            if srv.get("public_key_pins"):
+                _p("Deprecated security headers", "hpkp")
+            elif srv.get("expect_ct"):
+                _p("Deprecated security headers", "expect_ct")
+            else:
+                _p("Deprecated security headers", "none")
 
     # ── Cookie name prefixes ──────────────────────────────────────────────────
     if not srv.get("error") and not no_web_presence:
@@ -6115,6 +6939,9 @@ def _collect_outcomes(results):
     if page and page.get("parsed") and not no_web_presence:
         _p("Subresource Integrity", page["sri_outcome"])
         _p("Mixed content (in-page)", page["mixed_outcome"])
+        a11y = page.get("a11y") or {}
+        if "html_lang_set" in a11y:
+            _p("Page language declared", "set" if a11y["html_lang_set"] else "missing")
 
     # ── EOL versioned libraries (2.9.0) ───────────────────────────────────────
     # Each detected EOL library is its own 0/1 penalty. Detected libraries

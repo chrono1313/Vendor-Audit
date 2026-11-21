@@ -597,12 +597,24 @@ def _glance_cards(data, records):
                if label in by_label}
         worst = next((s for s in ISSUE_SEVERITIES if s in sev.values()), "pass")
         value = {"pass": "Enforced", "low": "Mostly enforced"}.get(worst, "Not enforced")
+        # A policy that receivers discard (two records, an include with no
+        # SPF record) enforces nothing, whatever it says.
+        broken = [label for label in ("SPF single record", "SPF mechanisms", "DMARC single record")
+                  if by_label.get(label, {}).get("severity") in ("critical", "high")]
+        if broken:
+            value, worst = "Broken", "high"
+            if "DMARC single record" in broken:
+                dmarc_tag = "ignored (more than one record)"
+            if "SPF single record" in broken:
+                spf_tag = "invalid (more than one record)"
+            elif "SPF mechanisms" in broken:
+                spf_tag = "invalid (includes a domain with no SPF)"
         lines = [f"SPF {spf_tag}", f"DMARC {dmarc_tag}"]
         if (r.get("dkim") or {}).get("found"):
             lines.append("DKIM key found")
         cards.append(card("Email authentication", value,
                           "stat-good" if worst in ("pass", "low") else "stat-bad",
-                          lines, href_for("DMARC policy", "SPF policy")))
+                          lines, href_for(*(broken or ["DMARC policy", "SPF policy"]))))
     return cards
 
 
