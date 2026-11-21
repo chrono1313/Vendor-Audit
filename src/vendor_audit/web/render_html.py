@@ -57,7 +57,7 @@ from datetime import datetime
 
 from .. import audit_txt_report
 from .. import audit_records
-from ..audit_txt_report import _ReportData, bot_challenge_note
+from ..audit_txt_report import _ReportData, bot_challenge_note, ipv6_only_note
 
 
 # ── Brand ────────────────────────────────────────────────────────────────────
@@ -390,6 +390,11 @@ def _render_banners_html(data):
     # The site answered with a bot challenge, so the page that was read is
     # the challenge, not the site.
     note = bot_challenge_note(r.get("server_header"))
+    if note:
+        head, lines = note
+        out.append(f'<div class="banner banner-warn" role="note"><strong>{_h(head)}:</strong> '
+                   f'{_h(" ".join(lines))}</div>')
+    note = ipv6_only_note(r)
     if note:
         head, lines = note
         out.append(f'<div class="banner banner-warn" role="note"><strong>{_h(head)}:</strong> '

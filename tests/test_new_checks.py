@@ -613,6 +613,112 @@ def test_slow_upstreams_are_bounded():
     check(ac._legacy_tls_outcome(r) in (None, "unprobed"), f"silent server is not a pass: {r}")
 
 
+def test_slow_ripestat_routing():
+    """3.4.3 (douglascountyor.gov, 2026-11-21): a slow RIPEstat ran the
+    routing check past the audit deadline, and IPv6 was then reported as
+    missing. Now the check is bounded, keeps the DNS addresses, and a
+    check that is cut off anyway is not rated."""
+    import time
+    from vendor_audit import audit as audit_mod
+
+    class Slow:
+        def get(self, *a, **k):
+            time.sleep(10)
+    z = {("example.com", "A"): ["192.0.2.1"], ("example.com", "AAAA"): ["2001:db8::1"]}
+    with zone(z), mock.patch.object(ac, "_get_client", return_value=Slow()), \
+         mock.patch.object(ac, "_IP_ROUTING_RIPE_BUDGET", 1.0):
+        t = time.monotonic()
+        r = ac.check_ip_routing("example.com")
+        took = time.monotonic() - t
+    check(took < 2.5, f"slow RIPEstat held the routing check {took:.1f}s")
+    check(r["v6"]["address"] == "2001:db8::1" and r["v4"]["address"] == "192.0.2.1",
+          f"addresses kept from DNS: {r}")
+    d = sample()
+    d["ip_routing"] = r
+    f = findings(d)
+    check(f.get("IPv6") == "pass", f"IPv6 present despite slow RIPEstat: {f.get('IPv6')}")
+    check(f.get("IPv6 RPKI") == "info" and f.get("IPv4 RPKI") == "info", "RPKI not determined → info")
+    check(line(detail(d), "INFO", "RPKI check failed: RIPEstat did not answer in time"), "the .txt says why")
+
+    d["ip_routing"] = {"error": "Skipped: audit deadline (15s) reached"}
+    f = findings(d)
+    check("IPv6" not in f, f"a cut-off routing check is not rated: IPv6 = {f.get('IPv6')}")
+    check(not any(k.startswith("IPv4 ") or k.startswith("IPv6 ") for k in f), "nor its RPKI")
+    check(line(detail(d), "INFO", "Routing lookup did not finish in time"), "the .txt explains the gap")
+
+    reason = audit_mod._partial_reason(["ip_routing"], 25, 15)
+    check("routing lookup (RIPEstat)" in reason and "audited host was fine" in reason,
+          f"banner names the check and the cause: {reason}")
+    reason = audit_mod._partial_reason(["tls", "server_header"], 25, 15)
+    check("TLS connection" in reason and "host may be unreachable" in reason, f"host cause: {reason}")
+
+
+def _v6_only_site(auditor_ipv6):
+    """loopsofzen.uk as audited on 2026-11-21: IPv6-only, routed and
+    RPKI-valid, scanned from a host without IPv6."""
+    d = sample()
+    unreachable = "[Errno 101] Network is unreachable"
+    d["ip_routing"] = {"error": None,
+                       "v4": {"address": None, "error": "no A record", "prefix": None, "asn": None,
+                              "rpki_status": None, "irr_in_ris": False},
+                       "v6": {"address": "2001:8b0:0:30::666:102", "prefix": "2001:8b0::/48", "asn": 20712,
+                              "asn_name": "Andrews & Arnold Ltd", "rpki_status": "valid", "irr_in_ris": True,
+                              "error": None, "all_addresses": ["2001:8b0:0:30::666:102"]}}
+    d["tls"] = {"error": unreachable, "tls_cert_error": False}
+    d["hsts"] = {"present": False, "error": unreachable}
+    d["http_version"] = {"error": unreachable}
+    d["server_header"] = {"error": unreachable}
+    d["_scan"] = {"deep": True, "version": "3.4.3", "auditor_ipv6": auditor_ipv6}
+    return d
+
+
+def test_ipv6_only_site_from_ipv4_only_auditor():
+    from vendor_audit import audit_txt_report as t
+    from vendor_audit.web import render_html
+    d = _v6_only_site(False)
+    f = findings(d)
+    cats = {x["category"] for x in ac.assess_results(d) if x["label"] != "HTTPS DNS record"}
+    check(not cats & {"TLS", "HTTP", "Website"}, f"no website/TLS/HTTP findings when the auditor can't reach: {cats}")
+    check(f.get("IPv6") == "pass" and f.get("IPv6 RPKI") == "pass", "DNS and routing still rated")
+    check(f.get("TLS connection") is None, "the false 'No HTTPS' critical is gone")
+    txt = t._render_text(atr._ReportData("example.com", "example.com", d, "2026-11-21T00:00:00Z", "3.4.3"))
+    check("IPv6-only site: this site has only IPv6 addresses" in txt, "the .txt explains why")
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-21T00:00:00Z", "duration_ms": 1})
+    check("IPv6-only site:" in page, "the page explains why")
+
+    d = _v6_only_site(True)
+    check(findings(d).get("TLS connection") == "critical", "an auditor with IPv6 still rates a real failure")
+    old = _v6_only_site(None)
+    check(findings(old).get("TLS connection") == "critical", "scans saved before 3.4.3 are rated as before")
+
+    with mock.patch.object(ac.socket, "socket") as sock:
+        sock.return_value.__enter__.return_value.connect.side_effect = OSError(101, "Network is unreachable")
+        check(ac.auditor_has_ipv6() is False, "no IPv6 route → False")
+    check(isinstance(ac.auditor_has_ipv6(), bool), "this machine's answer is a bool")
+
+
+def test_unrouted_ipv6():
+    d = sample()
+    d["ip_routing"] = {"error": None,
+                       "v4": {"address": "192.0.2.1", "prefix": "192.0.2.0/24", "asn": 64500, "rpki_status": "valid",
+                              "irr_in_ris": True, "error": None},
+                       "v6": {"address": "2001:db8::1", "prefix": None, "asn": None, "rpki_status": None,
+                              "irr_in_ris": False, "error": ac._UNROUTED, "all_addresses": ["2001:db8::1"]}}
+    f = findings(d)
+    check(f.get("IPv6") == "medium", f"AAAA with no route → medium, got {f.get('IPv6')}")
+    check("IPv6 RPKI" not in f and "IPv6 IRR/RIS" not in f, "nothing to protect: RPKI/IRR not rated")
+    check(f.get("IPv4 RPKI") == "pass", "IPv4 unaffected")
+    check(line(detail(d), "MEDIUM", "IPv6 address is not announced in BGP"), "the .txt says not routed")
+    d["ip_routing"]["v6"] = dict(d["ip_routing"]["v4"], address="2001:db8::1", prefix="2001:db8::/32")
+    text = {x["label"]: x["text"] for x in ac.assess_results(d)}
+    check(text.get("IPv6") == "IPv6 address published and routed", f"routed wording: {text.get('IPv6')}")
+    d["ip_routing"]["v4"]["error"] = ac._UNROUTED
+    d["ip_routing"]["v4"]["rpki_status"] = None
+    f = findings(d)
+    check("IPv4 RPKI" not in f, "unrouted IPv4: RPKI not rated either")
+
+
 # ── Every new check, end to end ──────────────────────────────────────────────
 
 NEW_LABELS = [
@@ -724,7 +830,9 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
          test_cert_key_parser, test_certificate_failures_named, test_legacy_tls_probes,
          test_csp_subchecks, test_security_txt_subchecks, test_deprecated_headers_and_lang,
-         test_slow_upstreams_are_bounded, test_every_new_check_end_to_end]
+         test_slow_upstreams_are_bounded, test_slow_ripestat_routing,
+         test_ipv6_only_site_from_ipv4_only_auditor, test_unrouted_ipv6,
+         test_every_new_check_end_to_end]
 
 
 def run():

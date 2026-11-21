@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.4.2"
+__version__ = "3.4.3"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -2179,6 +2179,15 @@ def _render_routing_section(data):
     parts = ["", _heading("IP / ASN / RPKI (RFC 6480)"), ""]
     parts.extend(_section_explanation_lines("routing"))
 
+    # 3.4.3: the routing check was cut off by the audit deadline. Say so,
+    # rather than printing two empty address-family blocks.
+    if str(ipr.get("error") or "").startswith("Skipped"):
+        parts.append(_status("info",
+            "Routing lookup did not finish in time — IPv6 and RPKI for the website are not rated",
+            sub_lines=["Usually RIPEstat answering slowly; running the audit again normally succeeds"],
+            check="IPv6"))
+        ipr = {}
+
     def _af_block(af_label, af):
         addr   = af.get("address")
         af_err = af.get("error")
@@ -2193,6 +2202,16 @@ def _render_routing_section(data):
         af_display = "IPv4 (legacy IP)" if af_label == "IPv4" else af_label
 
         sub = [_subheading(_AF_LABEL_WITH_RFC.get(af_label, af_label)), ""]
+
+        if addr and af_err == "no BGP prefix announced for this IP":
+            # 3.4.3: published, but nothing routes to it.
+            sub.append(_kv([("Address", addr)]))
+            sub.append("")
+            sub.append(_status("fail" if af_label == "IPv6" else "info",
+                f"{af_display} address is not announced in BGP — unreachable from the internet",
+                sub_lines=["Usually a stale record after a move, or a prefix the provider stopped announcing"],
+                check="IPv6" if af_label == "IPv6" else None))
+            return sub
 
         if not addr and af_err:
             sev = "warn" if (af_label == "IPv6" and "no AAAA" in (af_err or "")) else "info"
@@ -2238,7 +2257,7 @@ def _render_routing_section(data):
         elif rpki == "not-found":
             sub.append(_status("warn",
                 "RPKI: not-found — no Route Origin Authorization published for this prefix", check=af_label + " RPKI"))
-        elif rpki == "error":
+        elif rpki == "error" or (rpki is None and af_err):
             err_str = f": {af_err}" if af_err else ""
             sub.append(_status("info", f"RPKI check failed{err_str}", check=af_label + " RPKI"))
 
@@ -3634,6 +3653,20 @@ def _render_scan_footer(data):
 
 # ── Top-level renderer ───────────────────────────────────────────────────────
 
+def ipv6_only_note(results):
+    """(heading, lines) when the site is IPv6-only and the audit host has no
+    IPv6, so the website checks could not connect; else None."""
+    from .audit_checks import auditor_cannot_reach
+    if not auditor_cannot_reach(results):
+        return None
+    return "IPv6-only site", [
+        "this site has only IPv6 addresses, and the server running this",
+        "audit has no IPv6 connectivity, so the TLS, HTTP and website checks",
+        "could not connect. They are not rated. DNS, email and routing",
+        "checks are not affected.",
+    ]
+
+
 def bot_challenge_note(server_header):
     """(heading, lines) for the notice shown when a bot defence answered the
     audit instead of the site, or None. Shared by the .txt and the page."""
@@ -3674,6 +3707,14 @@ def _render_text(data):
         out.append("")
 
     note = bot_challenge_note(data.results.get("server_header"))
+    if note:
+        head, lines = note
+        out.append(f"  {head}: {lines[0]}")
+        out.extend(f"  {line}" for line in lines[1:])
+        out.append("")
+        out.append("")
+
+    note = ipv6_only_note(data.results)
     if note:
         head, lines = note
         out.append(f"  {head}: {lines[0]}")

@@ -668,6 +668,9 @@ def _ev_family(family):
         asn = f'AS{af.get("asn")}' + (f' ({af.get("asn_name")})' if af.get("asn_name") else "") \
             if af.get("asn") else None
         extra = [a for a in (af.get("all_addresses") or []) if a != af.get("address")]
+        if af.get("error") == "no BGP prefix announced for this IP":
+            return _kv(("Address", af.get("address")),
+                       ("Routing", "not announced in BGP — no route to this address on the internet"))
         return _kv(("Address", af.get("address")), ("Other addresses", ", ".join(extra)),
                    ("Announced prefix", af.get("prefix")), ("Origin network", asn),
                    ("RPKI status", af.get("rpki_status")),

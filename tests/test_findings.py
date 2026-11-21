@@ -226,7 +226,7 @@ def test_page_budget():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped page budget: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.2"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.3"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     scripts = re.findall(r"<script\b[^>]*>", page)
@@ -259,7 +259,7 @@ def test_saved_copy():
     except Exception as exc:                     # web extras not installed
         print(f"       (skipped saved copy: {exc})")
         return
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.2"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.3"}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     check('href="/audit/example.com.html?deep=1"' in page, "site page should link the .html download")
@@ -310,7 +310,7 @@ def test_bot_challenge():
 
     # Failing Website checks and HSTS become Informational; other
     # categories keep their ratings, and passes stay passes.
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.2"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.3"}
     plain = {f["label"]: f for f in ac.assess_results(d)}
     d["server_header"] = dict(d["server_header"], bot_challenge=True, bot_challenge_kind="challenge", status_code=403)
     rated = {f["label"]: f for f in ac.assess_results(d)}
@@ -470,7 +470,7 @@ def test_check_counts_documented():
 def test_records():
     """Every check becomes one record with something to say about it."""
     from vendor_audit import audit_records as ar
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.2"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.4.3"}
     data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
     recs = ar.build_records(data)
     check(len(recs) == len(data.finding_rows), "one record per finding row")

@@ -86,6 +86,7 @@ from .audit_checks import (
     check_infra_routing,
     check_dangling_cname,
     check_https_rr,
+    auditor_has_ipv6,
     check_os_eol,
     check_page_security_signals,
     check_redirect,
@@ -101,7 +102,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "3.4.2"
+__version__ = "3.4.3"
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +120,35 @@ if not log.handlers:
 
 
 # ── Domain normalisation ─────────────────────────────────────────────────────
+
+
+# Plain names for the jobs a partial-audit banner may list, and which of
+# them depend on an outside data source rather than the audited host.
+_JOB_NAMES = {
+    "ip_routing": "routing lookup (RIPEstat)", "infra_routing": "nameserver and mail server routing (RIPEstat)",
+    "tls": "TLS connection", "tls_legacy": "legacy TLS probes", "hsts": "HSTS",
+    "server_header": "home page headers", "redirect": "redirect check", "http_redirect": "HTTP redirect",
+    "security_txt": "security.txt", "error_page": "error page", "cors": "CORS", "http_version": "HTTP version",
+    "dnssec": "DNSSEC", "ns_soa": "nameservers", "ns_health": "nameserver health", "caa": "CAA",
+    "spf": "SPF", "dmarc": "DMARC", "mx": "MX", "dkim": "DKIM", "mta_sts": "MTA-STS", "tls_rpt": "TLS-RPT",
+    "bimi": "BIMI", "dangling_cname": "dangling CNAME", "https_rr": "HTTPS DNS record",
+    "mta_sts_policy": "MTA-STS policy", "dane": "DANE", "starttls_mx": "STARTTLS on MX",
+    "page_signals": "page analysis", "versioned_libs": "library versions", "ssllabs": "SSL Labs",
+}
+_UPSTREAM_JOBS = {"ip_routing", "infra_routing", "ssllabs"}
+
+
+def _partial_reason(keys, total, deadline):
+    """Banner text for checks cut off by a deadline: which ones, and the
+    likely cause (a slow outside source, or the host not answering)."""
+    names = ", ".join(_JOB_NAMES.get(k, k.replace("_", " ")) for k in sorted(keys))
+    if keys and set(keys) <= _UPSTREAM_JOBS:
+        cause = ("An outside data source answered too slowly; the audited host was fine. "
+                 "Running the audit again normally completes it.")
+    else:
+        cause = "The host may be unreachable (packets dropped rather than refused)."
+    return (f"{len(keys)} of {total} checks did not complete within {deadline}s: {names}. "
+            f"{cause} Checks that did not finish are not rated.")
 
 def normalize_domain(raw: str) -> str:
     """Convert a URL or messy input into a bare ASCII (Punycode) domain name.
@@ -438,12 +468,8 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                 results[key] = {"error":
                     f"Skipped: audit deadline ({AUDIT_WALL_DEADLINE_S}s) reached"}
                 check_timings[key] = AUDIT_WALL_DEADLINE_S
-            partial_envelope_reason = (
-                f"{len(unfinished)} of {len(all_checks)} checks did not "
-                f"complete within {AUDIT_WALL_DEADLINE_S}s. The host may "
-                "be unreachable (packets dropped rather than refused). "
-                "Findings shown are based on the checks that completed."
-            )
+            partial_envelope_reason = _partial_reason(
+                [key for _fut, key in unfinished], len(all_checks), AUDIT_WALL_DEADLINE_S)
             log.warning(
                 "audit deadline exceeded for %s: %d/%d checks unfinished: %s",
                 domain, len(unfinished), len(all_checks),
@@ -611,11 +637,8 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                             f"Skipped: post-pool deadline ({pp_deadline}s) reached"}
                         check_timings[key] = pp_deadline
                     if partial_envelope_reason is None:
-                        partial_envelope_reason = (
-                            f"{len(unfinished_pp)} of {len(post_pool_jobs)} "
-                            f"post-pool checks did not complete within "
-                            f"{pp_deadline}s. The host may be unreachable."
-                        )
+                        partial_envelope_reason = _partial_reason(
+                            [key for _fut, key in unfinished_pp], len(post_pool_jobs), pp_deadline)
                     log.warning(
                         "post-pool deadline exceeded for %s: %d/%d unfinished: %s",
                         domain, len(unfinished_pp), len(post_pool_jobs),
@@ -670,6 +693,8 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
         "check_timings": check_timings,
         "deep":          deep,
         "version":       __version__,
+        # 3.4.3: whether this machine could reach IPv6-only sites at all.
+        "auditor_ipv6":  auditor_has_ipv6(),
     }
 
     log.info("done %s (%.1fs)", domain, scan_elapsed)

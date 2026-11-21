@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.4.2"
+__version__ = "3.4.3"
 
 import os
 import re
@@ -1829,6 +1829,11 @@ def check_ns_health(domain, *, ns_list=None, timeout=2.5):
 
 # ── IP routing / RPKI ─────────────────────────────────────────────────────────
 
+# 3.4.3: total time the website's RIPEstat lookups may take (see the
+# check_ip_routing docstring). Well under the 15s audit deadline.
+_IP_ROUTING_RIPE_BUDGET = 8.0
+
+
 def check_ip_routing(domain):
     """Resolve the first IPv4 and IPv6 addresses for the domain, then for each
     query RIPEstat for BGP prefix, ASN, RPKI validity, and IRR/RIS presence.
@@ -1847,7 +1852,14 @@ def check_ip_routing(domain):
         we have to parse, just to check if our specific prefix is in
         the originating list. With the narrowing it's typically
         kilobytes.
-      - Per-call timeout is 8s (RIPESTAT_TIMEOUT below), higher than the
+      - 3.4.3: the RIPEstat part has a budget of its own (RIPESTAT_BUDGET,
+        8s). Before, each call could take 8s and be retried, in two rounds,
+        so a slow RIPEstat ran this check past the 15s audit deadline; the
+        whole check was then dropped and IPv6 was misreported as missing.
+        Now the addresses come from DNS and are always kept, and RPKI/IRR
+        that RIPEstat hasn't answered within the budget are reported as
+        "could not be checked". Per-call timeout is 4s.
+      - (Before 3.4.3) Per-call timeout was 8s, higher than the
         global _http_timeout default of 5s. RIPEstat's read-replica
         latency varies — most calls return in ~500ms, but on degraded
         days a single call can take 5-7s before the data arrives. With
@@ -1863,7 +1875,7 @@ def check_ip_routing(domain):
         call is ~2× timeout.
     """
     RIPESTAT = "https://stat.ripe.net/data"
-    RIPESTAT_TIMEOUT = 8     # higher than the global _http_timeout — see docstring
+    RIPESTAT_TIMEOUT = 4     # per call; the whole RIPEstat part is bounded by _IP_ROUTING_RIPE_BUDGET
     # sourceapp identifier per RIPEstat's polite-usage convention. Format
     # rules: alphanumeric, hyphens, underscores only — no dots — so we use
     # the hyphenated form of the public deployment hostname rather than
@@ -2009,23 +2021,37 @@ def check_ip_routing(domain):
     v4_ip = None if (a_err or not a_records) else a_records[0]
     v6_ip = None if (aaaa_err or not aaaa_records) else aaaa_records[0]
 
-    with ThreadPoolExecutor(max_workers=2) as addr_ex:
-        v4_fut = addr_ex.submit(_lookup, v4_ip, "v4") if v4_ip else None
-        v6_fut = addr_ex.submit(_lookup, v6_ip, "v6") if v6_ip else None
+    jobs = {}
+    if v4_ip:
+        jobs["v4"] = (_lookup, (v4_ip, "v4"))
+    if v6_ip:
+        jobs["v6"] = (_lookup, (v6_ip, "v6"))
+    looked = _run_bounded(jobs, _IP_ROUTING_RIPE_BUDGET, 2)
+
+    def _settle(af, ip):
+        got = looked.get(af)
+        if isinstance(got, dict):
+            return got
+        # RIPEstat didn't answer within the budget. The address came from
+        # DNS and stands; only the routing data is unknown.
+        r = _empty_addr()
+        r["address"] = ip
+        r["error"] = "RIPEstat did not answer in time"
+        return r
 
     if a_err:
         result["v4"]["error"] = f"A record lookup failed: {a_err}"
     elif not a_records:
         result["v4"]["error"] = "no A record"
     else:
-        result["v4"] = v4_fut.result()
+        result["v4"] = _settle("v4", v4_ip)
 
     if aaaa_err:
         result["v6"]["error"] = f"AAAA record lookup failed: {aaaa_err}"
     elif not aaaa_records:
         result["v6"]["error"] = "no AAAA record"
     else:
-        result["v6"] = v6_fut.result()
+        result["v6"] = _settle("v6", v6_ip)
         result["v6"]["all_addresses"] = aaaa_records
 
     # Per-call timing breakdown — single line, easy to grep in journalctl.
@@ -2082,7 +2108,7 @@ def _run_bounded(jobs, budget, workers):
 # they sit in, and RPKI origin validation, as internet.nl does.
 #
 # Bounded on purpose: the first 4 nameservers and 3 MX hosts, one IPv4 and
-# one IPv6 address each, at most 8 RIPEstat lookups (prefix + RPKI), run 6
+# one IPv6 address each, at most 8 RIPEstat lookups (prefix + RPKI), run 3
 # at a time. It runs alongside check_ip_routing, which takes about as long.
 # Hard budget: 1.5 s for the address lookups and 4 s for RIPEstat; lookups
 # still running then are reported as failed rather than holding the audit.
@@ -2186,7 +2212,9 @@ def check_infra_routing(domain):
     interleaved += ns_t[len(mx_t):] + mx_t[len(ns_t):]
     picked = interleaved[:_INFRA_MAX_LOOKUPS]
     if picked:
-        got = _run_bounded({t: (_ripe_prefix_rpki, (t[2],)) for t in picked}, _INFRA_RIPE_BUDGET, 6)
+        # Three at a time: these run alongside check_ip_routing's own
+        # RIPEstat calls, and the website's RPKI comes first.
+        got = _run_bounded({t: (_ripe_prefix_rpki, (t[2],)) for t in picked}, _INFRA_RIPE_BUDGET, 3)
         for kind, host, ip in picked:
             res = got.get((kind, host, ip))
             if not isinstance(res, dict):
@@ -6331,11 +6359,24 @@ def _collect_outcomes(results):
     # Skipped when the domain has no web presence at all: "no IPv6 web
     # address" is not a meaningful finding for an MX-only mail subdomain
     # or a DNS-only domain that intentionally has no A/AAAA.
-    if not no_web_presence:
-        v6_present = bool(v6.get("address"))
-        _p("IPv6", "present" if v6_present else "missing")
-    else:
-        v6_present = bool(v6.get("address"))
+    # 3.4.3: when the routing check itself didn't finish (audit deadline),
+    # there's no address to judge by: IPv6 and RPKI are not rated rather
+    # than reported as missing.
+    routing_done = not _was_skipped(ipr)
+    v6_present = bool(v6.get("address"))
+    # An address no BGP route covers is published but unreachable from the
+    # internet: as good as no IPv6, and RPKI/IRR have nothing to protect.
+    v4_unrouted = bool(v4.get("address")) and v4.get("error") == _UNROUTED
+    v6_unrouted = v6_present and v6.get("error") == _UNROUTED
+    if not no_web_presence and routing_done:
+        if not v6_present:
+            _p("IPv6", "missing")
+        elif v6_unrouted:
+            _p("IPv6", "unrouted")
+        elif v6.get("rpki_status") in ("valid", "not-found", "invalid"):
+            _p("IPv6", "routed")
+        else:
+            _p("IPv6", "present")
 
     # 3.4: HTTPS (SVCB) DNS record, RFC 9460. Optional, so Informational
     # when absent.
@@ -6344,7 +6385,7 @@ def _collect_outcomes(results):
         _p("HTTPS DNS record", "present" if https_rr["present"] else "missing")
 
     # ── IPv4 routing ─────────────────────────────────────────────────────────
-    if not v4.get("error") or v4.get("address"):
+    if (not v4.get("error") or v4.get("address")) and not v4_unrouted:
         rpki4 = v4.get("rpki_status")
         if rpki4 in ("valid", "not-found", "invalid"):
             _p("IPv4 RPKI", rpki4)
@@ -6364,7 +6405,7 @@ def _collect_outcomes(results):
             pts.append(("IPv4 IRR/RIS", "lookup_failed"))
 
     # ── IPv6 routing — only scored when IPv6 present ─────────────────────────
-    if v6_present:
+    if v6_present and not v6_unrouted:
         rpki6 = v6.get("rpki_status")
         if rpki6 in ("valid", "not-found", "invalid"):
             _p("IPv6 RPKI", rpki6)
@@ -7166,6 +7207,42 @@ def _category_for_label(label):
     return "Website"
 
 
+# ── The audit host's own IPv6 (3.4.3) ────────────────────────────────────────
+# An audit server without IPv6 can't connect to an IPv6-only site at all:
+# every connection fails with "Network is unreachable" before it leaves the
+# machine. That says nothing about the site, so those checks must not be
+# rated as failures.
+
+_UNROUTED = "no BGP prefix announced for this IP"
+
+
+def auditor_has_ipv6():
+    """Whether this machine has a route for IPv6 traffic. A UDP connect()
+    sends nothing; it only asks the kernel for a route to a public IPv6
+    address (Google Public DNS)."""
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as s:
+            s.connect(("2001:4860:4860::8888", 53))
+        return True
+    except OSError:
+        return False
+
+
+def auditor_cannot_reach(results):
+    """True when the site has only IPv6 addresses and the audit host has
+    no IPv6, so no website, TLS or HTTP check could connect."""
+    if (results.get("_scan") or {}).get("auditor_ipv6") is not False:
+        return False
+    ipr = results.get("ip_routing") or {}
+    v4, v6 = ipr.get("v4") or {}, ipr.get("v6") or {}
+    return v4.get("error") == "no A record" and bool(v6.get("address"))
+
+
+# Checks in the connection-based categories that read DNS, not the site,
+# and so stay rated when the site can't be reached.
+_DNS_BASED_WEB_CHECKS = {"HTTPS DNS record"}
+
+
 # Checks that run only with --deep / Deep checks, and only with --ssl (CLI).
 # Everything else in rubric.json runs on every scan where it applies.
 DEEP_ONLY_CHECKS = {"DANE TLSA on MX", "STARTTLS-MX", "Subresource Integrity",
@@ -7227,6 +7304,11 @@ def assess_results(results):
             "category": category,
             "text":     text,
         })
+    if auditor_cannot_reach(results):
+        # 3.4.3: IPv6-only site, audit host without IPv6 — the website,
+        # TLS and HTTP checks never reached the site. Not rated.
+        findings = [f for f in findings
+                    if f["category"] not in ("TLS", "HTTP", "Website") or f["label"] in _DNS_BASED_WEB_CHECKS]
     return findings
 
 
