@@ -481,7 +481,7 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
             code="not_found",
         )
     if exc.status_code == 405:
-        return _render_error_page(
+        response = _render_error_page(
             request,
             status_code=405,
             title="That action isn't supported",
@@ -491,6 +491,13 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
             ),
             code="method_not_allowed",
         )
+        # RFC 9110 §15.5.6: a 405 must say which methods are allowed. Every
+        # GET route also answers HEAD (HeadAsGetMiddleware).
+        allowed = [m.strip() for m in ((exc.headers or {}).get("Allow") or "GET").split(",") if m.strip()]
+        if "GET" in allowed and "HEAD" not in allowed:
+            allowed.append("HEAD")
+        response.headers["Allow"] = ", ".join(allowed)
+        return response
     # Catch-all for any other HTTPException we haven't tailored. Preserves
     # the original status code and uses the exception's detail as the body.
     return _render_error_page(

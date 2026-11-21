@@ -78,7 +78,7 @@ Minimum Python version: 3.8+
 """
 from __future__ import annotations
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 
 import os
 import sys
@@ -1368,6 +1368,14 @@ SWITCHES
                  Single-domain mode only. Useful for piping into jq or
                  other tooling. --outcsv can be combined with --json.
                    python3 vendor_audit.py example.com --json | jq .spf
+                 The banner lines go to stderr, so > scan.json saves pure JSON.
+
+  --compare BEFORE AFTER
+                 Compare two scans saved with --json: what was fixed, what
+                 got worse, what is new and what is still open. Both scans
+                 are rated with this version's rules, so differences are
+                 changes on the site. Runs no new audit.
+                   python3 vendor_audit.py --compare before.json after.json
 
   --dns-server IP
                  Use a specific DNS resolver for all queries instead of
@@ -1432,6 +1440,11 @@ COMMON RECIPES
 
   Single domain, raw JSON:
     python3 vendor_audit.py example.com --json
+
+  See what changed since an earlier scan:
+    python3 vendor_audit.py example.com --json > before.json
+    python3 vendor_audit.py example.com --json > after.json     (later)
+    python3 vendor_audit.py --compare before.json after.json
 
   Bulk audit from a file, results to CSV:
     python3 vendor_audit.py --file domains.txt --outcsv results.csv
@@ -1560,6 +1573,11 @@ PROJECT
                              "cap (vs 256KB default), so the page parser sees the full HTML "
                              "even on large server-rendered CMS pages. Adds 5-30s to the scan.")
 
+    # ── Compare two saved scans ──────────────────────────────────────────────
+    parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"),
+                        help="Compare two scans saved with --json and list what was fixed, "
+                             "what got worse and what is still open. Runs no new audit.")
+
     # ── Versioning ────────────────────────────────────────────────────────────
     parser.add_argument("--version", action="store_true",
                         help="Print version info for all components and exit.")
@@ -1576,6 +1594,17 @@ PROJECT
             print(f"  {name:<22}  {ver}")
         return
 
+    # ── Compare two saved scans (standalone — no domain, no network) ─────────
+    if args.compare:
+        from .compare import CompareError, compare, load_scan, render_compare
+        try:
+            before, after = (load_scan(p) for p in args.compare)
+        except CompareError as e:
+            print(f"vendor-audit: --compare: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(render_compare(compare(before, after), __version__))
+        return
+
     # ── SSL Labs registration (standalone — no domain required) ───────────────
     if args.sslregistration:
         cmd_sslregistration()
@@ -1587,10 +1616,13 @@ PROJECT
     if args.ssl:
         flags.append("--ssl")
     flag_str = ("   [" + " ".join(flags) + "]") if flags else ""
-    print(f"vendor_audit.py  v{__version__}{flag_str}")
-    print(f"{c(GREY, 'Free software, GNU GPL v3 — no warranty. See LICENSE.')}")
-    print(f"{c(GREY, 'https://github.com/chrono1313/Vendor-Audit')}")
-    print()
+    # With --json the banner goes to stderr, so `--json > scan.json` saves
+    # a file that is JSON and nothing else.
+    banner_to = sys.stderr if args.json else sys.stdout
+    print(f"vendor_audit.py  v{__version__}{flag_str}", file=banner_to)
+    print(f"{c(GREY, 'Free software, GNU GPL v3 — no warranty. See LICENSE.')}", file=banner_to)
+    print(f"{c(GREY, 'https://github.com/chrono1313/Vendor-Audit')}", file=banner_to)
+    print(file=banner_to)
 
     # ── One-time global configuration ────────────────────────────────────────
     # Set via the audit_checks setters (no cross-module global mutation).

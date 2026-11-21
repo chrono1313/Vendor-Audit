@@ -15,12 +15,18 @@ Two layers use the same rules:
     every redirect hop. When nothing public is left the lookup fails with
     NonPublicAddressError and that one check reports it as an error.
 
+install() also removes proxy settings (HTTPS_PROXY and the like) from the
+worker's environment. Through a forward proxy the worker would connect to
+the proxy, not the audited site, and the check above would only ever see
+the proxy's address. The site's audits connect directly.
+
 The command-line tool doesn't install the guard: auditing your own internal
 names from your own machine is a legitimate use.
 """
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 from typing import Iterable
 
@@ -116,8 +122,15 @@ def _guarded_getaddrinfo(host, port, *args, **kwargs):
     return kept
 
 
+# Environment variables HTTP clients (httpx, urllib) read proxy settings from.
+_PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+
+
 def install() -> None:
     """Guard every connection in this process. Safe to call more than once."""
+    for name in _PROXY_VARS:
+        os.environ.pop(name, None)
+        os.environ.pop(name.lower(), None)
     socket.getaddrinfo = _guarded_getaddrinfo
 
 

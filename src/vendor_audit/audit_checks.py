@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 
 import os
 import re
@@ -5854,6 +5854,9 @@ def _collect_outcomes(results):
             _score_mta_sts(results.get("redirect_target_mta_sts", {}) or {},
                            results.get("redirect_target_mta_sts_policy", {}) or {},
                            pts, prefix=_REDIRECT_PREFIX)
+            rt_tls_rpt = results.get("redirect_target_tls_rpt", {}) or {}
+            if rt_tls_rpt and not rt_tls_rpt.get("error"):
+                _p(f"{_REDIRECT_PREFIX}TLS-RPT", "present" if rt_tls_rpt.get("present") else "missing")
     if has_mx:
         tls_rpt = results.get("tls_rpt", {})
         if not tls_rpt.get("error"):

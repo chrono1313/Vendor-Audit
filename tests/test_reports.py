@@ -159,6 +159,20 @@ def test_redirect_target_mta_sts():
           "redirect-target MTA-STS line should read MEDIUM")
 
 
+def test_redirect_target_tls_rpt():
+    d = _redirected()
+    d["redirect_target_tls_rpt"] = {"present": False, "rua": None, "record": None}
+    data = _data(d, audit="app.example.net")
+    labels = {r["label"]: r["severity"] for r in data.finding_rows}
+    want = ac.RUBRIC["findings"]["TLS-RPT"]["missing"][0]
+    check(labels.get("redirect target: TLS-RPT") == want,
+          f"redirect-target TLS-RPT should be {want}, got {labels.get('redirect target: TLS-RPT')}")
+    detail = atr.strip_tags(atr.render_detail_sections(data))
+    target = detail[detail.index("app.example.net"):]
+    check(re.search(rf"^\s+{want.upper()}\s+No TLS-RPT", target, re.M),
+          "redirect-target TLS-RPT line should carry the finding's word")
+
+
 def test_eol_heading():
     d = sample()
     d["tech_eol"] = ac.check_tech_eol({"server": "Microsoft-IIS/10.0", "x_aspnet_version": "2.0.50727"})
@@ -188,7 +202,8 @@ def test_terminal_shows_txt_lines():
 
 def run():
     for fn in (test_no_tags_leak, test_check_labels_exist, test_words_follow_findings,
-               test_redirect_target_lines, test_redirect_target_mta_sts, test_eol_heading,
+               test_redirect_target_lines, test_redirect_target_mta_sts,
+               test_redirect_target_tls_rpt, test_eol_heading,
                test_terminal_shows_txt_lines):
         before = len(_failures)
         fn()

@@ -42,6 +42,7 @@ def guarded(names):
     """Install the guard with a fake resolver: names → list of addresses,
     and 127.0.0.1 counted as public."""
     real_gai, real_pub, before = netguard._real_getaddrinfo, netguard.is_public_address, socket.getaddrinfo
+    saved_env = dict(os.environ)          # install() drops proxy settings
 
     def fake_gai(host, port, *args, **kw):
         h = host.decode() if isinstance(host, bytes) else host
@@ -58,6 +59,8 @@ def guarded(names):
     finally:
         socket.getaddrinfo = before
         netguard._real_getaddrinfo, netguard.is_public_address = real_gai, real_pub
+        os.environ.clear()
+        os.environ.update(saved_env)
 
 
 @contextlib.contextmanager
@@ -140,6 +143,17 @@ def test_mixed_answers_filtered():
         check(got == ["127.0.0.1"], f"only public addresses should remain: {got}")
 
 
+def test_proxy_settings_removed():
+    """A worker connects directly: proxy settings would hide the real address."""
+    import subprocess
+    code = ("import os; from vendor_audit import netguard; netguard.install(); "
+            "print(sorted(k for k in os.environ if k.lower() in ('http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')))")
+    env = dict(os.environ, HTTPS_PROXY="http://10.0.0.1:3128", http_proxy="http://10.0.0.1:3128",
+               PYTHONPATH=os.path.join(os.path.dirname(__file__), "..", "src"))
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=30)
+    check(out.stdout.strip() == "[]", f"proxy settings should be gone after install(): {out.stdout or out.stderr}")
+
+
 def test_install_scope():
     before = socket.getaddrinfo
     with guarded({}):
@@ -152,7 +166,8 @@ def test_install_scope():
 
 def run():
     for fn in (test_rules_shared, test_private_name_refused, test_redirect_hop_refused,
-               test_rebinding_refused, test_mixed_answers_filtered, test_install_scope):
+               test_rebinding_refused, test_mixed_answers_filtered, test_proxy_settings_removed,
+               test_install_scope):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

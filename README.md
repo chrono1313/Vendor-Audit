@@ -268,6 +268,31 @@ In bulk mode, domains are audited in parallel (10 at a time by default,
 adjustable via `--concurrency`). With `--report`, each successfully-audited
 domain produces a separate `<domain>_<ISO>.txt` report in the given directory.
 
+### Comparing two scans
+
+Save a scan with `--json`, save another later, and `--compare` lists what
+changed:
+
+```bash
+vendor-audit example.com --json > before.json
+vendor-audit example.com --json > after.json      # later
+vendor-audit --compare before.json after.json
+```
+
+```
+  FIXED (1)
+    HIGH      →  PASS       TLS      HTTP Strict Transport Security (HSTS) not set
+  WORSE (1)
+    PASS      →  MEDIUM     DNS      No Certification Authority Authorization (CAA) records
+  STILL OPEN (2)
+    MEDIUM                  Email    MTA-STS policy not published — ...
+```
+
+Findings are grouped as fixed, worse, better, new, no longer reported and
+still open. Both scans are rated with the rules of the version doing the
+comparison, so a difference is a change on the site, not a change in
+Vendor Audit. No new audit runs.
+
 ### Deep mode
 
 `--deep` enables three extra checks that are slower or have a higher false-
@@ -317,7 +342,8 @@ Three output formats, used independently or together:
   findings, suitable for sharing with the vendor's technical team.
 - **JSON** (`--json`) — the raw result of every check, plus `findings`
   (each with its severity, category and sentence) and a `summary` with the
-  counts by severity.
+  counts by severity. The banner goes to stderr, so `--json > scan.json`
+  saves pure JSON, ready for `--compare`.
 
 ## End-of-life data
 
@@ -368,12 +394,13 @@ Two rules keep the findings defensible:
   still have weak internal controls; Vendor Audit makes no claim about what
   it can't see.
 - **Single point in time.** The report reflects the moment of the scan.
-  Re-run periodically or wire into a scheduled CI job for trend tracking.
+  Re-run periodically and use `--compare` to see what changed.
 - **Bot-mitigated sites.** Cloudflare / Akamai / AWS WAF challenge pages
   produce unreliable page-level findings, which is why page parsing is
   gated behind `--deep` rather than running by default. When Cloudflare
-  marks its answer as a challenge, the report says so at the top: the
-  Website findings then describe the challenge page. These reverse
+  answers with a challenge or block page, the report says so at the top,
+  and failing Website and HSTS checks are shown as Informational, since
+  they describe Cloudflare's page rather than the site. These reverse
   proxies may obscure other findings like outdated server OSes, but the
   report should still be accurate as to externally-visible exposure
   and configuration.
