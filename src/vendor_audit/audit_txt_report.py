@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.4.1"
+__version__ = "3.4.2"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -2307,7 +2307,24 @@ def _render_tls_section(data):
     parts = ["", _heading("TLS (RFC 8446)"), ""]
     parts.extend(_section_explanation_lines("tls"))
 
-    if tls.get("error"):
+    if tls.get("error") and tls.get("tls_cert_error"):
+        # 3.4.2: name the cause, and what the (untrusted) certificate says.
+        reason = tls.get("cert_error_reason")
+        c = tls.get("cert_failed_details") or {}
+        head = {"expired": "Certificate has expired", "not_yet_valid": "Certificate is not valid yet",
+                "self_signed": "Certificate is self-signed",
+                "untrusted": "Certificate does not chain to a trusted authority"}.get(reason, "Certificate failed verification")
+        if reason == "expired" and c.get("not_after"):
+            head += f" (on {c['not_after'][:10]})"
+        elif reason == "not_yet_valid" and c.get("not_before"):
+            head += f" (valid from {c['not_before'][:10]})"
+        sub = [s for s in (
+            f"Issued to {c['subject_cn']}" if c.get("subject_cn") else None,
+            f"Issued by {c['issuer_cn']}" if c.get("issuer_cn") else None,
+            f"OpenSSL: {tls['error']}",
+        ) if s]
+        parts.append(_status("fail", head + " — browsers block the site", sub_lines=sub, check="TLS connection"))
+    elif tls.get("error"):
         parts.append(_status("fail",
             f"Could not connect on port 443: {tls['error']}", check="TLS connection"))
     else:

@@ -582,6 +582,22 @@ def _glance_cards(data, records):
                           audit_txt_report._humanize_seconds(tls["cert_remaining_seconds"]),
                           "stat-bad" if overdue else "stat-good", lines,
                           href_for("Certificate renewal", "Certificate lifetime")))
+    elif tls.get("tls_cert_error"):
+        # 3.4.2: verification failed; say why, from the certificate the
+        # server sent (read but not trusted).
+        from ..audit_records import _days_from_now
+        c = tls.get("cert_failed_details") or {}
+        reason = tls.get("cert_error_reason")
+        days = _days_from_now(c.get("not_after"))
+        if reason == "expired" and days is not None:
+            value = f"Expired {-days} day{'s' if days != -1 else ''} ago" if days < 0 else "Expired"
+        else:
+            value = {"self_signed": "Self-signed", "untrusted": "Not trusted",
+                     "not_yet_valid": "Not valid yet"}.get(reason, "Not trusted")
+        lines = [x for x in (f'Issued by {c["issuer_cn"]}' if c.get("issuer_cn") else None,
+                             f'Valid until {c["not_after"][:10]}' if c.get("not_after") else None) if x]
+        cards.append(card("Certificate", value, "stat-bad", lines or ["Browsers block the site"],
+                          href_for("TLS connection")))
 
     # Email authentication
     spf = (r.get("spf") or {}).get("status")

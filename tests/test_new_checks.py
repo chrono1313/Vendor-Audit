@@ -391,6 +391,81 @@ def test_cert_key_parser():
         check(ac._cert_key_outcome(tls) == want, f"{tls} → {want}")
 
 
+def _expired_cert(tmp):
+    """(ca.crt, (leaf.key, leaf.crt)): a CA, and a leaf it signed that
+    expired in 2020. None without the openssl command."""
+    import shutil
+    import subprocess
+    if not shutil.which("openssl"):
+        return None
+    j = lambda n: os.path.join(tmp, n)                          # noqa: E731
+    run = lambda *a: subprocess.run(a, check=True, capture_output=True, cwd=tmp)  # noqa: E731
+    run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", j("ca.key"), "-out", j("ca.crt"),
+        "-days", "2", "-subj", "/CN=Test CA", "-addext", "basicConstraints=critical,CA:TRUE",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+    run("openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", j("leaf.key"), "-out", j("leaf.csr"),
+        "-subj", "/CN=localhost")
+    open(j("index.txt"), "w").close()
+    open(j("serial"), "w").write("01\n")
+    open(j("ca.cnf"), "w").write(
+        "[ca]\ndefault_ca=d\n[d]\ndir=.\ndatabase=index.txt\nserial=serial\nnew_certs_dir=.\n"
+        "default_md=sha256\npolicy=p\nunique_subject=no\n[p]\ncommonName=supplied\n")
+    run("openssl", "ca", "-batch", "-config", "ca.cnf", "-cert", "ca.crt", "-keyfile", "ca.key",
+        "-in", "leaf.csr", "-out", "leaf.crt", "-startdate", "20200101000000Z", "-enddate", "20200201000000Z")
+    return j("ca.crt"), (j("leaf.key"), j("leaf.crt"))
+
+
+def test_certificate_failures_named():
+    """An expired or self-signed certificate is named as such, with the
+    certificate's own dates and issuer, and explained as a certificate
+    problem rather than a TLS-version one."""
+    import ssl
+    import tempfile
+    from vendor_audit import audit_records as ar
+    V = ssl.TLSVersion
+    with tempfile.TemporaryDirectory() as tmp:
+        made = _expired_cert(tmp)
+        if made is None:
+            print("    (skipped: no openssl command)")
+            return
+        ca, leaf = made
+        trusting = ssl.create_default_context(cafile=ca)
+        trusting.check_hostname = False
+        with tls_server(leaf, V.TLSv1_2, V.TLSv1_3, "DEFAULT") as port, \
+             mock.patch.object(ac, "_TLS_CTX", trusting):
+            expired = ac.check_tls("127.0.0.1", port)
+        selfsigned = _make_cert(tmp, "self", ["rsa:2048"])
+        with tls_server(selfsigned, V.TLSv1_2, V.TLSv1_3, "DEFAULT") as port:
+            selfs = ac.check_tls("127.0.0.1", port)
+    check(expired.get("cert_error_reason") == "expired", f"expired cert reason: {expired.get('cert_error_reason')} {expired.get('error')}")
+    c = expired.get("cert_failed_details") or {}
+    check(c.get("not_after", "").startswith("2020-02-01") and c.get("issuer_cn") == "Test CA"
+          and c.get("subject_cn") == "localhost", f"details read from the untrusted cert: {c}")
+    check(selfs.get("cert_error_reason") == "self_signed", f"self-signed reason: {selfs.get('cert_error_reason')}")
+
+    d = sample()
+    d["tls"] = expired
+    rows = {f["label"]: f for f in ac.assess_results(d)}
+    check(rows["TLS connection"]["outcome"] == "cert_expired" and rows["TLS connection"]["severity"] == "critical",
+          f"expired → cert_expired critical: {rows['TLS connection']}")
+    what, why, fix = ar.explanation_for("TLS connection", "cert_expired")
+    check("expiry" in what and "TLS 1.3" not in fix and "Renew" in fix, f"explained as a certificate problem: {fix}")
+    check(ar.explanation_for("TLS connection", "ok") == ar.explanation_for("TLS connection"),
+          "a working connection keeps the general TLS text")
+    ev = ar.evidence_for("TLS connection", d)
+    flat = str(ev)
+    check("2020-02-01" in flat and "days ago" in flat and "Test CA" in flat, f"evidence shows when and who: {ev}")
+    txt = detail(d)
+    check(line(txt, "CRITICAL", "Certificate has expired (on 2020-02-01) — browsers block the site"),
+          "the .txt names the cause and date")
+    from vendor_audit.web import render_html
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    check("Expired " in page and "days ago" in page, "the certificate card says how long ago it expired")
+    check("Enable TLS 1.3 in your web server" not in page[page.index('id="check-tls-connection"'):][:4000],
+          "the drawer no longer gives TLS-version advice for an expired certificate")
+
+
 def test_legacy_tls_probes():
     import ssl
     import tempfile
@@ -647,7 +722,7 @@ def test_every_new_check_end_to_end():
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
-         test_cert_key_parser, test_legacy_tls_probes,
+         test_cert_key_parser, test_certificate_failures_named, test_legacy_tls_probes,
          test_csp_subchecks, test_security_txt_subchecks, test_deprecated_headers_and_lang,
          test_slow_upstreams_are_bounded, test_every_new_check_end_to_end]
 

@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.4.1"
+__version__ = "3.4.2"
 
 import os
 import re
@@ -2483,6 +2483,73 @@ def _cert_key_info(der):
     return {"cert_key_type": kind, "cert_key_bits": bits, "cert_sig_alg": _OID_NAMES.get(sig, sig)}
 
 
+def _der_time(der, tag, start, end):
+    """UTCTime / GeneralizedTime → ISO 8601 'YYYY-MM-DDTHH:MM:SSZ'."""
+    t = der[start:end].decode("ascii", "replace").rstrip("Z")
+    if tag == 0x17:                                   # UTCTime: YYMMDDHHMMSS
+        yy = int(t[:2])
+        t = ("19" if yy >= 50 else "20") + t
+    return f"{t[0:4]}-{t[4:6]}-{t[6:8]}T{t[8:10]}:{t[10:12]}:{t[12:14] or '00'}Z"
+
+
+def _der_cn(der, start, end):
+    """The commonName (2.5.4.3) in an X.509 Name, or None."""
+    for _set_tag, ss, se in _der_children(der, start, end):
+        for _seq_tag, qs, qe in _der_children(der, ss, se):
+            parts = _der_children(der, qs, qe)
+            if len(parts) == 2 and parts[0][0] == 0x06 and _oid(der, parts[0][1], parts[0][2]) == "2.5.4.3":
+                return der[parts[1][1]:parts[1][2]].decode("utf-8", "replace")
+    return None
+
+
+def _cert_details(der):
+    """{"not_before", "not_after", "issuer_cn", "subject_cn"} from a DER certificate."""
+    _t, cs, ce = _der(der, 0)
+    tbs = _der_children(der, cs, ce)[0]
+    fields = _der_children(der, tbs[1], tbs[2])
+    if fields and fields[0][0] == 0xA0:
+        fields = fields[1:]
+    issuer, validity, subject = fields[2], fields[3], fields[4]
+    nb, na = _der_children(der, validity[1], validity[2])[:2]
+    return {"not_before": _der_time(der, *nb), "not_after": _der_time(der, *na),
+            "issuer_cn": _der_cn(der, issuer[1], issuer[2]),
+            "subject_cn": _der_cn(der, subject[1], subject[2])}
+
+
+# OpenSSL X509_V_ERR codes → why verification failed.
+_CERT_VERIFY_REASONS = {
+    10: "expired", 9: "not_yet_valid",
+    18: "self_signed", 19: "self_signed",              # leaf / chain self-signed
+    20: "untrusted", 21: "untrusted", 2: "untrusted",  # issuer missing or unknown
+}
+
+
+def _cert_failure(domain, port, err):
+    """Why certificate verification failed, and what the certificate says.
+
+    The reason comes from OpenSSL's verify code. The certificate itself is
+    then read over a second connection that does not verify it, so the
+    report can say when it expired or who issued it. Nothing read this way
+    is trusted; it is only shown."""
+    out = {"cert_error_reason": _CERT_VERIFY_REASONS.get(getattr(err, "verify_code", None), "other"),
+           "cert_failed_details": None}
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((domain, port), timeout=3) as sock:
+            sock.settimeout(3)
+            with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
+                der = ssock.getpeercert(binary_form=True)
+        if der:
+            details = _cert_details(der)
+            details.update(_cert_key_info(der))
+            out["cert_failed_details"] = details
+    except Exception:                   # noqa: BLE001 — details are a bonus
+        pass
+    return out
+
+
 # ── Legacy protocols and weak key exchange (3.4) ─────────────────────────────
 # A server can negotiate TLS 1.3 with modern clients and still accept TLS 1.0
 # from anyone who asks; check_tls only sees the best version. These probes
@@ -2723,6 +2790,7 @@ def check_tls(domain, port=443):
         # scoring can penalise "no cert at all" more heavily than "bad cert".
         result["error"]          = str(e)
         result["tls_cert_error"] = True
+        result.update(_cert_failure(domain, port, e))
     except Exception as e:
         # Hard failure: no port 443, timeout, connection refused, etc.
         result["error"]          = str(e)
@@ -6421,8 +6489,15 @@ def _collect_outcomes(results):
             cert_err = tls.get("tls_cert_error", False)
             # One cause, one finding: with no working TLS there is no
             # protocol version, certificate lifetime or HTTP version to
-            # judge, so those checks produce nothing.
-            _p("TLS connection", "cert_error" if cert_err else "no_tls")
+            # judge, so those checks produce nothing. 3.4.2: the finding
+            # names the cause when OpenSSL reported it.
+            reason = tls.get("cert_error_reason")
+            if not cert_err:
+                _p("TLS connection", "no_tls")
+            elif reason in ("expired", "not_yet_valid", "self_signed", "untrusted"):
+                _p("TLS connection", f"cert_{reason}")
+            else:
+                _p("TLS connection", "cert_error")
 
     # ── HTTP→HTTPS redirect ──────────────────────────────────────────────────
     hr = results.get("http_redirect", {})

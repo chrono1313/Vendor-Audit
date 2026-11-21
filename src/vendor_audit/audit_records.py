@@ -409,9 +409,52 @@ _CHECK_TEXT = {
 _CHECK_TEXT["IPv6 IRR/RIS"] = _CHECK_TEXT["IPv4 IRR/RIS"]
 
 
-def explanation_for(label):
-    """(what, why, fix) for a check: its own text where it has one, else its
-    topic's."""
+# Outcomes whose cause differs from the check's usual subject, with text of
+# their own. A failed certificate is not a TLS-version problem, so it should
+# not be explained as one.
+_CERT_BLOCKED = ("Browsers show a full-page warning and most visitors cannot continue. Visitors who click "
+                 "through, and apps and scripts that skip the check, lose the protection a certificate gives "
+                 "against someone on the network impersonating the site.")
+_OUTCOME_TEXT = {
+    ("TLS connection", "cert_expired"): (
+        "The site's TLS certificate has passed its expiry date.",
+        _CERT_BLOCKED,
+        "Renew the certificate and install it together with its intermediate certificate. Automate renewal "
+        "(ACME, for example Let's Encrypt or the CDN's managed certificates) so it can't lapse again."),
+    ("TLS connection", "cert_not_yet_valid"): (
+        "The certificate's start date is still in the future.",
+        _CERT_BLOCKED + " Usually the server's clock is wrong, or a new certificate was installed before it became valid.",
+        "Check the server's clock (NTP), and install a certificate that is already valid."),
+    ("TLS connection", "cert_self_signed"): (
+        "The certificate was signed by the server itself, not by a certificate authority browsers trust.",
+        "Browsers block the site, and anyone on the network path can present a self-signed certificate of "
+        "their own — visitors who click through cannot tell it from the real one.",
+        "Install a certificate from a public certificate authority; Let's Encrypt issues them free."),
+    ("TLS connection", "cert_untrusted"): (
+        "The certificate does not chain to a certificate authority browsers trust. Usually the server leaves "
+        "out its intermediate certificate, or the certificate comes from a private CA.",
+        "Clients that cannot complete the chain refuse the connection, and browsers may block the site.",
+        "Configure the server to send the full chain (certificate plus intermediates). Replace a certificate "
+        "from a private CA with one from a public CA."),
+    ("TLS connection", "cert_error"): (
+        "The site's TLS certificate failed verification.",
+        _CERT_BLOCKED,
+        "Check the certificate and its chain (SSL Labs shows exactly what fails), then install a valid "
+        "certificate from a public CA with its intermediates."),
+    ("TLS connection", "no_tls"): (
+        "The server does not complete an HTTPS (TLS) connection on port 443.",
+        "Without HTTPS every page, password and cookie travels in plain text, readable and changeable by "
+        "anyone on the network path, and browsers mark the site Not Secure.",
+        "Enable HTTPS on port 443 with a certificate from a public CA, then redirect HTTP to HTTPS."),
+}
+
+
+def explanation_for(label, outcome=None):
+    """(what, why, fix) for a check: text for its outcome where that has its
+    own, else the check's own text, else its topic's."""
+    by_outcome = _OUTCOME_TEXT.get((_base_label(label), outcome))
+    if by_outcome:
+        return by_outcome
     own = _CHECK_TEXT.get(_base_label(label))
     if own:
         return own
@@ -633,10 +676,41 @@ def _ev_family(family):
     return build
 
 
+_CERT_REASON_WORDS = {
+    "expired": "the certificate has expired", "not_yet_valid": "the certificate is not valid yet",
+    "self_signed": "the certificate is self-signed", "untrusted": "the issuer is not trusted (missing intermediate or private CA)",
+}
+
+
+def _days_from_now(iso):
+    from datetime import datetime, timezone
+    try:
+        when = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (when - datetime.now(timezone.utc)).days
+
+
 def _ev_tls(G):
     t = G("tls")
-    return _kv(("Negotiated", t.get("version")), ("ALPN protocol", t.get("alpn_protocol")),
-               ("Connection error", t.get("error")))
+    out = _kv(("Negotiated", t.get("version")), ("ALPN protocol", t.get("alpn_protocol")),
+              ("Why verification failed", _CERT_REASON_WORDS.get(t.get("cert_error_reason"))),
+              ("Connection error", t.get("error")))
+    c = t.get("cert_failed_details") or {}
+    if c:
+        days = _days_from_now(c.get("not_after"))
+        if days is not None and days < 0:
+            ends = f'{c["not_after"][:10]} ({-days} day{"s" if days != -1 else ""} ago)'
+        elif days is not None:
+            ends = f'{c["not_after"][:10]} (in {days} day{"s" if days != 1 else ""})'
+        else:
+            ends = c.get("not_after")
+        out += [("note", "Read from the certificate the server sent; it was not trusted.")]
+        out += _kv(("Issued to", c.get("subject_cn")), ("Issued by", c.get("issuer_cn")),
+                   ("Valid from", (c.get("not_before") or "")[:10]), ("Valid until", ends),
+                   ("Key", f'{c["cert_key_type"]} {c["cert_key_bits"]}-bit' if c.get("cert_key_bits")
+                    else c.get("cert_key_type")))
+    return out
 
 
 def _ev_cert(G):
@@ -1073,7 +1147,7 @@ def build_records(data):
             rid += "-2"
         seen.add(rid)
         topic = topic_for(label)
-        what, why, fix = explanation_for(label)
+        what, why, fix = explanation_for(label, r.get("outcome"))
         records.append({
             "id":       rid,
             "label":    label,
