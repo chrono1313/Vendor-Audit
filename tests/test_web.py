@@ -79,6 +79,17 @@ def test_routes_registered_once():
         check(any(p == path for p, _m in pairs), f"route {path} missing")
 
 
+def test_workers_guard_connections():
+    """Every audit worker installs the connect-time address guard."""
+    if _skip():
+        return
+    import inspect
+    check("initializer=netguard.install" in inspect.getsource(appmod.lifespan),
+          "the process pool should install netguard in each worker")
+    check("netguard.install()" in inspect.getsource(appmod._worker_audit),
+          "_worker_audit should install netguard before auditing")
+
+
 def test_cache_compressed():
     if _skip():
         return
@@ -133,25 +144,31 @@ def test_slow_dns_does_not_stall_other_requests():
     check(slow_status == 400, f"the slow request should end in a rejection, got {slow_status}")
 
 
+def _request(method, url):
+    """One request to the app in-process (httpx's ASGI transport)."""
+    async def go():
+        transport = httpx.ASGITransport(app=appmod.app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            return await c.request(method, url)
+    return asyncio.run(go())
+
+
 def _pages():
     """(name, html, csp) for each kind of page the site serves."""
-    import base64, hashlib  # noqa: F401
-    from fastapi.testclient import TestClient
     sys.path.insert(0, os.path.dirname(__file__))
     from test_findings import sample
-    client = TestClient(appmod.app)
     out = []
     for name, url in (("form", "/"), ("error", "/no-such-page"), ("bad input", "/audit/result?domain=not a domain")):
-        r = client.get(url)
+        r = _request("GET", url)
         out.append((name, r.text, r.headers.get("content-security-policy", "")))
-    d = sample(); d["_scan"] = {"deep": True, "version": "3.1.0"}
+    d = sample(); d["_scan"] = {"deep": True, "version": "3.2.0"}
     page = appmod.render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                              "results": d, "timestamp": "2026-11-19T04:55:32Z", "duration_ms": 1200})
     out.append(("result", page, f"{appmod._STYLE_SRC};"))
     loading = appmod.templates.get_template("loading.html").render(
         display_domain="example.com", result_url="/audit/result?domain=example.com", refresh_url="x",
-        version="3.1.0", request=None)
-    out.append(("loading", loading, client.get("/").headers.get("content-security-policy", "")))
+        version="3.2.0", request=None)
+    out.append(("loading", loading, _request("GET", "/").headers.get("content-security-policy", "")))
     return out
 
 
@@ -178,21 +195,19 @@ def test_head():
     """HEAD answers like GET, without the body."""
     if _skip():
         return
-    from fastapi.testclient import TestClient
-    client = TestClient(appmod.app)
     for url in ("/", "/healthz", "/robots.txt", "/.well-known/security.txt", "/favicon.svg", "/static/result.js"):
-        g, h = client.get(url), client.head(url)
+        g, h = _request("GET", url), _request("HEAD", url)
         check(h.status_code == g.status_code == 200, f"HEAD {url}: {h.status_code} (GET {g.status_code})")
         check(h.content == b"", f"HEAD {url} sent a body")
         for k in ("content-type", "content-security-policy", "content-length"):
             check(h.headers.get(k) == g.headers.get(k), f"HEAD {url}: {k} differs from GET")
-    check(client.head("/no-such-page").status_code == 404, "HEAD on a missing page should be 404")
-    check(client.post("/").status_code == 405, "POST should still be refused")
+    check(_request("HEAD", "/no-such-page").status_code == 404, "HEAD on a missing page should be 404")
+    check(_request("POST", "/").status_code == 405, "POST should still be refused")
 
 
 def run():
     for fn in (test_no_duplicate_definitions, test_routes_registered_once,
-               test_cache_compressed, test_slow_dns_does_not_stall_other_requests,
+               test_workers_guard_connections, test_cache_compressed, test_slow_dns_does_not_stall_other_requests,
                test_csp_styles, test_head):
         before = len(_failures)
         fn()

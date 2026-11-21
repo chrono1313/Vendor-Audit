@@ -881,6 +881,16 @@ def _render_footer_html(data, domain):
             out.append(f'    <div><dt>{_h(k)}</dt><dd>{_h(v)}</dd></div>')
         out.append('  </dl>')
         out.append('  <p class="block-note">Observed for awareness. These are not rated as checks.</p>')
+    # On phones the side nav is a single row of section links, so the
+    # Other tools links are shown here instead (CSS picks one or the other).
+    out.append('  <div class="phone-tools">')
+    out.append('    <h3 class="phone-tools-title">Other tools</h3>')
+    out.append('    <div class="phone-tools-links">')
+    for name, url in _other_tools(data):
+        out.append(f'      <a href="{_h(url)}" target="_blank" rel="noopener noreferrer">{_h(name)} ↗'
+                   '<span class="sr-only"> (opens in a new tab)</span></a>')
+    out.append('    </div>')
+    out.append('  </div>')
     out.append('  <!--site-->')
     out.append('  <div class="footer-actions">')
     out.append(f'    <a class="download-link" href="{txt_href}" download>Download as .txt</a>')
@@ -1238,6 +1248,11 @@ h1, h2, h3 { text-wrap: balance; }
   font: 0.68rem var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
 }
 .nav-group:first-child { padding-top: 0; }
+/* Other tools leave the page, so they sit apart from the section links. */
+.nav-group.nav-ext {
+  margin: 2.4rem 0.7rem 0; padding: 1.1rem 0 0.3rem;
+  border-top: 1px solid var(--border-soft);
+}
 .nav-link {
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
   min-height: 36px; padding: 0 0.7rem; border-radius: 7px;
@@ -1498,6 +1513,13 @@ a.icon-btn:hover { background: var(--surface-hover); color: var(--fg); }
 .facts { max-width: 46rem; }
 .facts dd { color: var(--fg); }
 .footer-actions { margin: 1.1rem 0 0.6rem; display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; }
+.phone-tools { display: none; margin: 1.4rem 0 0.4rem; padding-top: 1rem; border-top: 1px solid var(--border-soft); }
+.phone-tools-title {
+  margin: 0 0 0.6rem;
+  font: 0.68rem var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+}
+.phone-tools-links { display: flex; flex-wrap: wrap; gap: 0.2rem 1.2rem; }
+.phone-tools-links a { display: inline-flex; align-items: center; min-height: 44px; text-decoration: none; }
 .footer-actions a { text-decoration: none; }
 .footer-info { display: flex; flex-wrap: wrap; gap: 0.3rem 1.2rem; }
 .footer-info a { color: var(--muted); }
@@ -1514,6 +1536,7 @@ a.icon-btn:hover { background: var(--surface-hover); color: var(--fg); }
   .nav-group { display: none; }
   .nav-link { flex: 0 0 auto; min-height: 44px; gap: 0.4rem; }
   .nav-link.nav-ext { display: none; }
+  .phone-tools { display: block; }
   .report { max-width: none; padding: 1.2rem 1rem 3rem; }
   .top-actions { margin-left: 0; width: 100%; flex-wrap: wrap; }
   .inline-audit-form { flex: 1 1 260px; min-width: 0; }
@@ -1542,7 +1565,7 @@ a.icon-btn:hover { background: var(--surface-hover); color: var(--fg); }
     --fg: #1a1a1a; --muted: #4a4a47; --border: #999; --border-soft: #c0c0bc; --accent: #1d4ed8;
   }
   body { background: white; }
-  .side-nav, .top-actions, .filters, .footer-actions, .drawer-backdrop, .icon-btn, .drawer-pos, .more { display: none !important; }
+  .side-nav, .top-actions, .filters, .footer-actions, .phone-tools, .drawer-backdrop, .icon-btn, .drawer-pos, .more { display: none !important; }
   .shell { display: block; }
   .report { max-width: none; padding: 0; }
   .checks-table tr[hidden] { display: table-row !important; }

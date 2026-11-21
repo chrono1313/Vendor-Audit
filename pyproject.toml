@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vendor-audit"
-version = "3.1.0"
+version = "3.2.0"
 description = "A lightweight, fast, passive best-practice audit for a domain or list of domains."
 readme = "README.md"
 license = "GPL-3.0-or-later"

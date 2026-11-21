@@ -97,7 +97,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 log = logging.getLogger(__name__)
 
@@ -521,11 +521,13 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
             ))
         if mx_entries:
             post_pool_jobs.append(("mta_sts_policy", lambda: check_mta_sts_policy(domain)))
-            if redirect["redirected"]:
-                post_pool_jobs.append((
-                    "redirect_target_mta_sts_policy",
-                    lambda: check_mta_sts_policy(audit_domain),
-                ))
+        # The redirect target's policy matters when the target receives mail,
+        # whether or not the original domain does.
+        if redirect["redirected"] and rt_mx_entries:
+            post_pool_jobs.append((
+                "redirect_target_mta_sts_policy",
+                lambda: check_mta_sts_policy(audit_domain),
+            ))
 
         # --deep-only jobs
         if deep:

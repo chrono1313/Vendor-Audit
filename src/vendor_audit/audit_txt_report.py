@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -2493,8 +2493,11 @@ def _render_server_disclosure_section(data):
     if eol_techs:
         parts.append("")
         parts.append("")
+        # "End-of-life" only when something is; an undetermined version
+        # alone (ASP.NET 2.0.50727) gets a neutral heading.
+        any_eol = any(t.get("eol_status") == "eol" for t in eol_techs)
         parts.extend(_subheading_with_explanation(
-            "End-of-life server software", "eol_tech"))
+            "End-of-life server software" if any_eol else "Server software support", "eol_tech"))
         for t in eol_techs:
             disp = t.get("name") or _TECH_DISPLAY_NAMES.get(t.get("tech", ""), (t.get("tech") or "?").upper())
             ver  = t.get("version", "?")

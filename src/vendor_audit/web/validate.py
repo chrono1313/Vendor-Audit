@@ -16,19 +16,12 @@ work is started. The guarantees the validator provides:
 
 The validator does NOT:
 
-  - Protect against post-validation DNS rebinding. Between the time we resolve
-    the domain here and the time the audit code resolves it again, the answer
-    can change. A determined attacker controlling a domain's authoritative
-    nameservers can serve a public IP to our resolver and an RFC1918 IP to
-    the audit's resolver. Mitigations for that require pinning the resolved
-    IP and passing it down through the audit (or running the whole stack
-    through a TTL-respecting cache that the audit code shares). Out of scope
-    for v1; the DMZ firewall is the backstop.
-
-  - Protect against redirects to internal addresses. The audit follows one
-    HTTP redirect. If a hostile public domain redirects to
-    http://192.168.1.1/, we'd send a GET there. Same mitigation applies as
-    for rebinding (pin and re-check on each hop). Out of scope for v1.
+  - Protect against post-validation DNS rebinding or redirects to internal
+    addresses by itself. Between this lookup and the audit's own, the answer
+    can change, and a public site can redirect to http://192.168.1.1/. The
+    web service's audit workers close both by checking every connection's
+    addresses at connect time (vendor_audit.netguard.install), on each
+    redirect hop too. The DMZ firewall remains the backstop.
 
   - Validate that the domain is "safe to scan" in any policy sense. We block
     obviously-internal targets; we do not block "things you shouldn't
@@ -46,9 +39,9 @@ import ipaddress
 import re
 import socket
 from dataclasses import dataclass
-from typing import Iterable
 
 from .. import audit  # for normalize_domain — the canonical normalizer
+from ..netguard import is_public_address
 
 # ── Configuration constants ──────────────────────────────────────────────────
 
@@ -72,43 +65,8 @@ _RAW_INPUT_PATTERN = re.compile(
     r"^[\x20-\x7E\u00A0-\uFFFF]+$"  # printable ASCII + a chunk of BMP
 )
 
-# IP networks we consider non-public. These are checked against EVERY address
-# the domain resolves to (both A and AAAA). If any returned address falls in
-# any of these networks, the domain is rejected.
-#
-# The list is intentionally broad. False positives (rejecting a domain that
-# legitimately resolves to one of these ranges) are acceptable here — the
-# alternative is letting an attacker target our internal network through the
-# audit's HTTP fetcher.
-_NON_PUBLIC_V4_NETS = [
-    ipaddress.ip_network("0.0.0.0/8"),         # "this network"
-    ipaddress.ip_network("10.0.0.0/8"),        # RFC 1918
-    ipaddress.ip_network("100.64.0.0/10"),     # CGNAT / RFC 6598
-    ipaddress.ip_network("127.0.0.0/8"),       # loopback
-    ipaddress.ip_network("169.254.0.0/16"),    # link-local + AWS metadata
-    ipaddress.ip_network("172.16.0.0/12"),     # RFC 1918
-    ipaddress.ip_network("192.0.0.0/24"),      # IETF protocol assignments
-    ipaddress.ip_network("192.0.2.0/24"),      # TEST-NET-1
-    ipaddress.ip_network("192.168.0.0/16"),    # RFC 1918
-    ipaddress.ip_network("198.18.0.0/15"),     # benchmarking
-    ipaddress.ip_network("198.51.100.0/24"),   # TEST-NET-2
-    ipaddress.ip_network("203.0.113.0/24"),    # TEST-NET-3
-    ipaddress.ip_network("224.0.0.0/4"),       # multicast
-    ipaddress.ip_network("240.0.0.0/4"),       # reserved
-    ipaddress.ip_network("255.255.255.255/32"),# broadcast
-]
-
-_NON_PUBLIC_V6_NETS = [
-    ipaddress.ip_network("::/128"),            # unspecified
-    ipaddress.ip_network("::1/128"),           # loopback
-    ipaddress.ip_network("::ffff:0:0/96"),     # IPv4-mapped (rejected via v4 check too)
-    ipaddress.ip_network("64:ff9b::/96"),      # NAT64 (semantics depend on operator)
-    ipaddress.ip_network("100::/64"),          # discard prefix
-    ipaddress.ip_network("2001:db8::/32"),     # documentation
-    ipaddress.ip_network("fc00::/7"),          # unique local
-    ipaddress.ip_network("fe80::/10"),         # link-local
-    ipaddress.ip_network("ff00::/8"),          # multicast
-]
+# The address rules live in vendor_audit.netguard, shared with the
+# connect-time guard the web service's audit workers install.
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -365,36 +323,4 @@ def _has_mx(domain: str) -> bool:
         return False
 
 
-def _is_public_address(addr: str) -> bool:
-    """True if `addr` is a publicly-routable IP, false otherwise.
-
-    `addr` must be a valid IP string; we trust _resolve_all to have given
-    us valid input. If parsing fails (shouldn't happen) we treat it as
-    non-public — fail-closed.
-    """
-    try:
-        ip = ipaddress.ip_address(addr)
-    except ValueError:
-        return False
-
-    # Python's stdlib has good built-in classification flags. Use them as
-    # a first pass; they cover the major categories.
-    if ip.is_loopback or ip.is_link_local or ip.is_multicast \
-            or ip.is_unspecified or ip.is_reserved:
-        return False
-    if isinstance(ip, ipaddress.IPv4Address):
-        if ip.is_private:
-            return False
-        return _not_in_any(ip, _NON_PUBLIC_V4_NETS)
-    else:  # IPv6Address
-        if ip.is_private or ip.is_site_local:
-            return False
-        return _not_in_any(ip, _NON_PUBLIC_V6_NETS)
-
-
-def _not_in_any(ip, nets: Iterable[ipaddress._BaseNetwork]) -> bool:
-    """True if `ip` is not contained in any of the given networks."""
-    for net in nets:
-        if ip in net:
-            return False
-    return True
+_is_public_address = is_public_address

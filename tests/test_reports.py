@@ -143,6 +143,34 @@ def test_redirect_target_lines():
           "redirect-target DMARC p=none line should read HIGH")
 
 
+def test_redirect_target_mta_sts():
+    """The redirect target's MTA-STS is rated, with its own status line."""
+    d = _redirected()
+    d["redirect_target_mta_sts"] = {"present": True, "id": "1"}
+    d["redirect_target_mta_sts_policy"] = {"fetched": False, "failure": "http_error", "error": "HTTP 404"}
+    data = _data(d, audit="app.example.net")
+    labels = {r["label"]: r["severity"] for r in data.finding_rows}
+    want = ac.RUBRIC["findings"]["MTA-STS"]["policy_broken"][0]
+    check(labels.get("redirect target: MTA-STS") == want,
+          f"redirect-target MTA-STS should be {want}, got {labels.get('redirect target: MTA-STS')}")
+    detail = atr.strip_tags(atr.render_detail_sections(data))
+    target = detail[detail.index("app.example.net"):]
+    check(re.search(r"^\s+MEDIUM\s+MTA-STS record published but the policy can't be fetched", target, re.M),
+          "redirect-target MTA-STS line should read MEDIUM")
+
+
+def test_eol_heading():
+    d = sample()
+    d["tech_eol"] = ac.check_tech_eol({"server": "Microsoft-IIS/10.0", "x_aspnet_version": "2.0.50727"})
+    txt = atr.strip_tags(atr.render_detail_sections(_data(d)))
+    heading = re.compile(r"^\s+End-of-life server software\s*$", re.M)
+    check("Server software support" in txt and not heading.search(txt),
+          "an undetermined version alone should get the neutral heading")
+    d["tech_eol"] = ac.check_tech_eol({"server": "nginx", "x_powered_by": "PHP/7.4.33"})
+    txt = atr.strip_tags(atr.render_detail_sections(_data(d)))
+    check(heading.search(txt), "an end-of-life version keeps the heading")
+
+
 def test_terminal_shows_txt_lines():
     d = sample()
     data = _data(copy.deepcopy(d))
@@ -160,7 +188,8 @@ def test_terminal_shows_txt_lines():
 
 def run():
     for fn in (test_no_tags_leak, test_check_labels_exist, test_words_follow_findings,
-               test_redirect_target_lines, test_terminal_shows_txt_lines):
+               test_redirect_target_lines, test_redirect_target_mta_sts, test_eol_heading,
+               test_terminal_shows_txt_lines):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

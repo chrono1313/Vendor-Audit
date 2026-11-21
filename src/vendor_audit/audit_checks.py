@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 import os
 import re
@@ -1010,7 +1010,7 @@ _MTA_STS_BROKEN = {"no_host", "http_error", "bad_cert"}
 
 
 def check_mta_sts_policy(domain):
-    """Fetch the MTA-STS policy file (deep-mode only).
+    """Fetch the MTA-STS policy file (every scan, when the domain has MX).
 
     Returns {"fetched": True, "mode", "max_age", "mx", "problems"} when the
     file was read, else {"fetched": False, "error", "failure"}.
@@ -5345,6 +5345,27 @@ def _finding_entry(label, outcome):
     return entry[0], entry[1]
 
 
+def _score_mta_sts(record, policy, pts, prefix=""):
+    """MTA-STS outcome for one domain from its TXT record and policy fetch."""
+    if record.get("error"):
+        return
+    if not record.get("present"):
+        pts.append((f"{prefix}MTA-STS", "missing"))
+        return
+    mode = policy.get("mode") if policy.get("fetched") else None
+    if policy.get("problems") or policy.get("failure") in _MTA_STS_BROKEN:
+        # The policy file is missing or unusable, so sending servers ignore
+        # the record. Same weight as having no MTA-STS at all.
+        outcome = "policy_broken"
+    elif mode in ("enforce", "testing", "none"):
+        outcome = mode
+    else:
+        # Record published, policy not read (not fetched, or not reachable
+        # from this audit). The mode is unknown; report it as published.
+        outcome = "published"
+    pts.append((f"{prefix}MTA-STS", outcome))
+
+
 def _score_email(spf, dmarc, mx, pts, prefix=""):
     """Score SPF, DMARC, and MX for one domain, appending to `pts` list.
     `prefix` is prepended to label names to distinguish source vs redirect target."""
@@ -5826,30 +5847,14 @@ def _collect_outcomes(results):
     # ── MTA-STS / TLS-RPT / DANE — only score when MX exists ─────────────────
     has_mx = bool(mx.get("entries")) and not mx.get("null_mx")
     if has_mx:
-        mta_sts        = results.get("mta_sts", {})
-        mta_sts_policy = results.get("mta_sts_policy", {})
-        if not mta_sts.get("error"):
-            if mta_sts.get("present"):
-                # In default mode (no policy fetch) we can't tell mode; treat
-                # presence-only as "testing" since that's the conservative,
-                # user-not-yet-enforcing read. If we did fetch the policy
-                # (deep mode), use the actual mode.
-                mode = (mta_sts_policy.get("mode") if mta_sts_policy.get("fetched") else None)
-                if mta_sts_policy.get("problems") or mta_sts_policy.get("failure") in _MTA_STS_BROKEN:
-                    # Deep check: the policy file is missing or unusable,
-                    # so sending servers ignore the record. Same weight as
-                    # having no MTA-STS at all.
-                    _p("MTA-STS", "policy_broken")
-                elif mode in ("enforce", "testing", "none"):
-                    _p("MTA-STS", mode)
-                else:
-                    # Record exists but the policy file was not fetched
-                    # (default mode), so the mode is unknown. Report it as
-                    # published — not as "testing", which it may not be.
-                    _p("MTA-STS", "published")
-            else:
-                _p("MTA-STS", "missing")
-
+        _score_mta_sts(results.get("mta_sts", {}), results.get("mta_sts_policy", {}), pts)
+    if redirected:
+        rt_mx = results.get("redirect_target_mx", {}) or {}
+        if rt_mx.get("entries") and not rt_mx.get("null_mx"):
+            _score_mta_sts(results.get("redirect_target_mta_sts", {}) or {},
+                           results.get("redirect_target_mta_sts_policy", {}) or {},
+                           pts, prefix=_REDIRECT_PREFIX)
+    if has_mx:
         tls_rpt = results.get("tls_rpt", {})
         if not tls_rpt.get("error"):
             _p("TLS-RPT", "present" if tls_rpt.get("present") else "missing")

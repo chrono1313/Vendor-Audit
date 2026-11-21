@@ -59,7 +59,7 @@ from slowapi.util import get_remote_address
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .. import audit, audit_txt_report
+from .. import audit, audit_txt_report, netguard
 from . import render_html
 from .validate import ValidationError, validate_domain_input
 
@@ -374,7 +374,10 @@ async def lifespan(app: FastAPI):
     # per worker before a fresh process replaces it. Python 3.11+
     # supports this kwarg; on older runtimes the worker just lives
     # longer (still correct, just bigger memory ceiling).
-    pool = ProcessPoolExecutor(max_workers=WORKERS, max_tasks_per_child=50)
+    # Each worker guards its own connections (netguard): no audit can reach
+    # a non-public address, whatever DNS answers after input validation.
+    pool = ProcessPoolExecutor(max_workers=WORKERS, max_tasks_per_child=50,
+                               initializer=netguard.install)
     app.state.pool = pool
     try:
         yield
@@ -394,6 +397,7 @@ def _worker_audit(domain: str, *, deep: bool = False) -> dict:
     catches everything internally so this should never happen, but the
     pool will recover if it does.
     """
+    netguard.install()          # already done by the pool initializer; cheap and idempotent
     return audit.safe_run_audit(domain, deep=deep)
 
 
