@@ -677,6 +677,13 @@ def _render_categories_html(data):
            '  <div class="block-head"><h2>Categories</h2></div>',
            '  <div class="cat-cards">']
     for r in data.category_rows:
+        if r.get("not_checked"):
+            out.append(f'    <div class="cat-card">')
+            out.append(f'      <span class="cat-head"><span class="cat-name">{_h(r["category"])}</span>'
+                       f'<span class="cat-total">not checked</span></span>')
+            out.append('      <span class="cat-desc">Site unreachable from this audit server (no IPv6)</span>')
+            out.append('    </div>')
+            continue
         desc = audit_txt_report.severity_summary(r["counts"], ", ")
         out.append(f'    <a class="cat-card" href="#checks-{_h(r["category"].lower())}">')
         out.append(f'      <span class="cat-head"><span class="cat-name">{_h(r["category"])}</span>'

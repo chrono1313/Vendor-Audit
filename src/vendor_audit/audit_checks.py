@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.4.3"
+__version__ = "3.4.4"
 
 import os
 import re
@@ -2108,13 +2108,14 @@ def _run_bounded(jobs, budget, workers):
 # they sit in, and RPKI origin validation, as internet.nl does.
 #
 # Bounded on purpose: the first 4 nameservers and 3 MX hosts, one IPv4 and
-# one IPv6 address each, at most 8 RIPEstat lookups (prefix + RPKI), run 3
+# one IPv6 address each, at most 8 RIPEstat lookups (prefix + RPKI) — one
+# per /24 or /48, since addresses in the same block share a route — run 6
 # at a time. It runs alongside check_ip_routing, which takes about as long.
-# Hard budget: 1.5 s for the address lookups and 4 s for RIPEstat; lookups
+# Hard budget: 1.5 s for the address lookups and 5 s for RIPEstat; lookups
 # still running then are reported as failed rather than holding the audit.
 
 _INFRA_ADDR_BUDGET = 1.5
-_INFRA_RIPE_BUDGET = 4.0
+_INFRA_RIPE_BUDGET = 5.0
 _INFRA_MAX_NS = 4
 _INFRA_MAX_MX = 3
 _INFRA_MAX_LOOKUPS = 8
@@ -2205,19 +2206,42 @@ def check_infra_routing(domain):
             if ip not in seen:
                 seen.add(ip)
                 targets.append((kind, host, ip))
+
+    # 3.4.4: one RIPEstat lookup per /24 (IPv4) or /48 (IPv6). Nothing more
+    # specific is routed on the internet, so every address in one of those
+    # blocks sits in the same announced prefix with the same RPKI result.
+    # Nameservers and mail servers usually share a few such blocks.
+    def _block(ip):
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return ip
+        return str(ipaddress.ip_network(f"{ip}/{24 if a.version == 4 else 48}", strict=False))
+    lookup_for, rep = {}, {}
+    for t in targets:
+        b = _block(t[2])
+        lookup_for[t] = b
+        rep.setdefault(b, t[2])
     # Alternate NS and MX so both get lookups when the cap is reached.
     ns_t = [t for t in targets if t[0] == "ns"]
     mx_t = [t for t in targets if t[0] == "mx"]
     interleaved = [t for pair in zip(ns_t, mx_t) for t in pair]
     interleaved += ns_t[len(mx_t):] + mx_t[len(ns_t):]
-    picked = interleaved[:_INFRA_MAX_LOOKUPS]
-    if picked:
-        # Three at a time: these run alongside check_ip_routing's own
-        # RIPEstat calls, and the website's RPKI comes first.
-        got = _run_bounded({t: (_ripe_prefix_rpki, (t[2],)) for t in picked}, _INFRA_RIPE_BUDGET, 3)
-        for kind, host, ip in picked:
-            res = got.get((kind, host, ip))
-            if not isinstance(res, dict):
+    blocks = []
+    for t in interleaved:
+        if lookup_for[t] not in blocks:
+            blocks.append(lookup_for[t])
+    blocks = blocks[:_INFRA_MAX_LOOKUPS]
+    if blocks:
+        got = _run_bounded({b: (_ripe_prefix_rpki, (rep[b],)) for b in blocks}, _INFRA_RIPE_BUDGET, 6)
+        for kind, host, ip in interleaved:
+            b = lookup_for[(kind, host, ip)]
+            if b not in blocks:
+                continue                # over the cap
+            res = got.get(b)
+            if isinstance(res, dict):
+                res = {**res, "address": ip}
+            else:
                 res = {"address": ip, "prefix": None, "asn": None, "rpki_status": None,
                        "error": "RIPEstat did not answer in time"}
             out[kind]["lookups"].append({"host": host, **res})
@@ -5912,6 +5936,10 @@ def check_page_security_signals(html, page_url, audit_domain):
 
 # ── STARTTLS probe of MX hosts (--deep only — heaviest single check) ─────────
 
+_STARTTLS_STEP_TIMEOUT = 5
+_STARTTLS_BUDGET = 6.0
+
+
 def check_starttls_mx(mx_entries):
     """For each MX host, open TCP/25, EHLO, STARTTLS, and inspect the cert.
 
@@ -5925,7 +5953,11 @@ def check_starttls_mx(mx_entries):
     if not mx_entries:
         return {"mx_count": 0, "results": {}}
 
-    timeout = max(_http_timeout, 10)  # SMTP banners can be slow
+    # 3.4.4: each host gets 5s per step and the whole probe 6s, under the
+    # 7s follow-up deadline. Before, one mail server slow to greet (many
+    # delay their banner for unknown clients) ran this past the deadline
+    # and every host's result was lost; now that host alone is unprobed.
+    timeout = _STARTTLS_STEP_TIMEOUT
     results = {}
 
     def _probe(host):
@@ -5996,9 +6028,17 @@ def check_starttls_mx(mx_entries):
         return host, out
 
     hosts = [e["host"] for e in mx_entries]
-    with ThreadPoolExecutor(max_workers=min(4, len(hosts))) as ex:
-        for host, out in ex.map(_probe, hosts):
-            results[host] = out
+    got = _run_bounded({h: (_probe, (h,)) for h in hosts}, _STARTTLS_BUDGET, 4)
+    for host in hosts:
+        res = got.get(host)
+        if isinstance(res, tuple):
+            _h, out = res
+        else:
+            out = {"tls_version": None, "cert_subject": None, "cert_issuer": None,
+                   "cert_expires": None, "cert_lifetime_days": None,
+                   "error": f"no answer within {_STARTTLS_BUDGET:.0f}s (mail servers often delay "
+                            "or limit connections from unknown hosts)"}
+        results[host] = out
 
     return {"mx_count": len(hosts), "results": results}
 

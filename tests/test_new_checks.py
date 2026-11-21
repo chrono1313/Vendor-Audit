@@ -296,13 +296,28 @@ def test_infra_routing():
     many = {("example.com", "NS"): [f"ns{i}.dns.net." for i in range(9)],
             ("example.com", "MX"): [f"{i} mx{i}.mail.net." for i in range(9)]}
     for i in range(9):
-        many[(f"ns{i}.dns.net", "A")] = [f"192.0.2.{i}"]
-        many[(f"ns{i}.dns.net", "AAAA")] = [f"2001:db8::{i}"]
-        many[(f"mx{i}.mail.net", "A")] = [f"198.51.100.{i}"]
+        many[(f"ns{i}.dns.net", "A")] = [f"10.{i}.0.1"]                 # a different /24 each
+        many[(f"ns{i}.dns.net", "AAAA")] = [f"2001:db8:{i}::1"]          # a different /48 each
+        many[(f"mx{i}.mail.net", "A")] = [f"10.{100 + i}.0.1"]
     with zone(many), mock.patch.object(ac, "_ripe_prefix_rpki", side_effect=ripe) as rp:
         r = ac.check_infra_routing("example.com")
     check(rp.call_count == ac._INFRA_MAX_LOOKUPS, f"lookups capped at {ac._INFRA_MAX_LOOKUPS}, made {rp.call_count}")
     check(r["mx"]["lookups"], "mail servers still get lookups when nameservers are many")
+
+    # 3.4.4: one lookup per /24 or /48 — loopsofzen.uk's eight addresses sit
+    # in four blocks. Each address still gets its own row.
+    loz = {("example.com", "NS"): ["primary-dns.uk.", "secondary-dns.uk."],
+           ("example.com", "MX"): ["20 secondary-mx.uk.", "30 tertiary-mx.co.uk."],
+           ("primary-dns.uk", "A"): ["81.187.30.41"], ("primary-dns.uk", "AAAA"): ["2001:8b0:0:30::51bb:1e29"],
+           ("secondary-dns.uk", "A"): ["81.187.81.32"], ("secondary-dns.uk", "AAAA"): ["2001:8b0:0:81::51bb:5120"],
+           ("secondary-mx.uk", "A"): ["90.155.62.28"], ("secondary-mx.uk", "AAAA"): ["2001:8b0:0:62::29"],
+           ("tertiary-mx.co.uk", "A"): ["81.187.30.29"], ("tertiary-mx.co.uk", "AAAA"): ["2001:8b0:0:30::29"]}
+    with zone(loz), mock.patch.object(ac, "_ripe_prefix_rpki", side_effect=ripe) as rp:
+        r = ac.check_infra_routing("example.com")
+    check(rp.call_count == 4, f"four blocks → four lookups, made {rp.call_count}")
+    rows = r["ns"]["lookups"] + r["mx"]["lookups"]
+    check(len(rows) == 8 and len({x["address"] for x in rows}) == 8, f"each address keeps its own row: {rows}")
+    check(all(x["rpki_status"] for x in rows), "every row has the block's result")
 
 
 def test_https_rr():
@@ -672,6 +687,35 @@ def _v6_only_site(auditor_ipv6):
     return d
 
 
+def test_slow_mail_server_bounded():
+    """3.4.4 (loopsofzen.uk): one mail server slow to greet no longer runs
+    the STARTTLS probe past its deadline; it alone is unprobed."""
+    import time
+
+    class SlowSMTP:
+        def __init__(self, host, port, timeout=None):
+            if host == "slow.example.net":
+                time.sleep(10)
+            raise OSError("connection refused")
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    with mock.patch.object(ac.smtplib, "SMTP", SlowSMTP), mock.patch.object(ac, "_STARTTLS_BUDGET", 1.0):
+        t = time.monotonic()
+        r = ac.check_starttls_mx([{"priority": 10, "host": "fast.example.net"},
+                                  {"priority": 20, "host": "slow.example.net"}])
+        took = time.monotonic() - t
+    check(took < 2.0, f"slow mail server held the probe {took:.1f}s")
+    check("no answer within" in (r["results"]["slow.example.net"]["error"] or ""), f"slow host reported: {r}")
+    check("refused" in (r["results"]["fast.example.net"]["error"] or ""), "the other host keeps its own result")
+
+    from vendor_audit import audit as audit_mod
+    reason = audit_mod._partial_reason(["starttls_mx"], 3, 7, follow_up=True)
+    check("follow-up checks" in reason and "mail server was slow" in reason and "packets dropped" not in reason,
+          f"banner wording for a slow mail server: {reason}")
+
+
 def test_ipv6_only_site_from_ipv4_only_auditor():
     from vendor_audit import audit_txt_report as t
     from vendor_audit.web import render_html
@@ -686,6 +730,9 @@ def test_ipv6_only_site_from_ipv4_only_auditor():
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-21T00:00:00Z", "duration_ms": 1})
     check("IPv6-only site:" in page, "the page explains why")
+    check(re.search(r"^  TLS\s+not checked \(site unreachable from this audit server\)$", txt, re.M),
+          "the summary row says not checked, not 'no issues'")
+    check("Site unreachable from this audit server (no IPv6)" in page, "the page's category card too")
 
     d = _v6_only_site(True)
     check(findings(d).get("TLS connection") == "critical", "an auditor with IPv6 still rates a real failure")
@@ -830,7 +877,7 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
          test_cert_key_parser, test_certificate_failures_named, test_legacy_tls_probes,
          test_csp_subchecks, test_security_txt_subchecks, test_deprecated_headers_and_lang,
-         test_slow_upstreams_are_bounded, test_slow_ripestat_routing,
+         test_slow_upstreams_are_bounded, test_slow_ripestat_routing, test_slow_mail_server_bounded,
          test_ipv6_only_site_from_ipv4_only_auditor, test_unrouted_ipv6,
          test_every_new_check_end_to_end]
 

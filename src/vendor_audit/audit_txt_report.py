@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.4.3"
+__version__ = "3.4.4"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -1114,11 +1114,16 @@ class _ReportData:
 
     def _build_category_rows(self):
         """Per-category severity counts, in report order."""
+        from .audit_checks import auditor_cannot_reach
         order = ["Email", "DNS", "Routing", "TLS", "HTTP", "Website"]
+        # 3.4.4: when the site couldn't be reached at all (IPv6-only site,
+        # audit host without IPv6), say "not checked" rather than leaving a
+        # row that reads "no issues, 0 passed".
+        unreached = {"TLS", "HTTP", "Website"} if auditor_cannot_reach(self.results) else set()
         rows = []
         for cat in order:
             in_cat = [r for r in self.finding_rows if r["category"] == cat]
-            if not in_cat:
+            if not in_cat and cat not in unreached:
                 continue
             counts = {s: 0 for s in SEVERITY_ORDER}
             for r in in_cat:
@@ -1130,6 +1135,7 @@ class _ReportData:
                 "passed":   counts["pass"],
                 "total":    len(in_cat),
                 "worst":    next((s for s in ISSUE_SEVERITIES if counts[s]), "pass"),
+                "not_checked": cat in unreached,
             })
         self.category_rows = rows
 
@@ -1272,11 +1278,12 @@ def _render_score_panel(data):
     cat_rows = data.category_rows or []
     if cat_rows:
         out.append("")
-        summaries = [severity_summary(r["counts"]) for r in cat_rows]
+        summaries = ["not checked (site unreachable from this audit server)" if r.get("not_checked")
+                     else severity_summary(r["counts"]) for r in cat_rows]
         sum_w = max(len(x) for x in summaries)
         for r, summ in zip(cat_rows, summaries):
-            out.append(f"  {r['category'].ljust(10)}{summ.ljust(sum_w)}    "
-                       f"{r['passed']} passed")
+            tail = "" if r.get("not_checked") else f"    {r['passed']} passed"
+            out.append(f"  {r['category'].ljust(10)}{summ.ljust(sum_w)}{tail}".rstrip())
     return "\n".join(out)
 
 

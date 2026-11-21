@@ -102,7 +102,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "3.4.3"
+__version__ = "3.4.4"
 
 log = logging.getLogger(__name__)
 
@@ -136,18 +136,22 @@ _JOB_NAMES = {
     "page_signals": "page analysis", "versioned_libs": "library versions", "ssllabs": "SSL Labs",
 }
 _UPSTREAM_JOBS = {"ip_routing", "infra_routing", "ssllabs"}
+_MAIL_PROBE_JOBS = {"starttls_mx", "redirect_target_starttls_mx"}
 
 
-def _partial_reason(keys, total, deadline):
+def _partial_reason(keys, total, deadline, follow_up=False):
     """Banner text for checks cut off by a deadline: which ones, and the
-    likely cause (a slow outside source, or the host not answering)."""
+    likely cause (a slow outside source, a mail server, or the host)."""
     names = ", ".join(_JOB_NAMES.get(k, k.replace("_", " ")) for k in sorted(keys))
     if keys and set(keys) <= _UPSTREAM_JOBS:
         cause = ("An outside data source answered too slowly; the audited host was fine. "
                  "Running the audit again normally completes it.")
+    elif keys and set(keys) <= _MAIL_PROBE_JOBS:
+        cause = "A mail server was slow to answer; mail servers often delay or limit connections from unknown hosts."
     else:
         cause = "The host may be unreachable (packets dropped rather than refused)."
-    return (f"{len(keys)} of {total} checks did not complete within {deadline}s: {names}. "
+    which = "follow-up checks (run after the main checks)" if follow_up else "checks"
+    return (f"{len(keys)} of {total} {which} did not complete within {deadline}s: {names}. "
             f"{cause} Checks that did not finish are not rated.")
 
 def normalize_domain(raw: str) -> str:
@@ -638,7 +642,8 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
                         check_timings[key] = pp_deadline
                     if partial_envelope_reason is None:
                         partial_envelope_reason = _partial_reason(
-                            [key for _fut, key in unfinished_pp], len(post_pool_jobs), pp_deadline)
+                            [key for _fut, key in unfinished_pp], len(post_pool_jobs), pp_deadline,
+                            follow_up=True)
                     log.warning(
                         "post-pool deadline exceeded for %s: %d/%d unfinished: %s",
                         domain, len(unfinished_pp), len(post_pool_jobs),
