@@ -1017,6 +1017,24 @@ def test_dkim_rotation_pair():
     check("deprecated by RFC 8301" not in txt, "no claim that RFC 8301 deprecated 1024")
 
 
+def test_results_page_layout():
+    # 3.4.8: categories come straight after the overview, "Fix these first"
+    # is gone, and the table has Findings / All / Passed plus a filter tag
+    # instead of severity buttons, a category dropdown and a search box.
+    from vendor_audit.web import render_html
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": sample(), "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    check('id="fix-first"' not in page and "Fix these first" not in page, "no Fix these first section")
+    check(page.index('id="categories"') < page.index('id="checks"'), "categories above the checks table")
+    chips = re.findall(r'class="filter-chip" data-sev="(\w+)"', page)
+    check(chips == ["issues", "all", "pass"], f"buttons are Findings, All, Passed: {chips}")
+    check('id="filter-cat"' not in page and 'id="filter-q"' not in page, "no dropdown or search box")
+    check('id="filter-tag"' in page and 'data-cats="Email|' in page, "filter tag and category list present")
+    check('href="#checks-issues">Findings' in page, "side nav links to Findings")
+    js = render_html._RESULT_JS
+    check("filter-cat" not in js and "filter-q" not in js and "SEV_WORD[key]" in js, "script routes tiles to the tag")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -1025,7 +1043,7 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_slow_upstreams_are_bounded, test_slow_ripestat_routing, test_slow_mail_server_bounded,
          test_ipv6_only_site_from_ipv4_only_auditor, test_unrouted_ipv6,
          test_report_polish, test_spf_no_mail_guidance, test_bare_name_certificate_mismatch,
-         test_dkim_rotation_pair,
+         test_dkim_rotation_pair, test_results_page_layout,
          test_every_new_check_end_to_end]
 
 

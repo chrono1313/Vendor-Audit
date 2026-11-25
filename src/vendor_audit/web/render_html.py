@@ -28,14 +28,13 @@ SVG and plain elements sized with numbers computed here.
   top bar      brand, domain, audit-another-domain form, .txt download
   side nav     anchor links
   overview     headline, stat cards, pass-rate ring, findings by severity
-  fix first    the six most serious findings
   categories   one card per category
-  all checks   one table row per check, filterable
+  all checks   one table row per check: Findings / All / Passed
   drawers      one detail panel per check, opened from any row or link
 
 The page works without the script: every row is listed, and a check's
 detail panel opens through the :target selector. The script adds the
-filters, search, keyboard handling and previous / next.
+filters, keyboard handling and previous / next.
 
 SAVED COPY
 ----------
@@ -107,7 +106,6 @@ _SEV_MEANING = {
     "low":      "A refinement.",
 }
 _CATEGORY_ORDER = ["Email", "DNS", "Routing", "TLS", "HTTP", "Website"]
-_FIX_FIRST_N = 6
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
@@ -146,7 +144,6 @@ def render_result(envelope: dict) -> str:
     parts.extend(_render_banners_html(data))
     parts.append(_render_overview_html(data, records, domain, audit_domain,
                                        timestamp, duration_ms))
-    parts.append(_render_fix_first_html(records))
     parts.append(_render_categories_html(data))
     parts.append(_render_checks_table_html(data, records))
     parts.append(_render_reference_html(records))
@@ -322,7 +319,7 @@ def _render_side_nav_html(data, records):
            '  <div class="nav-group">Report</div>',
            '  <a class="nav-link" href="#overview">Overview</a>']
     if data.issue_count:
-        out.append(f'  <a class="nav-link" href="#fix-first">Fix first'
+        out.append(f'  <a class="nav-link" href="#checks-issues">Findings'
                    f'<span class="nav-count nav-count-issues">{data.issue_count}</span></a>')
     out.append(f'  <a class="nav-link" href="#checks">All checks'
                f'<span class="nav-count">{len(records)}</span></a>')
@@ -639,33 +636,8 @@ def _glance_cards(data, records):
     return cards
 
 
-# ── Fix these first ─────────────────────────────────────────────────────────
-
 def _meta_line(rec):
     return " · ".join(b for b in (rec["category"], rec["standard"]) if b)
-
-
-def _render_fix_first_html(records):
-    issues = [rec for rec in records if rec["severity"] in ISSUE_SEVERITIES]
-    if not issues:
-        return ""
-    out = ['<section class="block" id="fix-first" aria-label="Fix these first">',
-           '  <div class="block-head"><h2>Fix these first</h2>']
-    if len(issues) > _FIX_FIRST_N:
-        out.append(f'    <a href="#checks-issues">All {len(issues)} findings, ranked →</a>')
-    out.append('  </div>')
-    out.append('  <ol class="fix-list">')
-    for i, rec in enumerate(issues[:_FIX_FIRST_N], 1):
-        out.append(
-            f'    <li><a class="fix-row" href="#check-{rec["id"]}">'
-            f'<span class="fix-n">{i:02d}</span>'
-            f'<span class="fix-text">{_h(rec["title"])}'
-            f'<span class="fix-cat">{_h(_meta_line(rec))}</span></span>'
-            f'{_badge(rec["severity"])}</a></li>')
-    out.append('  </ol>')
-    out.append('  <p class="block-note">Ranked by severity, then by how much each practice matters.</p>')
-    out.append('</section>')
-    return "\n".join(out)
 
 
 # ── Categories ──────────────────────────────────────────────────────────────
@@ -713,22 +685,18 @@ def _render_checks_table_html(data, records):
                f'<span class="checks-count" id="checks-count" aria-live="polite">'
                f'{_plural(len(records), "check")}</span></div>')
 
-    out.append('  <div class="filters" id="filters">')
-    out.append('    <div class="filter-chips" role="group" aria-label="Filter by severity">')
-    chips = [("issues", "Findings", data.issue_count), ("all", "All", len(records))]
-    chips += [(s, _SEV_WORD[s], counts[s]) for s in SEVERITY_ORDER]
+    # 3.4.8 redesign: three buttons. The category cards, side-nav category
+    # links and the overview's severity tiles still filter the table; the
+    # filter they set shows as a tag with a clear button.
+    out.append(f'  <div class="filters" id="filters" data-cats="{_h("|".join(cats))}">')
+    out.append('    <div class="filter-chips" role="group" aria-label="Show checks">')
+    chips = [("issues", "Findings", data.issue_count), ("all", "All", len(records)),
+             ("pass", "Passed", counts["pass"])]
     for key, word, n in chips:
         out.append(f'      <button type="button" class="filter-chip" data-sev="{key}" '
                    f'aria-pressed="false">{word} <span>{n}</span></button>')
-    out.append('    </div>')
-    out.append('    <div class="filter-fields">')
-    out.append('      <label class="sr-only" for="filter-cat">Category</label>')
-    out.append('      <select id="filter-cat"><option value="">All categories</option>'
-               + "".join(f'<option value="{_h(c)}">{_h(c)}</option>' for c in cats)
-               + '</select>')
-    out.append('      <label class="sr-only" for="filter-q">Search checks</label>')
-    out.append('      <input type="search" id="filter-q" placeholder="Search checks" '
-               'autocomplete="off" spellcheck="false">')
+    out.append('      <span class="filter-tag" id="filter-tag" hidden><span id="filter-tag-text"></span>'
+               '<button type="button" id="filter-tag-clear" aria-label="Clear this filter">×</button></span>')
     out.append('    </div>')
     out.append('  </div>')
 
@@ -970,22 +938,31 @@ _RESULT_JS = """\
   root.className += ' js';
 
   var ISSUE = { critical: 1, high: 1, medium: 1, low: 1 };
+  var SEV_WORD = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Informational' };
   var rows = [].slice.call(doc.querySelectorAll('.checks-table tbody tr'));
   var chips = [].slice.call(doc.querySelectorAll('.filter-chip'));
-  var catSel = doc.getElementById('filter-cat');
-  var search = doc.getElementById('filter-q');
+  var filters = doc.getElementById('filters');
+  var cats = filters && filters.getAttribute('data-cats') ? filters.getAttribute('data-cats').split('|') : [];
+  var tag = doc.getElementById('filter-tag');
+  var tagText = doc.getElementById('filter-tag-text');
+  var tagClear = doc.getElementById('filter-tag-clear');
   var countEl = doc.getElementById('checks-count');
   var noMatch = doc.getElementById('no-match');
   var section = doc.getElementById('checks');
   var hasIssues = rows.some(function (tr) { return ISSUE[tr.getAttribute('data-sev')]; });
-  var state = { sev: hasIssues ? 'issues' : 'all', cat: '', q: '' };
+  // sev: the button pressed (issues / all / pass). only and cat come from
+  // the category cards, side-nav links and severity tiles, and show as a tag.
+  var state = { sev: hasIssues ? 'issues' : 'all', only: '', cat: '' };
 
   // -- Filters ---------------------------------------------------------
   function matches(tr) {
     var sev = tr.getAttribute('data-sev');
-    if (state.sev === 'issues' ? !ISSUE[sev] : (state.sev !== 'all' && sev !== state.sev)) { return false; }
+    if (state.only) {
+      if (sev !== state.only) { return false; }
+    } else if (state.sev === 'issues' ? !ISSUE[sev] : (state.sev !== 'all' && sev !== state.sev)) {
+      return false;
+    }
     if (state.cat && tr.getAttribute('data-cat') !== state.cat) { return false; }
-    if (state.q && tr.textContent.toLowerCase().indexOf(state.q) === -1) { return false; }
     return true;
   }
 
@@ -997,9 +974,16 @@ _RESULT_JS = """\
       if (ok) { shown++; }
     });
     chips.forEach(function (b) {
-      b.setAttribute('aria-pressed', b.getAttribute('data-sev') === state.sev ? 'true' : 'false');
+      b.setAttribute('aria-pressed', !state.only && b.getAttribute('data-sev') === state.sev ? 'true' : 'false');
     });
-    if (catSel) { catSel.value = state.cat; }
+    if (tag) {
+      var words = [];
+      if (state.cat) { words.push(state.cat); }
+      if (state.only) { words.push(SEV_WORD[state.only] || state.only); }
+      tag.hidden = !words.length;
+      if (tagText) { tagText.textContent = words.join(' \u00b7 '); }
+      if (tagClear) { tagClear.setAttribute('aria-label', 'Clear filter: ' + words.join(', ')); }
+    }
     if (countEl) {
       countEl.textContent = shown === rows.length
         ? rows.length + ' checks' : 'Showing ' + shown + ' of ' + rows.length;
@@ -1008,12 +992,11 @@ _RESULT_JS = """\
   }
 
   chips.forEach(function (b) {
-    b.addEventListener('click', function () { state.sev = b.getAttribute('data-sev'); apply(); });
+    b.addEventListener('click', function () { state.sev = b.getAttribute('data-sev'); state.only = ''; apply(); });
   });
-  if (catSel) { catSel.addEventListener('change', function () { state.cat = catSel.value; apply(); }); }
-  if (search) {
-    search.addEventListener('input', function () {
-      state.q = search.value.replace(/^\\s+|\\s+$/g, '').toLowerCase();
+  if (tagClear) {
+    tagClear.addEventListener('click', function () {
+      state.only = ''; state.cat = ''; state.sev = hasIssues ? 'issues' : 'all';
       apply();
     });
   }
@@ -1102,15 +1085,15 @@ _RESULT_JS = """\
       var key = hash.slice(7), found = false;
       chips.forEach(function (b) { if (b.getAttribute('data-sev') === key) { found = true; } });
       if (found) {
-        state.sev = key; state.cat = '';
-      } else if (catSel) {
-        [].slice.call(catSel.options).forEach(function (o) {
-          if (o.value && o.value.toLowerCase() === key) { state.cat = o.value; state.sev = 'all'; found = true; }
+        state.sev = key; state.only = ''; state.cat = '';
+      } else if (SEV_WORD[key]) {
+        state.only = key; state.cat = ''; state.sev = 'all'; found = true;
+      } else {
+        cats.forEach(function (c) {
+          if (c.toLowerCase() === key) { state.cat = c; state.only = ''; state.sev = 'all'; found = true; }
         });
       }
       if (found) {
-        state.q = '';
-        if (search) { search.value = ''; }
         apply();
         if (section) { section.scrollIntoView(); }
       }
@@ -1351,7 +1334,7 @@ h1, h2, h3 { text-wrap: balance; }
   display: flex; flex-direction: column; gap: 0.3rem; min-width: 0;
   padding: 0.95rem 1rem; color: var(--fg); text-decoration: none;
 }
-.stat-card:hover, .cat-card:hover, .fix-row:hover, .tile:hover, .sev-row:hover { background: var(--surface-hover); color: var(--fg); }
+.stat-card:hover, .cat-card:hover, .tile:hover, .sev-row:hover { background: var(--surface-hover); color: var(--fg); }
 .stat-title { color: var(--muted); font-size: 0.86rem; }
 .stat-value { font-size: 2rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stat-value-text { font-size: 1.25rem; line-height: 1.3; padding: 0.25rem 0; }
@@ -1438,13 +1421,6 @@ rect.seg-pass     { fill: var(--pass); }
 .block-head a { font-size: 0.9rem; text-decoration: none; white-space: nowrap; }
 .block-note { margin: 0.6rem 0 0; color: var(--muted); font-size: 0.84rem; }
 
-.fix-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface); overflow: hidden; }
-.fix-list li + li { border-top: 1px solid var(--border-soft); }
-.fix-row { display: flex; align-items: center; gap: 1rem; padding: 0.8rem 1.1rem; color: var(--fg); text-decoration: none; }
-.fix-n { font: 0.82rem var(--mono); color: var(--muted); }
-.fix-text { flex: 1 1 auto; min-width: 0; font-weight: 600; }
-.fix-cat { display: block; margin-top: 0.1rem; font: 400 0.78rem var(--mono); color: var(--muted); }
-
 .cat-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
 .cat-card { display: flex; flex-direction: column; gap: 0.65rem; padding: 1rem 1.1rem; color: var(--fg); text-decoration: none; min-width: 0; }
 .cat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; }
@@ -1468,13 +1444,16 @@ html.js .filters { display: flex; flex-wrap: wrap; align-items: center; justify-
 .filter-chip:hover { background: var(--surface-hover); }
 .filter-chip[aria-pressed="true"] { background: var(--fg); border-color: var(--fg); color: rgb(28, 28, 27); font-weight: 600; }
 .filter-chip[aria-pressed="true"] span { color: rgb(70, 70, 66); }
-.filter-fields { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.filter-fields select, .filter-fields input {
-  font: inherit; font-size: 0.9rem; padding: 0.38rem 0.6rem; min-height: 34px;
-  border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg);
+.filter-tag {
+  display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.86rem; min-height: 34px;
+  padding: 0 0.2rem 0 0.75rem; border: 1px solid var(--fg); border-radius: 999px; font-weight: 600;
 }
-.filter-fields input { width: 14rem; max-width: 100%; }
-.filter-fields input::placeholder { color: var(--muted); opacity: 0.75; }
+.filter-tag[hidden] { display: none; }
+.filter-tag button {
+  font: inherit; font-size: 1.05rem; line-height: 1; width: 28px; height: 28px; border: 0; border-radius: 999px;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.filter-tag button:hover { background: var(--surface-hover); color: var(--fg); }
 
 .table-wrap { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface); overflow: hidden; }
 .checks-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
@@ -1596,8 +1575,6 @@ a.icon-btn:hover { background: var(--surface-hover); color: var(--fg); }
   .col-cat, .col-std { display: none; }
   .checks-table td:first-child, .checks-table th:first-child { width: 6.4rem; }
   .checks-table td, .checks-table th { padding-left: 0.7rem; padding-right: 0.7rem; }
-  .fix-row { flex-wrap: wrap; gap: 0.4rem 0.8rem; }
-  .filter-fields, .filter-fields input, .filter-fields select { width: 100%; }
   .drawer-panel { padding: 0.9rem 1rem 2rem; }
   .drawer-bar { flex-wrap: wrap; }
   .drawer-meta { order: 9; flex: 0 0 100%; }
