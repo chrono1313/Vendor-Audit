@@ -1078,6 +1078,9 @@ def test_email_card_names_every_spf_break():
     d = sample()
     d["spf"] = {**d["spf"], "status": "hardfail", "record": "v=spf1 include:a include:b -all", "lookup_count": 12,
                 "record_count": 1, "void_lookups": 1, "uses_ptr": False, "missing_includes": ["www.mygalenmedical.com"]}
+    # DMARC enforcing, so the two SPF breaks are the card's worst findings
+    # (3.5.1: the card opens the most serious one).
+    d["dmarc"] = {"present": True, "policy": "reject", "pct": 100, "rua": ["mailto:d@example.com"], "record_count": 1}
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
     card = page[page.index("Email authentication") - 200:][:900]
@@ -1090,6 +1093,41 @@ def test_email_card_names_every_spf_break():
           f"card opens the first SPF break in the list: {href and href.group(1)} vs {breaks}")
 
 
+def test_email_card_opens_worst_finding():
+    """3.5.1: no SPF (critical) and DMARC p=none (high): the email card
+    opens the SPF finding, not the DMARC one."""
+    from vendor_audit import audit_records as ar
+    from vendor_audit.web import render_html
+    d = sample()
+    d["spf"] = {"status": "missing", "record": None, "lookup_count": None, "domain": "example.com"}
+    d["dmarc"] = {"present": True, "policy": "none", "pct": 100, "rua": ["mailto:d@example.com"], "record_count": 1}
+    f = findings(d)
+    check(f.get("SPF policy") == "critical" and f.get("DMARC policy") == "high", f"setup: {f.get('SPF policy')}, {f.get('DMARC policy')}")
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    href = re.search(r'<a class="stat-card" href="#check-([\w-]+)">\s*<span class="stat-title">Email authentication', page)
+    check(href and href.group(1) == ar.slug("SPF policy"), f"card opens {href and href.group(1)}")
+    d["spf"] = {**sample()["spf"], "status": "hardfail", "record": "v=spf1 -all x", "lookup_count": 1}
+    d["dmarc"] = {"present": True, "policy": "reject", "pct": 100, "rua": ["mailto:d@example.com"], "record_count": 1}
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    href = re.search(r'<a class="stat-card" href="#check-([\w-]+)">\s*<span class="stat-title">Email authentication', page)
+    check(href and href.group(1) == ar.slug("DMARC policy"), f"nothing to fix: card opens DMARC policy, got {href and href.group(1)}")
+
+
+def test_spf_fix_line_break():
+    """3.5.1: the no-mail SPF fix is on its own line, in quotes."""
+    from vendor_audit.web import render_html
+    d = sample()
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    check("ends with -all.<br>A domain that sends no mail needs &quot;v=spf1 -all&quot;.</p>" in page,
+          "the page breaks the line before the no-mail fix")
+    md = atr.render_markdown(atr._ReportData("example.com", "example.com", d, "2026-11-20T00:00:00Z", "3.5.1"))
+    check("**Fix:** Publish a v=spf1 record that lists your senders and ends with -all.\n\n"
+          "A domain that sends no mail needs \"v=spf1 -all\".\n" in md, "the text report gives it its own line")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -1099,7 +1137,7 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_ipv6_only_site_from_ipv4_only_auditor, test_unrouted_ipv6,
          test_report_polish, test_spf_no_mail_guidance, test_bare_name_certificate_mismatch,
          test_dkim_rotation_pair, test_results_page_layout, test_spf_on_subdomain_covered_by_dmarc,
-         test_email_card_names_every_spf_break,
+         test_email_card_names_every_spf_break, test_email_card_opens_worst_finding, test_spf_fix_line_break,
          test_every_new_check_end_to_end]
 
 

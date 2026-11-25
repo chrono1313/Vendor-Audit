@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.0"
+__version__ = "3.5.1"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -537,7 +537,9 @@ EXPLANATIONS = {
     "spf": {
         "what": "SPF is a DNS record that lists which mail servers are allowed to send email using your domain.",
         "why":  "Without enforcement, anyone can spoof your domain in phishing emails — recipients can't tell a forgery from a real message.",
-        "fix":  "Publish a v=spf1 record that lists your senders and ends with -all. A domain that sends no mail needs only v=spf1 -all.",
+        # 3.5.1: the no-mail case on a line of its own (the page shows the
+        # line break; the text report gives it its own line).
+        "fix":  "Publish a v=spf1 record that lists your senders and ends with -all.\nA domain that sends no mail needs \"v=spf1 -all\".",
         "details": [
             "Sender Policy Framework (SPF, RFC 7208) is published as a DNS TXT record on your domain. When a receiving mail server gets a message claiming to be from your domain, it can read the SPF record and check whether the sending IP appears on your authorised list. If it doesn't, the receiver applies whatever policy your record's qualifier specifies.",
             "The qualifier — the symbol before all in the record — is what determines what receivers actually do. -all means hard fail (reject). ~all means soft fail (accept but mark, often spam-folder). ?all is neutral (no opinion). +all is permissive (anyone can send, almost certainly a misconfiguration). Only -all and a properly-published null sender (v=spf1 -all) on a non-sending domain are considered fully enforcing.",

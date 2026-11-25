@@ -618,8 +618,7 @@ def _glance_cards(data, records):
         # A policy that receivers discard (two records, an include with no
         # SPF record) enforces nothing, whatever it says.
         # 3.4.11: more than 10 lookups breaks SPF too. Every reason is
-        # named, and the card opens the first of them in the findings list,
-        # so the card and the list tell the same story.
+        # named on the card.
         broken = [label for label in ("SPF single record", "SPF lookup count", "SPF mechanisms",
                                       "DMARC single record")
                   if by_label.get(label, {}).get("severity") in ("critical", "high")]
@@ -643,9 +642,16 @@ def _glance_cards(data, records):
         lines = [f"SPF {spf_tag}", f"DMARC {dmarc_tag}"]
         if (r.get("dkim") or {}).get("found"):
             lines.append("DKIM key found")
+        # 3.5.1: the card opens its most serious finding (a missing SPF
+        # record before DMARC p=none); on a tie, the one listed first in
+        # the findings. With nothing to fix it opens the DMARC policy.
+        rank = {s: i for i, s in enumerate(SEVERITY_ORDER)}
+        issues = [label for label in ("SPF policy", "DMARC policy", *broken)
+                  if by_label.get(label, {}).get("severity") in ISSUE_SEVERITIES]
+        issues.sort(key=lambda label: (rank[by_label[label]["severity"]], order.get(label, len(order))))
         cards.append(card("Email authentication", value,
                           "stat-good" if worst in ("pass", "low") else "stat-bad",
-                          lines, href_for(*(broken or ["DMARC policy", "SPF policy"]))))
+                          lines, href_for(*(issues or ["DMARC policy", "SPF policy"]))))
     return cards
 
 
@@ -802,13 +808,16 @@ def _render_drawers_html(records):
             out.append('<section><h3>What Vendor Audit found</h3>')
             out.append(evidence)
             out.append('</section>')
+        # A line break in the explanation text is kept (3.5.1).
+        def para(text):
+            return _h(text).replace("\n", "<br>")
         if rec["what"]:
-            out.append(f'<section><h3>What it is</h3><p>{_h(rec["what"])}</p></section>')
+            out.append(f'<section><h3>What it is</h3><p>{para(rec["what"])}</p></section>')
         if rec["why"]:
-            out.append(f'<section><h3>Why it matters</h3><p>{_h(rec["why"])}</p></section>')
+            out.append(f'<section><h3>Why it matters</h3><p>{para(rec["why"])}</p></section>')
         if rec["fix"] and sev != "pass":
             heading = "How to fix" if sev in ISSUE_SEVERITIES else "How to adopt it"
-            out.append(f'<section><h3>{heading}</h3><p>{_h(rec["fix"])}</p></section>')
+            out.append(f'<section><h3>{heading}</h3><p>{para(rec["fix"])}</p></section>')
 
         related = [r for r in by_topic.get(rec["topic"], []) if r["id"] != rid][:5]
         if related:

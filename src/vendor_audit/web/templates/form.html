@@ -234,20 +234,26 @@
 </form>
 
 <section class="what">
-  <h2>How this is meant to be used</h2>
+  <h2>What it's for</h2>
 
   <p>Vendor Audit is a due-diligence tool. Run it on a vendor's domain before purchasing a product or service, or on your own, to get a quick, evidence-based read on how the configuration aligns with current best practices. Findings aren't a deal-breaker on their own, but they're a useful conversation starter and a data point alongside everything else you're evaluating.</p>
 
   <p>Vendor Audit measures how closely a domain follows published best practices for email, DNS, TLS, and web delivery. Many of these practices are security controls, but this is not a security assessment: it doesn't look for vulnerabilities, and a clean report doesn't mean a vendor is secure. It shows how a domain's public configuration compares with current published standards.</p>
 
+  <h2>Share it with the vendor</h2>
+
   <p>Every report can be downloaded as a text file or a web page. <strong>Please share the text report with the vendor.</strong> Every section cites the RFC, W3C spec, OWASP guidance, or CA/Browser Forum baseline it's measured against — so the report reads as feedback, not as an accusation. Most vendors appreciate a heads-up they can act on; the text report gives them one in a form they can take straight to the people who can address it. When more than one prospect shares these reports with the same vendor, they're more likely to prioritize the issues raised.</p>
 
-  <h2>What this checks</h2>
+  <h2>What it checks</h2>
 
   {% set words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"] %}
   <p>The audit runs {{ counts.standard }} checks in {{ words[counts.categories | length] }} categories — {{ counts.categories[:-1] | join(", ") }} and {{ counts.categories[-1] }} — and Deep checks add {{ counts.deep_extra }} more. They cover SPF, DMARC, DKIM, MX, MTA-STS, TLS-RPT, DNSSEC, CAA, RPKI, IPv6, TLS versions and certificates, HSTS, HTTP/2 and HTTP/3, security headers, cookies and security.txt, each against a published standard, plus an end-of-life check for every operating system, server or library version detected. Checks that don't apply are skipped, such as mail checks for a domain that receives no mail. Each finding is rated Critical, High, Medium or Low. Optional practices are listed as informational and are never counted.</p>
 
-  <p>This service is passive: it reads what the domain voluntarily publishes — DNS records, a handful of ordinary web requests and TLS handshakes, and public routing data. With Deep checks it also connects to the domain's mail servers. It does not port-scan, brute-force, or probe for vulnerabilities. The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, SSL Labs integration, and bulk audits.</p>
+  <h2>How it checks</h2>
+
+  <p>This service is passive: it reads what the domain voluntarily publishes — DNS records, a handful of ordinary web requests and TLS handshakes, and public routing data. With Deep checks it also connects to the domain's mail servers. It does not port-scan, brute-force, or probe for vulnerabilities.</p>
+
+  <p>The full source is on <a href="https://github.com/chrono1313/Vendor-Audit">GitHub</a>; a CLI is also available for batch use, SSL Labs integration, and bulk audits.</p>
 </section>
 
 <p class="privacy"><strong>Privacy.</strong> Visitor IP and submitted domain are logged for 30 days for abuse prevention. Traffic passes through Cloudflare, whose privacy policy also applies.</p>

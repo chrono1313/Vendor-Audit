@@ -203,6 +203,9 @@ def test_front_page_counts():
     check(f"The audit runs {n['standard']} checks in six categories" in text, "front page check count")
     check(f"Deep checks add {n['deep_extra']} more" in text, "front page deep count")
     check("about 60 checks" not in text, "the old count is gone")
+    heads = re.findall(r"<h2>([^<]+)</h2>", _request("GET", "/").text)
+    want = ["What it's for", "Share it with the vendor", "What it checks", "How it checks"]
+    check(heads == want, f"3.5.1: the front page has four sections in order: {heads}")
 
 
 def test_head():
