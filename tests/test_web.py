@@ -220,10 +220,60 @@ def test_head():
     check(refused.headers.get("allow") == "GET, HEAD", f"405 should list GET, HEAD: {refused.headers.get('allow')}")
 
 
+def test_fast_clicks_share_one_audit():
+    """3.4.9: repeat requests for a domain already being audited wait for
+    that run instead of starting their own; a regular request can join a
+    deep run, but not the other way round; a cancelled waiter doesn't stop
+    the run the others are waiting for."""
+    if _skip():
+        return
+    calls = []
+
+    async def fake_run(pool, domain, *, deep=False):
+        calls.append((domain, deep))
+        await asyncio.sleep(0.2)
+        return {"ok": True, "domain": domain, "deep": deep}
+
+    async def scenario():
+        real = appmod._run_audit_in_pool
+        appmod._run_audit_in_pool = fake_run
+        try:
+            r = await asyncio.gather(*(appmod._run_audit_shared(None, "a.example", deep=True) for _ in range(3)))
+            check(len(calls) == 1 and all(x["deep"] for x in r), f"three deep clicks, one audit: {calls}")
+            calls.clear()
+            deep = asyncio.ensure_future(appmod._run_audit_shared(None, "b.example", deep=True))
+            await asyncio.sleep(0.01)
+            regular = await appmod._run_audit_shared(None, "b.example")
+            check(len(calls) == 1 and regular["deep"], f"regular request joins the deep run: {calls}")
+            await deep
+            calls.clear()
+            first = asyncio.ensure_future(appmod._run_audit_shared(None, "c.example"))
+            await asyncio.sleep(0.01)
+            deep_c = await appmod._run_audit_shared(None, "c.example", deep=True)
+            check(len(calls) == 2 and deep_c["deep"], f"a deep request never takes a regular run: {calls}")
+            await first
+            calls.clear()
+            quitter = asyncio.ensure_future(appmod._run_audit_shared(None, "d.example"))
+            await asyncio.sleep(0.01)
+            stayer = asyncio.ensure_future(appmod._run_audit_shared(None, "d.example"))
+            await asyncio.sleep(0.01)
+            quitter.cancel()
+            got = await stayer
+            check(got["ok"] and len(calls) == 1, "closing one tab doesn't cancel the shared audit")
+            check(not appmod._inflight, f"nothing left in flight: {list(appmod._inflight)}")
+            await asyncio.sleep(0.25)
+            await appmod._run_audit_shared(None, "a.example", deep=True)
+            check(len(calls) == 2, "a finished run is not reused (the result cache does that)")
+        finally:
+            appmod._run_audit_in_pool = real
+
+    asyncio.run(scenario())
+
+
 def run():
     for fn in (test_no_duplicate_definitions, test_routes_registered_once,
                test_workers_guard_connections, test_cache_compressed, test_slow_dns_does_not_stall_other_requests,
-               test_csp_styles, test_front_page_counts, test_head):
+               test_csp_styles, test_front_page_counts, test_head, test_fast_clicks_share_one_audit):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

@@ -1446,14 +1446,15 @@ html.js .filters { display: flex; flex-wrap: wrap; align-items: center; justify-
 .filter-chip[aria-pressed="true"] span { color: rgb(70, 70, 66); }
 .filter-tag {
   display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.86rem; min-height: 34px;
-  padding: 0 0.2rem 0 0.75rem; border: 1px solid var(--fg); border-radius: 999px; font-weight: 600;
+  padding: 0 0.2rem 0 0.75rem; border: 1px solid var(--medium); border-radius: 999px; font-weight: 600;
+  background: var(--medium-bg); color: var(--medium);
 }
 .filter-tag[hidden] { display: none; }
 .filter-tag button {
   font: inherit; font-size: 1.05rem; line-height: 1; width: 28px; height: 28px; border: 0; border-radius: 999px;
-  background: transparent; color: var(--muted); cursor: pointer;
+  background: transparent; color: var(--medium); cursor: pointer;
 }
-.filter-tag button:hover { background: var(--surface-hover); color: var(--fg); }
+.filter-tag button:hover { background: rgba(251, 191, 36, 0.18); color: var(--fg); }
 
 .table-wrap { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface); overflow: hidden; }
 .checks-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }

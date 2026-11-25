@@ -950,7 +950,7 @@ async def _run_audit_and_render(request: Request, domain: str, *,
         " deep=1" if deep else "",
     )
 
-    envelope = await _run_audit_in_pool(
+    envelope = await _run_audit_shared(
         request.app.state.pool, validated.domain, deep=deep)
 
     if envelope["ok"]:
@@ -1057,7 +1057,7 @@ async def _cached_or_audit(request: Request, domain: str, deep: bool):
     except ValidationError as exc:
         return None, (status.HTTP_400_BAD_REQUEST, str(exc), exc.code)
 
-    envelope = await _run_audit_in_pool(
+    envelope = await _run_audit_shared(
         request.app.state.pool, validated.domain, deep=deep)
     if not envelope["ok"]:
         return None, (_status_for_error_kind(envelope["error"]["kind"]),
@@ -1290,6 +1290,38 @@ async def result_js():
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+# 3.4.9: one audit per domain at a time. A result is cached only when its
+# audit finishes, so a visitor who clicks Audit again (or reloads) while the
+# first run is still going would otherwise start a second and third full
+# audit. Requests for a domain that is already being audited wait for that
+# run instead. A regular request can also join a running deep audit, which
+# covers every regular check. Keys match the result cache: <domain> and
+# <domain>::deep.
+_inflight: dict[str, asyncio.Future] = {}
+
+
+async def _run_audit_shared(pool: ProcessPoolExecutor, domain: str,
+                            *, deep: bool = False) -> dict:
+    """_run_audit_in_pool, shared with any request already auditing `domain`."""
+    key = domain + ("::deep" if deep else "")
+    task = _inflight.get(key)
+    if task is None and not deep:
+        task = _inflight.get(domain + "::deep")
+    if task is not None:
+        log.info("audit joined a run in progress: domain=%r%s", domain, " deep=1" if deep else "")
+    else:
+        task = asyncio.ensure_future(_run_audit_in_pool(pool, domain, deep=deep))
+        _inflight[key] = task
+
+        def _done(t, key=key):
+            if _inflight.get(key) is t:
+                del _inflight[key]
+        task.add_done_callback(_done)
+    # shield: a visitor who closes the tab cancels their own request, not
+    # the audit other requests are waiting for.
+    return await asyncio.shield(task)
+
 
 async def _run_audit_in_pool(pool: ProcessPoolExecutor, domain: str,
                               *, deep: bool = False) -> dict:
