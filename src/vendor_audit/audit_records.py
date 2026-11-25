@@ -416,6 +416,11 @@ _CERT_BLOCKED = ("Browsers show a full-page warning and most visitors cannot con
                  "through, and apps and scripts that skip the check, lose the protection a certificate gives "
                  "against someone on the network impersonating the site.")
 _OUTCOME_TEXT = {
+    ("SPF policy", "missing_covered"): (
+        "SPF lists the servers allowed to send mail for one exact name; subdomains don't inherit it.",
+        "A subdomain that sends no mail rarely has its own SPF record. Its parent's DMARC policy still "
+        "applies to it, and forged mail from the subdomain fails DMARC, so receivers quarantine or reject it.",
+        "Nothing is required. To make the intent explicit, publish v=spf1 -all on the subdomain."),
     ("DKIM key strength", "weak_rotation"): (
         "Every DKIM key a domain publishes can verify mail signed with it.",
         "A 1024-bit key beside a 2048-bit one is usually left over from a key rotation, but receivers still "
@@ -534,12 +539,19 @@ def _ev_spf(G):
     no_mail = ("no MX records, so the domain appears to send no mail: v=spf1 -all is all it needs"
                if spf.get("status") == "missing" and not spf.get("record") and "entries" in mx
                and not mx["entries"] and not mx.get("null_mx") and not mx.get("error") else None)
+    # 3.4.10: a subdomain covered by an enforcing DMARC policy.
+    from .audit_checks import _spf_covered_by_dmarc
+    covered = _spf_covered_by_dmarc(spf, G("dmarc"), mx)
+    covered_by = f"{covered[0]}'s DMARC policy ({covered[1]})" if covered else None
+    if covered:
+        no_mail = None
     return (_kv(("Ends with", _SPF_ENDING.get(spf.get("status"), spf.get("status"))),
                 ("DNS lookups", None if spf.get("lookup_count") is None
                  else f'{spf["lookup_count"]} of 10 allowed'),
                 ("Redirects to", spf.get("redirect_target")),
                 ("Lookup error", spf.get("error")),
-                ("Mail", no_mail))
+                ("Mail", no_mail),
+                ("Spoofing covered by", covered_by))
             + _code("SPF record published", spf.get("record")))
 
 

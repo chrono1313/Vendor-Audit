@@ -1035,6 +1035,42 @@ def test_results_page_layout():
     check("filter-cat" not in js and "filter-q" not in js and "SEV_WORD[key]" in js, "script routes tiles to the tag")
 
 
+def test_spf_on_subdomain_covered_by_dmarc():
+    # 3.4.10: staging.docs.lites.co.ke — no SPF, no MX, parent's DMARC at
+    # reject → Info, not Critical. The registered domain keeps Critical.
+    from vendor_audit import audit_records as ar
+    def case(name, dmarc, mx_entries=()):
+        d = sample()
+        d["spf"] = {"status": "missing", "record": None, "lookup_count": None, "redirect_target": None,
+                    "record_count": 0, "domain": name}
+        d["dmarc"] = {"present": True, "pct": None, "sp": None, "rua": ["mailto:d@lites.co.ke"], "ruf": [],
+                      "record_count": 1, "record": "v=DMARC1; p=reject", "inherited_from": None, **dmarc}
+        d["mx"] = {"entries": list(mx_entries), "null_mx": False, "error": None}
+        return d
+    sub = "staging.docs.lites.co.ke"
+    d = case(sub, {"policy": "reject", "inherited_from": "lites.co.ke"})
+    check(findings(d).get("SPF policy") == "info", f"covered subdomain → info: {findings(d).get('SPF policy')}")
+    txt = detail(d, sub)
+    check(line(txt, "INFO", "No SPF record on this subdomain — spoofing is covered by lites.co.ke's DMARC"),
+          "covered wording names the parent")
+    check("(p=reject)" in txt, "policy tag shown")
+    check(ar.explanation_for("SPF policy", "missing_covered")[2].startswith("Nothing is required"), "covered fix text")
+    d = case(sub, {"policy": "reject", "sp": "quarantine", "inherited_from": "lites.co.ke"})
+    check(findings(d).get("SPF policy") == "info" and "(sp=quarantine)" in " ".join(detail(d, sub).split()),
+          "sp= wins over p=")
+    for label, dd in (("parent p=none", case(sub, {"policy": "none", "inherited_from": "lites.co.ke"})),
+                      ("parent sp=none", case(sub, {"policy": "reject", "sp": "none", "inherited_from": "lites.co.ke"})),
+                      ("pct=50", case(sub, {"policy": "reject", "pct": 50, "inherited_from": "lites.co.ke"})),
+                      ("subdomain receives mail", case(sub, {"policy": "reject", "inherited_from": "lites.co.ke"},
+                                                       [{"priority": 10, "host": "mx.lites.co.ke"}])),
+                      ("registered domain", case("lites.co.ke", {"policy": "reject"}))):
+        check(findings(dd).get("SPF policy") == "critical", f"{label} → still critical: {findings(dd).get('SPF policy')}")
+    d = case(sub, {"policy": "quarantine"})
+    check(findings(d).get("SPF policy") == "info"
+          and "covered by its own DMARC policy (p=quarantine)" in " ".join(detail(d, sub).split()),
+          "subdomain with its own enforcing DMARC → info")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -1043,7 +1079,7 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_slow_upstreams_are_bounded, test_slow_ripestat_routing, test_slow_mail_server_bounded,
          test_ipv6_only_site_from_ipv4_only_auditor, test_unrouted_ipv6,
          test_report_polish, test_spf_no_mail_guidance, test_bare_name_certificate_mismatch,
-         test_dkim_rotation_pair, test_results_page_layout,
+         test_dkim_rotation_pair, test_results_page_layout, test_spf_on_subdomain_covered_by_dmarc,
          test_every_new_check_end_to_end]
 
 

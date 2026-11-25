@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.4.9"
+__version__ = "3.4.10"
 
 import os
 import re
@@ -792,8 +792,10 @@ def check_spf(domain):
                 "lookup_count": parsed["lookup_count"], "redirect_target": None,
                 "record_count": count, **_stats(parsed)}
 
+    # 3.4.10: the name looked up, so scoring can tell a subdomain from the
+    # registered domain (see _spf_covered_by_dmarc).
     return {"status": "missing", "record": None, "lookup_count": None, "redirect_target": None,
-            "record_count": 0}
+            "record_count": 0, "domain": domain}
 
 
 # ── DMARC ─────────────────────────────────────────────────────────────────────
@@ -6237,6 +6239,37 @@ def _score_mta_sts(record, policy, pts, prefix="", mx=None):
                         "short" if max_age < _THRESH["mta_sts_min_max_age"] else "ok"))
 
 
+def _spf_covered_by_dmarc(spf, dmarc, mx):
+    """3.4.10: (domain whose DMARC record applies, "sp=reject"-style policy)
+    when that policy covers a subdomain that has no SPF and sends no mail,
+    else None.
+
+    SPF is not inherited — receivers check it on the exact name — so a deep
+    host such as staging.docs.example.co.ke rarely has its own record. DMARC
+    is inherited: with no record on the subdomain, receivers apply the
+    organisational domain's sp= (or p=). When that policy is quarantine or
+    reject for all mail, forged mail from the subdomain fails DMARC and is
+    acted on, so a missing SPF record there is not the gap it is on the
+    registered domain itself."""
+    if (spf or {}).get("status") != "missing" or not dmarc or not dmarc.get("present"):
+        return None
+    if (mx or {}).get("error") or ((mx or {}).get("entries") and not (mx or {}).get("null_mx")):
+        return None                          # it receives mail: SPF expected as usual
+    name = (spf.get("domain") or "").lower()
+    source = dmarc.get("inherited_from")
+    if source:
+        tag = "sp" if dmarc.get("sp") else "p"
+        policy = dmarc.get("sp") or dmarc.get("policy")
+    else:
+        org = _org_domain(name) if name else None
+        if not org or org == name:
+            return None                      # the registered domain itself, or unknown
+        source, tag, policy = name, "p", dmarc.get("policy")
+    if policy not in ("reject", "quarantine") or dmarc.get("pct") not in (None, 100):
+        return None
+    return source, f"{tag}={policy}"
+
+
 def _score_email(spf, dmarc, mx, pts, prefix=""):
     """Score SPF, DMARC, and MX for one domain, appending to `pts` list.
     `prefix` is prepended to label names to distinguish source vs redirect target."""
@@ -6256,6 +6289,8 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
     # is missing data, not a missing record.
     if spf_s == "null_sender":
         _p("SPF policy", "null_sender")
+    elif spf_s == "missing" and _spf_covered_by_dmarc(spf, dmarc, mx):
+        _p("SPF policy", "missing_covered")
     elif spf_s and spf_s != "error":
         # Direct lookup: the rubric's outcome keys match the spf_s values
         # for the eight non-null-sender outcomes. Default to 'missing' for

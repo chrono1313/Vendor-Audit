@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.4.9"
+__version__ = "3.4.10"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -1426,7 +1426,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
     `prefix` picks the results keys ("redirect_target_" for the domain a
     site redirects to); `chk` is the matching prefix of the finding labels
     the status lines report on ("redirect target: SPF policy")."""
-    from .audit_checks import _mx_pattern_match
+    from .audit_checks import _mx_pattern_match, _spf_covered_by_dmarc
     chk = "redirect target: " if prefix else ""
     out = []
 
@@ -1465,6 +1465,16 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
         elif s == "redirect_target_no_spf":
             out.append(_status("fail",
                 "SPF redirect target has no SPF record (broken redirect)", check=chk + "SPF policy"))
+        elif _spf_covered_by_dmarc(spf, dmarc, mx):
+            # 3.4.10: a subdomain that sends no mail, under an enforcing DMARC policy.
+            source, tag = _spf_covered_by_dmarc(spf, dmarc, mx)
+            whose = "its own" if source == (spf.get("domain") or "").lower() else f"{source}'s"
+            out.append(_status("info",
+                f"No SPF record on this subdomain — spoofing is covered by {whose} DMARC policy ({tag})",
+                note_lines=["SPF is checked only on the exact name, so subdomains that send no mail "
+                            "rarely have their own record. DMARC applies to them, and forged mail "
+                            "from this name fails it. Publishing \"v=spf1 -all\" here as well would "
+                            "make that explicit."], check=chk + "SPF policy"))
         else:
             if has_mx:
                 out.append(_status("fail",
