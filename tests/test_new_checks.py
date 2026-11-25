@@ -1071,6 +1071,25 @@ def test_spf_on_subdomain_covered_by_dmarc():
           "subdomain with its own enforcing DMARC → info")
 
 
+def test_email_card_names_every_spf_break():
+    # 3.4.11 (galenmedical.com): 12 lookups AND an include with no SPF. The
+    # overview card names both and opens the first one the findings list shows.
+    from vendor_audit.web import render_html
+    d = sample()
+    d["spf"] = {**d["spf"], "status": "hardfail", "record": "v=spf1 include:a include:b -all", "lookup_count": 12,
+                "record_count": 1, "void_lookups": 1, "uses_ptr": False, "missing_includes": ["www.mygalenmedical.com"]}
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    card = page[page.index("Email authentication") - 200:][:900]
+    check("Broken" in card and "invalid (12 lookups, limit 10; includes a domain with no SPF)" in card,
+          f"card names both SPF breaks: {card}")
+    rows = re.findall(r'<tr data-sev="\w+" data-cat="[^"]*" data-id="([\w-]+)">', page)
+    breaks = [i for i in rows if i in ("spf-lookup-count", "spf-mechanisms")]
+    href = re.search(r'<a class="stat-card" href="#check-([\w-]+)">\s*<span class="stat-title">Email authentication', page)
+    check(breaks and href and href.group(1) == breaks[0],
+          f"card opens the first SPF break in the list: {href and href.group(1)} vs {breaks}")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -1080,6 +1099,7 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_ipv6_only_site_from_ipv4_only_auditor, test_unrouted_ipv6,
          test_report_polish, test_spf_no_mail_guidance, test_bare_name_certificate_mismatch,
          test_dkim_rotation_pair, test_results_page_layout, test_spf_on_subdomain_covered_by_dmarc,
+         test_email_card_names_every_spf_break,
          test_every_new_check_end_to_end]
 
 

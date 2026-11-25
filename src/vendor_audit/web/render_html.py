@@ -617,16 +617,29 @@ def _glance_cards(data, records):
         value = {"pass": "Enforced", "low": "Mostly enforced"}.get(worst, "Not enforced")
         # A policy that receivers discard (two records, an include with no
         # SPF record) enforces nothing, whatever it says.
-        broken = [label for label in ("SPF single record", "SPF mechanisms", "DMARC single record")
+        # 3.4.11: more than 10 lookups breaks SPF too. Every reason is
+        # named, and the card opens the first of them in the findings list,
+        # so the card and the list tell the same story.
+        broken = [label for label in ("SPF single record", "SPF lookup count", "SPF mechanisms",
+                                      "DMARC single record")
                   if by_label.get(label, {}).get("severity") in ("critical", "high")]
+        order = {rec["label"]: i for i, rec in enumerate(records)}
+        broken.sort(key=lambda label: order.get(label, len(order)))
         if broken:
             value, worst = "Broken", "high"
             if "DMARC single record" in broken:
                 dmarc_tag = "ignored (more than one record)"
             if "SPF single record" in broken:
                 spf_tag = "invalid (more than one record)"
-            elif "SPF mechanisms" in broken:
-                spf_tag = "invalid (includes a domain with no SPF)"
+            else:
+                why = []
+                if "SPF lookup count" in broken:
+                    n = (r.get("spf") or {}).get("lookup_count")
+                    why.append(f"{n} lookups, limit 10" if n else "over 10 lookups")
+                if "SPF mechanisms" in broken:
+                    why.append("includes a domain with no SPF")
+                if why:
+                    spf_tag = f"invalid ({'; '.join(why)})"
         lines = [f"SPF {spf_tag}", f"DMARC {dmarc_tag}"]
         if (r.get("dkim") or {}).get("found"):
             lines.append("DKIM key found")
