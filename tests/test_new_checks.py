@@ -45,6 +45,10 @@ def findings(results):
     return {f["label"]: f["severity"] for f in ac.assess_results(results)}
 
 
+def findings_text(results, label):
+    return next((f["text"] for f in ac.assess_results(results) if f["label"] == label), "")
+
+
 def detail(results, domain="example.com"):
     data = atr._ReportData(domain, domain, results, "2026-11-20T00:00:00Z", "3.4.0")
     return atr.strip_tags(atr.render_detail_sections(data))
@@ -966,6 +970,10 @@ def test_bare_name_certificate_mismatch():
     check(line(txt, "CRITICAL", "Certificate name mismatch — cert does not cover example.com"), "mismatch still Critical")
     check("presents a certificate for *.cloudfront.net, cloudfront.net" in txt, "names the wrong certificate")
     check("The site itself is at www.example.com" in txt, "names where the site lives")
+    check("usually start on http://" not in txt, "no browser explanation unless http:// redirects")
+    d["http_redirect"] = {"status": "https_only", "detail": "http:// redirects to HTTPS"}
+    txt = detail(d)
+    check("usually start on http://" in " ".join(txt.split()), "browser explanation when http:// redirects")
     from vendor_audit.web import render_html
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
@@ -1000,7 +1008,12 @@ def test_dkim_rotation_pair():
     d["dkim"] = dkim("weak")
     check(findings(d).get("DKIM key strength") == "medium", "1024 only → medium")
     txt = detail(d)
-    check(line(txt, "MEDIUM", "RFC 8301 recommends RSA-2048 or Ed25519"), "1024-only wording, MEDIUM")
+    flat = " ".join(txt.split())
+    check(line(txt, "MEDIUM", "DKIM key strength: selector1: RSA-1024"), "1024-only line reads MEDIUM")
+    check("disallowed for new signatures by NIST SP 800-131A since 2014" in flat
+          and "RFC 8301 recommends at least 2048 bits" in flat,
+          "cites NIST since 2014 and RFC 8301")
+    check("since 2014" in findings_text(d, "DKIM key strength"), "summary text cites 2014")
     check("deprecated by RFC 8301" not in txt, "no claim that RFC 8301 deprecated 1024")
 
 

@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.4.6"
+__version__ = "3.4.7"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -465,7 +465,7 @@ EXPLANATIONS = {
         "details": [
             "DomainKeys Identified Mail (DKIM, RFC 6376) signs outgoing mail with a private key held by your mail-sending infrastructure. The public key is published in DNS, so any receiving server can verify the signature without contacting you. The signature covers the message body and selected headers — if either is altered in transit, verification fails.",
             "Each signing key is identified by a selector, a short label your mail provider chooses. The DNS record lives at <selector>._domainkey.<domain>. Most providers choose semi-arbitrary selector names (google, default, mail, k1, selector1, etc.), so detection by external tools is heuristic — Vendor Audit probes the most common selectors and reports what it finds.",
-            "Key strength matters. RFC 8301 (2018) requires DKIM keys of at least 1024 bits and recommends 2048; 1024-bit RSA is within reach of well-funded attackers, so modern best practice is RSA-2048 or higher, or the more efficient Ed25519. M3AAWG's DKIM Key Rotation Best Common Practices recommends rotating keys roughly every six months, which the selector mechanism makes easy: publish a new key under a new selector, switch your signer to it, retire the old selector after a propagation window.",
+            "Key strength matters. NIST SP 800-131A has disallowed RSA keys under 2048 bits for new signatures since 2014, and RFC 8301 (2018) recommends 2048 bits for DKIM while still accepting 1024 as the minimum. Modern best practice is RSA-2048 or higher, or the more efficient Ed25519. M3AAWG's DKIM Key Rotation Best Common Practices recommends rotating keys roughly every six months, which the selector mechanism makes easy: publish a new key under a new selector, switch your signer to it, retire the old selector after a propagation window.",
             "DKIM survives forwarding because the signature travels with the message. SPF doesn't, because the envelope changes. This is why DMARC requires either SPF or DKIM to pass with alignment — DKIM is the one that holds up when a mailing list or corporate gateway rewrites the path.",
         ],
     },
@@ -1839,13 +1839,16 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                     items.append(_status("warn",
                         f"DKIM key strength: {desc} — an RSA-1024 key is still published beside a stronger one",
                         note_lines=["Usually left over from a key rotation (Microsoft 365, for example, alternates "
-                                    "selector1 and selector2). Receivers still verify mail against it, so rotate "
-                                    "again or remove it until every published key is 2048-bit or Ed25519."],
+                                    "selector1 and selector2). Receivers still verify mail against it, and NIST has "
+                                    "disallowed RSA-1024 for new signatures since 2014, so rotate again or remove it "
+                                    "until every published key is 2048-bit or Ed25519."],
                         check=chk + "DKIM key strength"))
                 elif ws == "weak":
                     items.append(_status("warn",
-                        f"DKIM key strength: {desc} — RFC 8301 recommends RSA-2048 or Ed25519",
-                        note_lines=["Upgrade to RSA-2048+ or Ed25519."], check=chk + "DKIM key strength"))
+                        f"DKIM key strength: {desc} — RSA-1024 has been disallowed for new signatures by "
+                        f"NIST SP 800-131A since 2014",
+                        note_lines=["RFC 8301 recommends at least 2048 bits. Upgrade to RSA-2048+ or Ed25519."],
+                        check=chk + "DKIM key strength"))
                 elif ws == "broken":
                     items.append(_status("fail",
                         f"DKIM key strength: {desc} — RSA <1024 is broken", check=chk + "DKIM key strength"))
@@ -2361,10 +2364,14 @@ def _mismatch_notes(data, san_names):
     if not landing:
         return None
     names = ", ".join(san_names[:3]) if san_names else "other names"
-    return [f"https://{data.audit_domain} presents a certificate for {names}, so a browser that goes there "
-            f"over HTTPS stops at a certificate warning.",
-            f"The site itself is at {landing}. Visitors who type the bare name usually start on http://, "
-            f"follow the redirect and never see the problem; links and bookmarks to https://{data.audit_domain} do."]
+    notes = [f"https://{data.audit_domain} presents a certificate for {names}, so a browser that goes there "
+             f"over HTTPS stops at a certificate warning.",
+             f"The site itself is at {landing}."]
+    # 3.4.7: only explain why a browser looks fine when http:// redirects.
+    if (data.results.get("http_redirect") or {}).get("status") == "https_only":
+        notes[1] += (" Visitors who type the bare name usually start on http://, follow the redirect and never "
+                     f"see the problem; links and bookmarks to https://{data.audit_domain} do.")
+    return notes
 
 
 def _infra_max_lookups():

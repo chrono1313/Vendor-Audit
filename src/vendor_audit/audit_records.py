@@ -753,7 +753,8 @@ def _ev_cert_names(G):
     return (_kv(("Name matches", None if t.get("cert_names_match") is None
                  else _yn(t.get("cert_names_match"))),
                 ("Site lands on", landing),
-                ("Why a browser may look fine", None if not landing else
+                ("Why a browser may look fine", None if not landing
+                 or (G("http_redirect").get("status") != "https_only") else
                  "typing the bare name usually starts on http://, which redirects to the site; "
                  "links and bookmarks to the https:// bare name get the warning"),
                 ("www / apex coverage", {"covers": "both names are on the certificate",

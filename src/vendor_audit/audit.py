@@ -102,7 +102,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "3.4.6"
+__version__ = "3.4.7"
 
 log = logging.getLogger(__name__)
 
