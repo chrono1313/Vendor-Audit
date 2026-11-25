@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.4.4"
+__version__ = "3.4.5"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -2290,11 +2290,17 @@ def _render_routing_section(data):
         if kind == "mx" and block.get("hosts") and not block.get("error"):
             hosts = block["hosts"]
             n6 = [h for h, i in hosts.items() if i.get("v6")]
+            # 3.4.5: say when only the first few mail servers were checked.
+            total = max(block.get("total") or 0, len(hosts))
+            checked = "" if total == len(hosts) else " checked"
+            sampled = ([f"Checked the first {len(hosts)} of {total} mail servers, by MX priority"]
+                       if checked else None)
             if len(n6) == len(hosts):
-                rows.append(_status("pass", f"All {len(hosts)} mail servers reachable over IPv6",
-                                    check="Mail servers on IPv6"))
+                rows.append(_status("pass", f"All {len(hosts)} mail servers{checked} reachable over IPv6",
+                                    note_lines=sampled, check="Mail servers on IPv6"))
             else:
-                rows.append(_status("warn", f"{len(n6)} of {len(hosts)} mail servers reachable over IPv6",
+                rows.append(_status("warn", f"{len(n6)} of {len(hosts)} mail servers{checked} reachable over IPv6",
+                                    note_lines=sampled,
                                     sub_lines=[f"No IPv6: {', '.join(sorted(h for h in hosts if h not in n6))}"],
                                     check="Mail servers on IPv6"))
         for l in lookups:
@@ -2311,6 +2317,11 @@ def _render_routing_section(data):
             else:
                 rows.append(_status("info", f"{label} RPKI check failed: {l['host']} {l['address']}"
                                     + (f" ({l['error']})" if l.get("error") else ""), check=f"{label} RPKI"))
+        # 3.4.5: RIPEstat lookups are capped per scan; say what was left out.
+        if block.get("unchecked"):
+            n = block["unchecked"]
+            rows.append(_status("info", f"{n} more {label.lower()} address{'es' if n != 1 else ''} not looked up"
+                                f" (the scan makes at most {infra.get('max_lookups') or _infra_max_lookups()} routing lookups)"))
     if rows:
         parts.append("")
         parts.append("")
@@ -2318,6 +2329,11 @@ def _render_routing_section(data):
         parts.extend(rows)
 
     return "\n".join(parts)
+
+
+def _infra_max_lookups():
+    from .audit_checks import _INFRA_MAX_LOOKUPS
+    return _INFRA_MAX_LOOKUPS
 
 
 # ── Detailed sections: TLS ───────────────────────────────────────────────────
@@ -2634,7 +2650,9 @@ def _render_http_section(data):
             f"HTTP port 80 refuses plaintext (status {sc} from http://{data.audit_domain})",
             note_lines=[verify], check="HTTP→HTTPS redirect"))
     elif hr_status == "unreachable":
-        notes = [hr_detail] if hr_detail else None
+        # 3.4.5: the detail often repeats the headline word for word.
+        same = (hr_detail or "").strip().rstrip(".").lower() == "http port 80 not reachable"
+        notes = [hr_detail] if hr_detail and not same else None
         parts.append(_status("info",
             "HTTP port 80 not reachable",
             note_lines=notes, check="HTTP→HTTPS redirect"))
@@ -2737,7 +2755,7 @@ def _render_server_disclosure_section(data):
             f"Server: {val} — reverse proxy / CDN", check="Server header"))
     elif kind == "origin_with_version":
         parts.append(_status("fail",
-            f"Server: {val} — origin server with version disclosed", check="Server header"))
+            f"Server: {val} — software version disclosed", check="Server header"))
     elif kind == "origin_no_version":
         parts.append(_status("warn",
             f"Server: {val} — origin server exposed (no version)", check="Server header"))

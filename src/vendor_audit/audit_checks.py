@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.4.4"
+__version__ = "3.4.5"
 
 import os
 import re
@@ -2168,8 +2168,9 @@ def check_infra_routing(domain):
        "lookups": [{"host", "address", "prefix", "asn", "rpki_status", "error"}],
        "error": None}
     """
-    out = {"ns": {"hosts": {}, "lookups": [], "error": None},
-           "mx": {"hosts": {}, "lookups": [], "error": None}}
+    out = {"ns": {"hosts": {}, "lookups": [], "error": None, "total": 0, "unchecked": 0},
+           "mx": {"hosts": {}, "lookups": [], "error": None, "total": 0, "unchecked": 0},
+           "max_lookups": _INFRA_MAX_LOOKUPS}
 
     ns = resolve(domain, "NS")
     if resolve_error(ns):
@@ -2179,12 +2180,15 @@ def check_infra_routing(domain):
     if resolve_error(mx):
         out["mx"]["error"] = resolve_error(mx)
         mx = []
-    ns_hosts = sorted({r.rstrip(".").lower() for r in ns})[:_INFRA_MAX_NS]
+    ns_all = sorted({r.rstrip(".").lower() for r in ns})
+    out["ns"]["total"] = len(ns_all)
+    ns_hosts = ns_all[:_INFRA_MAX_NS]
     mx_hosts = []
     for rec in sorted(mx, key=lambda r: int(r.split()[0]) if r.split()[0].isdigit() else 99):
         parts = rec.split()
         if len(parts) == 2 and parts[1] not in (".", ""):
             mx_hosts.append(parts[1].rstrip(".").lower())
+    out["mx"]["total"] = len(mx_hosts)
     mx_hosts = mx_hosts[:_INFRA_MAX_MX]
 
     def addrs(host):
@@ -2237,7 +2241,8 @@ def check_infra_routing(domain):
         for kind, host, ip in interleaved:
             b = lookup_for[(kind, host, ip)]
             if b not in blocks:
-                continue                # over the cap
+                out[kind]["unchecked"] += 1   # over the cap
+                continue
             res = got.get(b)
             if isinstance(res, dict):
                 res = {**res, "address": ip}
@@ -3454,7 +3459,7 @@ def check_security_txt(domain):
                 return result
 
     if last_err and not result["present"]:
-        result["error"] = last_err
+        result["error"] = _plain_error(last_err)
     return result
 
 
@@ -3562,7 +3567,7 @@ def check_error_page(domain):
                         break
                 body = b"".join(chunks).decode("utf-8", errors="replace")
         except Exception as e:
-            out["error"] = str(e)
+            out["error"] = _plain_error(e)
             return out
 
         out["status"] = status
@@ -3686,7 +3691,7 @@ def check_cors(domain):
                           follow_redirects=True)
     except Exception as e:
         result["outcome"] = "error"
-        result["error"] = str(e)
+        result["error"] = _plain_error(e)
         return result
 
     acao1 = resp1.headers.get("Access-Control-Allow-Origin")
@@ -4054,7 +4059,47 @@ def check_server_header(domain, _cached_response=None):
     return {**_EMPTY, "error": str(last_err) if last_err else "unreachable"}
 
 
+# ── Plain-language errors (3.4.5) ─────────────────────────────────────────────
+# Exception text such as "[Errno 104] Connection reset by peer" reaches the
+# reports when a probe fails. These say the same thing in plain words.
+
+_PLAIN_ERRORS = (
+    (re.compile(r"reset by peer|errno 104|connectionreset", re.I), "the server reset the connection"),
+    (re.compile(r"connection refused|errno 111", re.I), "the server refused the connection"),
+    (re.compile(r"timed out|timeout", re.I), "timed out"),
+    (re.compile(r"network is unreachable|errno 101", re.I), "the network is unreachable"),
+    (re.compile(r"no route to host|errno 113", re.I), "no route to the host"),
+    (re.compile(r"name or service not known|nodename nor servname|getaddrinfo|errno -[235]\b|"
+                r"temporary failure in name resolution", re.I), "the name did not resolve"),
+    (re.compile(r"certificate_verify_failed|certificate verify failed", re.I),
+     "the certificate could not be verified"),
+    (re.compile(r"\[ssl|sslerror|tlsv1 alert|handshake", re.I), "the TLS handshake failed"),
+    (re.compile(r"remote ?protocol ?error|server disconnected|connection closed|eof occurred", re.I),
+     "the server closed the connection"),
+)
+
+
+def _plain_error(err):
+    """A probe error as plain words: "the server reset the connection"
+    instead of "[Errno 104] Connection reset by peer". Unknown errors keep
+    their text, minus any "[Errno N]" prefix."""
+    if err is None:
+        return None
+    text = str(err).strip()
+    for pattern, words in _PLAIN_ERRORS:
+        if pattern.search(text):
+            return words
+    return re.sub(r"^\[Errno -?\d+\]\s*", "", text) or "unknown error"
+
+
 # ── Server classification ─────────────────────────────────────────────────────
+
+# 3.4.5: proxies people run themselves. A version number in their Server
+# header ("nginx/1.10.3") is a disclosure like any origin server's. Managed
+# CDNs and load balancers (cloudflare, awselb/2.0, ...) are not affected:
+# their version, if any, says nothing about software the site runs.
+_SELF_RUN_PROXIES = ("nginx", "varnish", "squid", "envoy")
+
 
 def classify_server(value):
     """Returns: 'absent', 'good_proxy', 'origin_no_version', 'origin_with_version', 'unknown'"""
@@ -4063,6 +4108,9 @@ def classify_server(value):
     low = value.lower()
     has_version = any(ch.isdigit() for ch in value)
     if any(p in low for p in GOOD_PROXIES):
+        managed = any(p in low for p in GOOD_PROXIES if p not in _SELF_RUN_PROXIES)
+        if has_version and not managed:
+            return "origin_with_version"
         return "good_proxy"
     if any(o in low for o in ORIGIN_SERVERS):
         return "origin_with_version" if has_version else "origin_no_version"

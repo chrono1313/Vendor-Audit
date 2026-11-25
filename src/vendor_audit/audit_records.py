@@ -988,7 +988,17 @@ def _ev_infra(kind):
         looks = [f'{l["host"]} {l["address"]}: ' + (f'AS{l["asn"]} {l["prefix"]}, RPKI {l.get("rpki_status") or "unknown"}'
                                                      if l.get("prefix") else (l.get("error") or "no data"))
                  for l in block.get("lookups") or []]
-        return _list("Hosts and addresses", hosts) + _list("Routing (RIPEstat)", looks)
+        # 3.4.5: say when the sample or the lookup cap left hosts out.
+        n_hosts = len(block.get("hosts") or {})
+        total = block.get("total") or 0
+        sampled = (f"first {n_hosts} of {total}, by priority" if kind == "mx" else f"first {n_hosts} of {total}"
+                   ) if total > n_hosts else None
+        from .audit_checks import _INFRA_MAX_LOOKUPS
+        cap = G("infra_routing").get("max_lookups") or _INFRA_MAX_LOOKUPS
+        skipped = (f"{block['unchecked']} more not looked up (at most {cap} routing lookups per scan)"
+                   if block.get("unchecked") else None)
+        return (_kv(("Hosts checked", sampled), ("Addresses", skipped))
+                + _list("Hosts and addresses", hosts) + _list("Routing (RIPEstat)", looks))
     return build
 
 

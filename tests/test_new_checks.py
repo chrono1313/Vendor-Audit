@@ -872,6 +872,67 @@ def test_every_new_check_end_to_end():
         check(f'id="check-{ar.slug(label)}"' in page or ar.slug(label) in page, f"{label}: no drawer on the page")
 
 
+# ── 3.4.5: report polish found on a badssl.com scan ─────────────────────────
+
+def test_report_polish():
+    # A self-run proxy that prints its version discloses it like any origin;
+    # managed CDNs and load balancers still pass.
+    for value, kind in (("nginx/1.10.3 (Ubuntu)", "origin_with_version"), ("nginx", "good_proxy"),
+                        ("cloudflare", "good_proxy"), ("cloudflare-nginx", "good_proxy"),
+                        ("awselb/2.0", "good_proxy"), ("Varnish/6.0", "origin_with_version"),
+                        ("Apache/2.4.62", "origin_with_version")):
+        check(ac.classify_server(value) == kind, f"classify_server({value!r}) -> {ac.classify_server(value)}, want {kind}")
+    d = sample()
+    d["server_header"] = {**d["server_header"], "server": "nginx/1.10.3 (Ubuntu)"}
+    check(findings(d).get("Server header") == "low", "nginx with a version is a disclosure (low)")
+    txt = detail(d)
+    check("reverse proxy / CDN" not in txt, "versioned nginx is not called a proxy")
+    check(line(txt, "LOW", "Server: nginx/1.10.3 (Ubuntu) — software version disclosed"), "server line reads LOW")
+
+    # Mail servers: say when only the first few were checked, and when the
+    # lookup cap left addresses out.
+    z = {("example.com", "NS"): ["ns1.dns.net."],
+         ("example.com", "MX"): [f"{10 * i} mx{i}.mail.net." for i in range(5)]}
+    z[("ns1.dns.net", "A")] = ["192.0.2.1"]
+    for i in range(5):
+        z[(f"mx{i}.mail.net", "A")] = [f"10.{i}.0.1"]
+        z[(f"mx{i}.mail.net", "AAAA")] = [f"2001:db8:{i}::1"]
+    def ripe(ip):
+        return {"address": ip, "prefix": ip + "/24", "asn": 64500, "rpki_status": "valid", "error": None}
+    with zone(z), mock.patch.object(ac, "_ripe_prefix_rpki", side_effect=ripe), \
+            mock.patch.object(ac, "_INFRA_MAX_LOOKUPS", 4):
+        r = ac.check_infra_routing("example.com")
+    check(r["mx"]["total"] == 5 and len(r["mx"]["hosts"]) == 3, f"5 MX, first 3 checked: {r['mx']}")
+    check(r["mx"]["unchecked"] == 3, f"lookup cap leaves 3 mail addresses out: {r['mx']['unchecked']}")
+    d = sample()
+    d["infra_routing"] = r
+    txt = detail(d)
+    check(line(txt, "PASS", "All 3 mail servers checked reachable over IPv6"), "mail IPv6 line says 'checked'")
+    check("Checked the first 3 of 5 mail servers, by MX priority" in txt, "sample size is stated")
+    check("3 more mail server addresses not looked up (the scan makes at most 4 routing lookups)" in txt,
+          "capped addresses are stated")
+    check(ac._finding_entry("Mail servers on IPv6", "all")[1] == "Every mail server checked is reachable over IPv6",
+          "summary wording says 'checked'")
+
+    # Port 80 closed: the detail no longer repeats the headline.
+    d = sample()
+    d["http_redirect"] = {"status": "unreachable", "detail": "HTTP port 80 not reachable"}
+    txt = detail(d)
+    check(txt.count("HTTP port 80 not reachable") == 1, "port 80 line printed once")
+
+    # Probe errors in plain words.
+    for raw, words in (("[Errno 104] Connection reset by peer", "the server reset the connection"),
+                       ("timed out", "timed out"), ("[Errno 111] Connection refused", "the server refused the connection"),
+                       ("[Errno -2] Name or service not known", "the name did not resolve"),
+                       ("[Errno 99] Cannot assign requested address", "Cannot assign requested address")):
+        check(ac._plain_error(raw) == words, f"_plain_error({raw!r}) -> {ac._plain_error(raw)!r}")
+    d = sample()
+    d["security_txt"] = {"present": False, "error": ac._plain_error(ConnectionResetError(104, "Connection reset by peer"))}
+    txt = detail(d)
+    check("Could not fetch security.txt: the server reset the connection" in txt and "Errno" not in txt,
+          "security.txt error in plain words")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -879,7 +940,7 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_csp_subchecks, test_security_txt_subchecks, test_deprecated_headers_and_lang,
          test_slow_upstreams_are_bounded, test_slow_ripestat_routing, test_slow_mail_server_bounded,
          test_ipv6_only_site_from_ipv4_only_auditor, test_unrouted_ipv6,
-         test_every_new_check_end_to_end]
+         test_report_polish, test_every_new_check_end_to_end]
 
 
 def run():
