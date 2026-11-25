@@ -15,24 +15,28 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-audit_txt_report.py — Plain-text technical report.
+audit_txt_report.py — the text report, written in Markdown.
 
-Produces a self-contained .txt file from a results dict (the same dict
+Produces a self-contained .md file from a results dict (the same dict
 audit_render.render() consumes). Designed for the technical owner of a
 system: contains the evidence and raw values the terminal report shows,
 organized by category, severity-prioritized at the top.
 
-Output is 100 columns wide, UTF-8 encoded, using Unicode box-drawing
-characters (═ ─ █ ░ ✓ ! ✗ ·). Long values (SPF records, etc)
-are emitted on their own unindented continuation lines so the text editor
-can wrap them naturally without breaking the report's structure.
+The file reads as plain text in any editor and renders as a formatted
+page wherever Markdown is shown. It stays simple and greppable: one
+finding per line, no hard wrapping, every status line starting with its
+severity word (- **HIGH** …).
 
 Single public entry point:
 
-    write_txt_report(original_domain, audit_domain, results, timestamp,
-                     out_path, report_version)
+    write_md_report(original_domain, audit_domain, results, timestamp,
+                    out_path, report_version)
 
 Returns None on success; raises OSError on filesystem errors.
+
+The detail sections are written once and printed two ways: as Markdown
+for this file, and as plain tagged text for the terminal report
+(audit_render). See "Output modes" below.
 
 The four .py files (vendor_audit, audit_checks, audit_render, audit_txt_report)
 and rubric.json share a single version number that is enforced
@@ -40,10 +44,11 @@ at startup. See vendor_audit.py for the full versioning policy.
 
 Layout
 ======
-1.  Header — domain, timestamp, version (heavy ═ rule).
-2.  Findings panel — severity counts, verdict, per-category counts.
-3.  Executive summary — severity-grouped findings (Failing / Partial /
-    Passing) with category prefix and score fraction.
+1.  Header — domain, timestamp, version, links.
+2.  Findings — severity counts, verdict, per-category table.
+3.  Executive summary — the findings grouped by severity, then the
+    informational rows. Passing checks are not repeated here; each one
+    is in its section below.
 4.  Detailed sections — Email, DNS, Routing, TLS, HTTP, HSTS, Server &
     Technology, Versioned Libraries, Browser Security Headers,
     security.txt, SSL Labs, Page Analysis, STARTTLS-MX. Each section
@@ -59,33 +64,32 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.4.11"
+__version__ = "3.5.0"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
 
 WIDTH = 100
-RULE_HEAVY = "═" * WIDTH
 RULE_LIGHT = "─" * WIDTH
 
 
 # ── Line kinds ───────────────────────────────────────────────────────────────
-# The detail sections are written once and printed two ways: as this plain
-# text file, and by the terminal report (audit_render), which colours them
-# and leaves out the explanation paragraphs. So the terminal can tell the
-# lines apart, the line builders below start each line they make with a
-# short tag naming its kind:
+# The detail sections are written once and printed two ways: as the
+# Markdown text report, and by the terminal report (audit_render), which
+# colours them and leaves out the explanation paragraphs. So the terminal
+# can tell the lines apart, the plain form of the line builders below
+# starts each line they make with a short tag naming its kind:
 #
 #   R          rule line above / below a section heading
 #   H          section heading title
 #   h          subsection heading
 #   E          explanation paragraph (What / Why / Fix)
-#   S:<sev>    first line of a status line; <sev> is a _MARKERS key
+#   S:<sev>    first line of a status line; <sev> is a _STATUS_WORDS key, or none
 #
 # A tag is \x1e + kind + \x1f, added after word-wrapping so it never counts
 # toward a line's width. Lines without a tag (tables, notes, records) are
-# printed as they are. _render_text removes every tag, so the .txt file is
-# unchanged by them; tests/test_reports.py checks that no tag survives.
+# printed as they are. The Markdown form makes no tags, and _md_tidy
+# removes any that remain; tests/test_reports.py checks that none survive.
 
 _TAG_OPEN, _TAG_CLOSE = "\x1e", "\x1f"
 _TAG_RE = re.compile("\x1e[^\x1f]*\x1f")
@@ -109,24 +113,121 @@ def split_tag(line):
     return "", line
 
 
+# ── Output modes ─────────────────────────────────────────────────────────────
+# The line builders below (_heading, _status, _kv, _para, …) write one of
+# two forms:
+#
+#   plain     tagged, word-wrapped text for the terminal report. This is
+#             the default, and its output is unchanged since 3.0.
+#   Markdown  for the .md text report: set by render_markdown. Headings
+#             are ## / ###, a status line is "- **HIGH** body" with its
+#             notes as nested "    - " items, key/value pairs are
+#             "- Key: value", records are fenced code blocks, and nothing
+#             is wrapped, so each finding stays on one greppable line.
+#
+# _md_tidy then evens out the blank lines between blocks, so a section
+# renderer can keep the spacing it uses for the plain form.
+
+_MARKDOWN = contextvars.ContextVar("vendor_audit_markdown", default=False)
+
+
+def _md():
+    """True while the Markdown text report is being rendered."""
+    return _MARKDOWN.get()
+
+
+_MD_HTML_RE = re.compile(r"<[A-Za-z/!][^<>]*>")
+
+
+def _md_inline(text):
+    """Text made safe to show as Markdown, changing as little as possible.
+
+    HTML tag names (<img>, <html lang="en">) go in code spans, so they
+    show instead of being read as markup; a * that could start emphasis
+    (a wildcard like *.example.com) is escaped. Text that already has a
+    code span is left as it is."""
+    s = re.sub(r"(?<=\S) {2,}", " ", str(text))   # alignment padding
+    if "`" in s:
+        return s
+    s = _MD_HTML_RE.sub(lambda m: f"`{m.group(0)}`", s)
+    pieces = s.split("`")
+    for i in range(0, len(pieces), 2):          # outside code spans only
+        pieces[i] = re.sub(r"\*(?=\S)", r"\\*", pieces[i])
+    return "`".join(pieces)
+
+
+def _md_cell(text):
+    """One Markdown table cell."""
+    return _md_inline(text).replace("|", "\\|")
+
+
+def _md_table(headers, rows):
+    """A Markdown table, as a list of lines."""
+    out = ["| " + " | ".join(_md_cell(h) for h in headers) + " |",
+           "| " + " | ".join("---" for _ in headers) + " |"]
+    for row in rows:
+        out.append("| " + " | ".join(_md_cell(c) for c in row) + " |")
+    return out
+
+
+class _OneNote(tuple):
+    """Note fragments that make one note.
+
+    A few notes are written as several short lines, which the plain form
+    prints one per line. Markdown keeps each note on one line, so these
+    become a single list item."""
+
+
+def _md_kind(line):
+    if line.startswith("    - "):
+        return "nested"
+    if line.startswith("- "):
+        return "list"
+    if line.startswith("|"):
+        return "table"
+    if line.startswith("```"):
+        return "fence"
+    return "text"
+
+
+def _md_tidy(text):
+    """The Markdown document with its spacing evened out.
+
+    Exactly one blank line between blocks; none between the items of a
+    list or the rows of a table, or before a nested item. A nested item
+    with no list item above it moves out to the top level. Lines outside
+    lists and code blocks lose their leading spaces (four would make a
+    code block)."""
+    out = []
+    prev = None
+    in_fence = False
+    for raw in strip_tags(text).split("\n"):
+        if in_fence:
+            out.append(raw.rstrip())
+            if raw.strip() == "```":
+                in_fence = False
+            continue
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith("    - "):
+            line = line.lstrip()
+        kind = _md_kind(line)
+        if kind == "nested" and prev not in ("list", "nested"):
+            line, kind = line[4:], "list"
+        together = ((prev in ("list", "nested") and kind in ("list", "nested"))
+                    or (prev == "table" and kind == "table"))
+        if prev is not None and not together:
+            out.append("")
+        out.append(line)
+        if kind == "fence":
+            in_fence = True
+        prev = kind
+    return "\n".join(out).rstrip() + "\n"
+
+
 # ── Severity classification ──────────────────────────────────────────────────
 
-
-# Status markers — one symbol per severity. The plain-text report relies
-# on these instead of color, which doesn't survive copy-paste or email.
-_MARKERS = {
-    "pass": "✓",
-    "warn": "!",
-    "fail": "✗",
-    "info": "·",
-    # Finding severities share the four markers: critical and high read as
-    # ✗, medium and low as !. The severity word itself is printed beside
-    # every finding, so the marker never carries the meaning alone.
-    "critical": "✗",
-    "high":     "✗",
-    "medium":   "!",
-    "low":      "!",
-}
 
 # Severity order and display labels for findings.
 SEVERITY_ORDER = ("critical", "high", "medium", "low", "info", "pass")
@@ -430,8 +531,8 @@ def _criticality_rank(label):
 #   what  — one sentence: what this control is.
 #   why   — one sentence: why a vendor should care.
 #   fix   — one sentence: what to do if it's missing or weak.
-# Keep each line under ~140 characters so they wrap cleanly in the 100-col
-# txt report and don't require a second wrap on a typical browser width.
+# Keep each line under ~140 characters so they wrap cleanly in the
+# terminal and don't require a second wrap on a typical browser width.
 EXPLANATIONS = {
     "spf": {
         "what": "SPF is a DNS record that lists which mail servers are allowed to send email using your domain.",
@@ -792,6 +893,13 @@ def _explanation_lines_txt(key, indent="  "):
     entry = EXPLANATIONS.get(key)
     if not entry:
         return []
+    if _md():
+        # One paragraph each, so What / Why / Fix stay apart when rendered.
+        out = []
+        for label in ("What", "Why", "Fix"):
+            if entry[label.lower()]:
+                out += [f"**{label}:** {_md_inline(entry[label.lower()])}", ""]
+        return out[:-1]
     out = []
     body_w = WIDTH - len(indent) - 6  # leave room for the "What:" label
     for label, text in (("What", entry["what"]),
@@ -874,29 +982,72 @@ def _expand_cert_issuer(issuer):
     return _CERT_ISSUER_EXPANSIONS.get(issuer_str, issuer_str)
 
 
-def _bar(pct, width=20):
-    """Render a horizontal bar of width chars, filled to pct percent.
-    Uses U+2588 (full block) for filled and U+2591 (light shade) for
-    empty — both render correctly in Notepad on Windows 11 with the
-    default Consolas font."""
-    pct = max(0, min(100, int(pct)))
-    filled = round(pct / 100 * width)
-    return "█" * filled + "░" * (width - filled)
-
-
 # Builders for the line shapes used throughout the report. Each returns a
 # string (no trailing newline) so the caller can join with "\n" and decide
 # its own paragraph spacing.
 
 def _heading(title):
     """Section heading — light rule above and below the title line."""
+    if _md():
+        return f"## {_md_title(title)}"
     return f"{_tag('R')}{RULE_LIGHT}\n{_tag('H')}  {title}\n{_tag('R')}{RULE_LIGHT}"
 
 
 def _subheading(title):
     """Subsection heading — just the title, indented two spaces.
     Surrounding paragraphs are responsible for blank lines."""
+    if _md():
+        return f"### {_md_inline(title.replace('(--deep)', '(deep scan)'))}"
     return f"{_tag('h')}  {title}"
+
+
+# Words kept in capitals when a section title is put in sentence case.
+_MD_TITLE_KEEP = {"DNS", "IP", "ASN", "RPKI", "TLS", "HTTP", "HSTS", "CORS",
+                  "SSL", "MX", "STARTTLS", "OWASP", "W3C", "RFC"}
+
+
+def _md_title(title):
+    """A section title in sentence case: "BROWSER SECURITY HEADERS (W3C /
+    OWASP secure-headers)" → "Browser security headers (W3C / OWASP
+    secure-headers)". The part in brackets is already in normal case."""
+    title = title.replace("(--deep)", "(deep scan)")
+    head, sep, rest = title.partition(" (")
+    words = []
+    for i, w in enumerate(head.split(" ")):
+        if w in _MD_TITLE_KEEP or not w.isupper():
+            words.append(w)
+        elif w == "LABS":
+            words.append("Labs")
+        else:
+            words.append(w.capitalize() if i == 0 else w.lower())
+    return _md_inline(" ".join(words) + sep + rest)
+
+
+def _para(text, indent=2):
+    """A paragraph of prose: word-wrapped and indented in the plain form,
+    one line in Markdown."""
+    if _md():
+        return _md_inline(text)
+    return "\n".join(f"{' ' * indent}{ln}" for ln in _wrap_at_words(text, WIDTH - indent))
+
+
+def _items(values, indent=7, nested=True):
+    """A bare list of values (nameservers, technologies): one per line
+    in the plain form; Markdown list items, nested under the status line
+    above them unless `nested` is False."""
+    if _md():
+        lead = "    - " if nested else "- "
+        return "\n".join(f"{lead}{_md_inline(v)}" for v in values)
+    return "\n".join(f"{' ' * indent}{v}" for v in values)
+
+
+def _code_list(label, values, indent=7):
+    """A labelled list of raw values (certificate names): the plain form
+    indents them under the label; Markdown puts them in a code block."""
+    if _md():
+        return "\n".join([_md_inline(label), "", "```", *map(str, values), "```"])
+    return "\n".join([f"{' ' * indent}{label}",
+                      *(f"{' ' * (indent + 2)}{v}" for v in values)])
 
 
 def _wrap_at_words(text, width):
@@ -1017,6 +1168,15 @@ def _status(severity, body, sub_lines=None, note_lines=None, check=None):
     the body text (col 14). sub_lines and note_lines are iterables of
     strings; each is indented further under the body."""
     word = _status_word(severity, check)
+    if _md():
+        label = _STATUS_WORDS.get(word, "")
+        body = _md_inline(body)
+        first = (f"- **{label}** {body}" if body else f"- **{label}**") if label else f"- {body}"
+        out = [first.rstrip()]
+        notes = [" ".join(note_lines)] if isinstance(note_lines, _OneNote) else (note_lines or [])
+        out += [f"    - {_md_inline(n)}" for n in notes]
+        out += [f"    - {_md_inline(s)}" for s in (sub_lines or [])]
+        return "\n".join(out)
     LEAD = "    "                                # 4 spaces before the word
     BODY_INDENT = " " * (len(LEAD) + _STATUS_WORD_W + 2)   # col 14
     BODY_W = WIDTH - len(BODY_INDENT)           # col budget for body text
@@ -1030,9 +1190,8 @@ def _status(severity, body, sub_lines=None, note_lines=None, check=None):
 
     if note_lines:
         # Note lines get a "· " bullet prefix so they read as distinct
-        # remarks in the txt report AND so the HTML parser can tell them
-        # apart from body word-wrap continuations (which share the same
-        # 7-space indent but must be rejoined into the sentence).
+        # remarks, apart from body word-wrap continuations (which share
+        # the same indent but continue the sentence).
         for ln in note_lines:
             wrapped_lines = _wrap_at_words(f"· {ln}", BODY_W)
             for wi, wrapped in enumerate(wrapped_lines):
@@ -1066,6 +1225,8 @@ def _kv(pairs, indent=7, gap=4):
     `gap` is the column gap between key and value."""
     if not pairs:
         return ""
+    if _md():
+        return "\n".join(f"- {_md_inline(k)}: {_md_inline(v)}" for k, v in pairs)
     max_key = max(len(k) for k, _ in pairs)
     out = []
     for k, v in pairs:
@@ -1077,6 +1238,9 @@ def _raw_value(label, value, indent=4):
     """Long verbatim record (SPF, DMARC, CSP, etc). Emitted as a label
     line followed by the value on its own line, unindented past the
     leading margin so Notepad's word-wrap does the right thing."""
+    if _md():
+        block = f"```\n{value}\n```"
+        return f"{_md_inline(label)}\n\n{block}" if label else block
     pad = " " * indent
     if label:
         return f"{pad}{label}\n{pad}{value}"
@@ -1247,146 +1411,62 @@ class _ReportData:
         return out
 
 
+_SITE_LINKS = ("[vendoraudit.org](https://vendoraudit.org) · "
+               "[GitHub](https://github.com/chrono1313/Vendor-Audit)")
+
+
 def _render_header(data):
-    """Title block with heavy ═ rule."""
+    """Title, then one line with the time, version and links."""
     try:
         ts_dt = datetime.fromisoformat(data.timestamp.replace("Z", "+00:00"))
         ts_human = ts_dt.strftime("%B %d, %Y at %H:%M:%S %Z").strip()
     except (ValueError, AttributeError):
         ts_human = data.timestamp
-
-    meta = f"{ts_human}   ·   v{data.report_version}"
     return "\n".join([
-        RULE_HEAVY,
-        "  Vendor Audit",
-        f"  {data.original_domain}",
-        f"  {meta}",
-        "  https://vendoraudit.org",
-        "  https://github.com/chrono1313/Vendor-Audit",
-        RULE_HEAVY,
+        f"# Vendor Audit — {data.original_domain}",
+        "",
+        f"{ts_human} · v{data.report_version} · {_SITE_LINKS}",
     ])
 
 
 def _render_score_panel(data):
-    """Findings headline + per-category counts.
+    """Findings headline + per-category table.
 
-      FINDINGS    2 critical · 4 high · 11 medium · 10 low
-                  Critical issues found
+      ## Findings
 
-        Email     1 critical · 1 medium · 2 low                  8 passed
-        DNS       2 medium                                       3 passed
+      **2 critical · 4 high · 11 medium** — Critical issues found
+
+      | Category | Findings | Passed |
+      | --- | --- | --- |
+      | Email | 1 critical · 1 medium | 8 |
     """
-    out = [f"FINDINGS    {severity_summary(data.counts)}",
-           f"            {data.verdict}"]
+    out = ["## Findings", "",
+           f"**{severity_summary(data.counts)}** — {data.verdict}"]
     cat_rows = data.category_rows or []
     if cat_rows:
-        out.append("")
-        summaries = ["not checked (site unreachable from this audit server)" if r.get("not_checked")
-                     else severity_summary(r["counts"]) for r in cat_rows]
-        sum_w = max(len(x) for x in summaries)
-        for r, summ in zip(cat_rows, summaries):
-            tail = "" if r.get("not_checked") else f"    {r['passed']} passed"
-            out.append(f"  {r['category'].ljust(10)}{summ.ljust(sum_w)}{tail}".rstrip())
+        rows = []
+        for r in cat_rows:
+            if r.get("not_checked"):
+                rows.append((r["category"], "not checked (site unreachable from this audit server)", "—"))
+            else:
+                rows.append((r["category"], severity_summary(r["counts"]), str(r["passed"])))
+        out += [""] + _md_table(("Category", "Findings", "Passed"), rows)
     return "\n".join(out)
 
 
 def _render_findings_group(title, rows):
-    """One severity-grouped block in the Executive Summary.
+    """One severity group in the Executive Summary:
 
-    Each finding line:
-      ✗  Website   Content Security Policy not set                   0 / 2
+      ### High (2)
 
-    Layout:
-      4 sp + marker + 2 sp + cat (8 wide) + 1 sp + label … rjust(frac, 7)
-
-    Column widths chosen to total 80. Frac column is anchored to the
-    right edge with at least 1 space of padding before it; long labels
-    truncate to fit only as a last resort (we let them ride into the
-    frac column instead, since truncating loses information)."""
+      - **HIGH** Website — No Content-Security-Policy restricting scripts
+    """
     if not rows:
         return ""
-
-    out = [f"  {title} ({len(rows)})", ""]
-
-    # Width budget — pin labels to WIDTH-2 (2-col right margin) so the
-    # frac column right-aligns at the same edge as the rule lines.
-    #   2  outer indent (none — start at col 4 below)
-    #   4  '    '         pre-marker indent
-    #   1  marker
-    #   2  '  '           after marker
-    #   8  category col (left-justified, padded)
-    #   1  space
-    #   N  label
-    #   2  '  '           label-to-frac gutter (min)
-    #   ?  frac col (e.g. "0 / 2", "10 / 10", "1.5 / 2")
-    LINE = WIDTH - 2
-    LEAD = 4 + 1 + 2  # before category
-
-    # Compute frac strings up-front so we can size the column.
-    # The right-hand column carries the severity word on issue rows, so a
-    # grep for CRITICAL or HIGH lists the findings themselves. Informational
-    # and passing rows leave it empty.
-    fracs = [r["severity"].upper() if r["severity"] in ISSUE_SEVERITIES else ""
-             for r in rows]
-    frac_w = max(len(f) for f in fracs)
-
-    # Categories are padded to a uniform 8 chars (Email, DNS, Routing,
-    # TLS, HTTP, Website all fit).
-    CAT_W = 8
-
-    for r, frac in zip(rows, fracs):
-        marker = _MARKERS.get(r["severity"], "·")
-        cat    = r["category"].ljust(CAT_W)
-        label  = r["display"]
-
-        # Compute available label width.
-        label_w = LINE - LEAD - CAT_W - 1 - 2 - frac_w
-        if len(label) <= label_w:
-            line = (f"    {marker}  {cat} {label}"
-                    f"{' ' * (label_w - len(label))}  {frac.rjust(frac_w)}").rstrip()
-        else:
-            # Label longer than fits — wrap on word boundaries onto
-            # continuation line(s). The frac column stays on line 1.
-            words = label.split()
-            line1_words = []
-            buf_len = 0
-            i = 0
-            for w in words:
-                add = len(w) + (1 if line1_words else 0)
-                if buf_len + add > label_w:
-                    break
-                line1_words.append(w)
-                buf_len += add
-                i += 1
-            # Edge case: a single word is longer than label_w. Hard-cut
-            # only as a fallback so the line still terminates somewhere.
-            if not line1_words:
-                line1_words = [words[0][:label_w]]
-                rest_first = words[0][label_w:]
-                rest_words = ([rest_first] if rest_first else []) + words[1:]
-            else:
-                rest_words = words[i:]
-
-            line1_label = " ".join(line1_words)
-            line = (f"    {marker}  {cat} {line1_label}"
-                    f"{' ' * (label_w - len(line1_label))}  {frac.rjust(frac_w)}").rstrip()
-            cont_indent = " " * (LEAD + CAT_W + 1)
-
-            # Soft-wrap continuation by words.
-            buf = ""
-            cont_lines = []
-            for w in rest_words:
-                if buf and len(buf) + 1 + len(w) > label_w:
-                    cont_lines.append(buf)
-                    buf = w
-                else:
-                    buf = (buf + " " + w) if buf else w
-            if buf:
-                cont_lines.append(buf)
-            for cl in cont_lines:
-                line += "\n" + cont_indent + cl
-        out.append(line)
-
+    out = [f"### {title.capitalize()} ({len(rows)})", ""]
+    for r in rows:
+        word = _STATUS_WORDS.get(r["severity"], r["severity"].upper())
+        out.append(f"- **{word}** {r['category']} — {_md_inline(r['display'])}")
     return "\n".join(out)
 
 
@@ -1396,13 +1476,12 @@ def _render_executive_summary(data):
     Within a severity, findings are ordered by how much the practice
     matters (_CRITICALITY_RANK_TABLE), regardless of category.
     Informational rows (optional practices, or checks that could not be
-    determined) and passing rows follow in their own blocks.
+    determined) follow in their own block. Passing checks are not listed
+    here: the category table counts them, and each one is in its section.
     """
     infos  = [r for r in data.finding_rows if r["severity"] == "info"]
-    passes = [r for r in data.finding_rows if r["severity"] == "pass"]
     ranked = data.issues_ranked()
 
-    out = [_heading("EXECUTIVE SUMMARY"), ""]
     blocks = []
     for sev in ISSUE_SEVERITIES:
         rows = [r for r in ranked if r["severity"] == sev]
@@ -1410,12 +1489,9 @@ def _render_executive_summary(data):
             blocks.append(_render_findings_group(SEVERITY_TITLES[sev], rows))
     if infos:
         blocks.append(_render_findings_group(SEVERITY_TITLES["info"], infos))
-    if passes:
-        blocks.append(_render_findings_group(SEVERITY_TITLES["pass"], passes))
     if not ranked:
-        blocks.insert(0, "  No issues found.")
-    out.append("\n\n".join(b for b in blocks if b))
-    return "\n".join(out)
+        blocks.insert(0, "No issues found.")
+    return "\n\n".join(["## Executive summary"] + blocks)
 
 
 # ── Detailed sections: Email ─────────────────────────────────────────────────
@@ -1490,7 +1566,10 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
         if lc is not None and s != "null_sender":
             if lc > 10:
                 out.append(_status("fail",
-                    f"SPF lookup count: {lc} — exceeds 10-lookup limit (silent failures likely)", check=chk + "SPF lookup count"))
+                    f"SPF lookup count: {lc} — exceeds 10-lookup limit (silent failures likely)",
+                    note_lines=["The limit counts the lookups inside included records too: an include: "
+                                "whose record includes other domains in turn uses a lookup for each of them."],
+                    check=chk + "SPF lookup count"))
             elif lc >= 9:
                 out.append(_status("pass",
                     f"SPF lookup count: {lc} of 10 — close to the limit", check=chk + "SPF lookup count"))
@@ -1538,7 +1617,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
             out.append("")
             out.append(_raw_value("Record published:", record))
     else:
-        out.append("    No SPF data collected.")
+        out.append(_para("No SPF data collected.", 4))
 
     out.append("")
     out.append("")
@@ -1620,7 +1699,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
             out.append("")
             out.append(_raw_value("Record published:", dmarc["record"]))
     else:
-        out.append("    No DMARC data collected.")
+        out.append(_para("No DMARC data collected.", 4))
 
     out.append("")
     out.append("")
@@ -1644,18 +1723,24 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                     sub_lines=["Publish MX 0 . (RFC 7505) if the domain receives no mail"],
                     check=chk + "Null MX on no-mail domain"))
             else:
-                out.append("    No MX records — domain does not receive email.")
+                out.append(_para("No MX records — domain does not receive email.", 4))
         else:
             # Plain table, two columns: Priority + Host. Lower priority
             # = preferred — note this once for users who don't know.
-            out.append("    Priority   Host")
-            out.append("    ────────   " + "─" * 60)
-            for entry in mx.get("entries", []):
-                pri = str(entry.get("priority", ""))
-                host = entry.get("host", "")
-                out.append(f"    {pri:>5}      {host}")
-            out.append("")
-            out.append("    (lower priority value = preferred)")
+            if _md():
+                out.extend(_md_table(("Priority", "Host"),
+                    [(str(e.get("priority", "")), e.get("host", "")) for e in mx.get("entries", [])]))
+                out.append("")
+                out.append("Lower priority value = preferred.")
+            else:
+                out.append("    Priority   Host")
+                out.append("    ────────   " + "─" * 60)
+                for entry in mx.get("entries", []):
+                    pri = str(entry.get("priority", ""))
+                    host = entry.get("host", "")
+                    out.append(f"    {pri:>5}      {host}")
+                out.append("")
+                out.append("    (lower priority value = preferred)")
 
             # MX target hygiene findings (RFC 2181 §10.3 / RFC 5321 §5.1)
             mx_targets_ip    = mx.get("mx_targets_ip") or []
@@ -1698,7 +1783,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                         f"Reverse DNS confirmed for {good} mail server address{'es' if good > 1 else ''}",
                         check=chk + "MX reverse DNS"))
     else:
-        out.append("    No MX data collected.")
+        out.append(_para("No MX data collected.", 4))
 
     # ── Mail transport hardening ─────────────────────────────────────────
     has_mx = bool(mx.get("entries")) and not mx.get("null_mx")
@@ -1871,11 +1956,11 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
             else:
                 items.append(_status("warn",
                     f"No DKIM at common selectors ({', '.join(checked)})",
-                    note_lines=[
+                    note_lines=_OneNote([
                         "Partial check only — DKIM uses arbitrary selector names; absence at",
                         "common names proves nothing. Use rua= reports from DMARC to discover",
                         "the actual selectors in use.",
-                    ], check=chk + "DKIM (common selectors)"))
+                    ]), check=chk + "DKIM (common selectors)"))
 
         if items:
             out.append("")
@@ -1957,14 +2042,15 @@ def _render_email_section(data):
     if redirected and data.audit_domain != data.original_domain:
         parts.append("")
         parts.append("")
-        parts.append("  " + "─" * (WIDTH - 2))
-        parts.append(f"  Redirect target: {data.audit_domain}")
-        parts.append("  " + "─" * (WIDTH - 2))
+        if _md():
+            parts.append(f"### Redirect target: {data.audit_domain}")
+        else:
+            parts.append("  " + "─" * (WIDTH - 2))
+            parts.append(f"  Redirect target: {data.audit_domain}")
+            parts.append("  " + "─" * (WIDTH - 2))
         parts.append("")
-        para = ("Email is also audited for the redirect target, since "
-                "users may receive mail at either domain.")
-        for ln in _wrap_at_words(para, WIDTH - 2):
-            parts.append(f"  {ln}")
+        parts.append(_para("Email is also audited for the redirect target, since "
+                           "users may receive mail at either domain."))
         parts.append("")
         parts.append(_render_email_block(
             data.audit_domain,
@@ -2059,8 +2145,7 @@ def _render_dns_section(data):
         ns_list = ns_soa.get("nameservers", []) or []
         if ns_list:
             parts.append("")
-            for h in ns_list:
-                parts.append(f"       {h}")
+            parts.append(_items(ns_list))
 
         soa = ns_soa.get("soa")
         if soa:
@@ -2259,14 +2344,15 @@ def _render_routing_section(data):
                 addr_pairs = [("Address", all_addrs[0])]
                 sub.append(_kv(addr_pairs))
             else:
-                addr_pairs = [(f"Addresses ({len(all_addrs)})", all_addrs[0])]
+                addr_pairs = [(f"Addresses ({len(all_addrs)})",
+                               ", ".join(all_addrs) if _md() else all_addrs[0])]
                 sub.append(_kv(addr_pairs))
                 # Continuation indent matches _kv's value column. _kv pads
                 # keys to max-key-width + 4 (gap). For just one pair, the
                 # value column starts at indent + len(key) + 4.
                 key_w = len(addr_pairs[0][0])
                 value_col = 7 + key_w + 4
-                for extra in all_addrs[1:]:
+                for extra in ([] if _md() else all_addrs[1:]):
                     sub.append(f"{' ' * value_col}{extra}")
 
         meta_pairs = []
@@ -2533,11 +2619,11 @@ def _render_tls_section(data):
         elif cs == "incomplete":
             parts.append(_status("warn",
                 f"Incomplete chain: server sent {sent} cert(s) but {ver_n} were needed",
-                note_lines=[
+                note_lines=_OneNote([
                     "Clients fall back to AIA fetching (some clients don't",
                     "AIA-fetch; captive portals break it; latency suffers).",
                     "Server should send leaf + every needed intermediate.",
-                ], check="Cert chain completeness"))
+                ]), check="Cert chain completeness"))
 
     if not tls.get("error"):
         kv_pairs = []
@@ -2559,9 +2645,7 @@ def _render_tls_section(data):
         san = tls.get("cert_san_names") or []
         if san:
             parts.append("")
-            parts.append(f"       SAN names ({len(san)}):")
-            for n in san:
-                parts.append(f"         {n}")
+            parts.append(_code_list(f"SAN names ({len(san)}):", san))
 
     return "\n".join(parts)
 
@@ -2791,8 +2875,8 @@ def _render_server_disclosure_section(data):
     parts.extend(_section_explanation_lines("server_disclosure"))
 
     if srv.get("error"):
-        parts.append("    Site unreachable. Server and security headers cannot be evaluated.")
-        parts.append(f"    {srv['error']}")
+        parts.append(_para("Site unreachable. Server and security headers cannot be evaluated.", 4))
+        parts.append(_para(str(srv['error']), 4))
         return "\n".join(parts)
 
     val = srv.get("server")
@@ -2949,8 +3033,7 @@ def _render_server_disclosure_section(data):
             parts.append("")
             parts.append(_subheading("Technology stack"))
             parts.append("")
-            for s in unique:
-                parts.append(f"       {s}")
+            parts.append(_items(unique, nested=False))
 
     return "\n".join(parts)
 
@@ -2964,10 +3047,10 @@ def _render_versioned_libraries_section(data):
 
     parts = ["", _heading("VERSIONED LIBRARIES (OWASP A06:2021 — vulnerable & outdated components)"), ""]
     parts.extend(_section_explanation_lines("eol_libraries"))
-    parts.append(
-        f"  {len(vlibs)} client-side librar"
+    parts.append(_para(
+        f"{len(vlibs)} client-side librar"
         f"{'y' if len(vlibs)==1 else 'ies'} detected in static HTML."
-    )
+    ))
     parts.append("")
 
     # Compute column widths from the data.
@@ -2977,6 +3060,21 @@ def _render_versioned_libraries_section(data):
     ver_w = max(len(str(l.get("version", "?"))) for l in vlibs)
     name_w = max(name_w, len("Library"))
     ver_w  = max(ver_w,  len("Version"))
+
+    if _md():
+        rows = []
+        for lib in vlibs:
+            name = (_LIB_DISPLAY_NAMES.get(lib.get("library", ""))
+                    or lib.get("name") or lib.get("library", ""))
+            ver = str(lib.get("version", "?"))
+            if lib.get("eol_status") == "eol":
+                rows.append((name, ver, "EOL", lib.get("eol_message") or "version is end-of-life"))
+            elif lib.get("eol_status") == "unknown":
+                rows.append((name, ver, "no data", "Library not in EOL database"))
+            else:
+                rows.append((name, ver, "in support", ""))
+        parts.extend(_md_table(("Library", "Version", "Status", "Notes"), rows))
+        return "\n".join(parts)
 
     parts.append(f"    {'Library'.ljust(name_w)}   {'Version'.ljust(ver_w)}   Status     Notes")
     parts.append(f"    {'─' * name_w}   {'─' * ver_w}   ──────     ─────")
@@ -3213,10 +3311,8 @@ def _render_browser_security_headers_section(data):
     parts.append(_subheading("Cookies (on homepage response) (RFC 6265)"))
     parts.append("")
     if not cookies:
-        para = ("No Set-Cookie headers on this response (cookies set after "
-                "login or by JavaScript are not visible here).")
-        for ln in _wrap_at_words(para, WIDTH - 4):
-            parts.append(f"    {ln}")
+        parts.append(_para("No Set-Cookie headers on this response (cookies set after "
+                           "login or by JavaScript are not visible here).", 4))
     else:
         for ck in cookies:
             name = ck.get("name", "")
@@ -3236,6 +3332,13 @@ def _render_browser_security_headers_section(data):
             else:
                 flags.append("✗ SameSite missing")
 
+            if _md():
+                parts.append(f"- `{name}` — {' · '.join(flags)}")
+                if infra:
+                    parts.append("    - CDN/WAF cookie")
+                if issues:
+                    parts.append(f"    - Issues: {_md_inline(', '.join(issues))}")
+                continue
             parts.append(f"       {name}")
             parts.append(f"         {' · '.join(flags)}")
             if infra:
@@ -3321,17 +3424,17 @@ def _render_error_page_section(data):
     elif epo == "default_no_version":
         parts.append(_status("warn",
             f"Default {detected} error page detected (status {status}) — no version disclosed",
-            note_lines=[
+            note_lines=_OneNote([
                 "Operator has not customised the default 404. Strip or override",
                 "to avoid disclosing server software in error responses.",
-            ], check="Default error page"))
+            ]), check="Default error page"))
     elif epo == "default_with_version":
         parts.append(_status("fail",
             f"Default {detected}/{version} error page (status {status})",
-            note_lines=[
+            note_lines=_OneNote([
                 f"Default 404 reveals {detected} version {version}.",
                 "Strip the default error page or replace it with a custom template.",
-            ], check="Default error page"))
+            ]), check="Default error page"))
     elif epo == "spa_or_2xx":
         parts.append(_status("info",
             f"Probe path returned {status} (SPA shell or wildcard route) — no 404 to inspect", check="Default error page"))
@@ -3366,22 +3469,22 @@ def _render_cors_section(data):
     elif co_outcome == "weak_wildcard_with_credentials":
         parts.append(_status("fail",
             "ACAO=* combined with Allow-Credentials=true — spec-forbidden pairing",
-            note_lines=[
+            note_lines=_OneNote([
                 "Browsers refuse this combination at runtime, but a server emitting",
                 "it indicates the operator believes credentials flow cross-origin",
                 "from any origin — a real misconfiguration.",
-            ], check="CORS configuration"))
+            ]), check="CORS configuration"))
     elif co_outcome == "weak_null_origin":
         parts.append(_status("fail",
             "ACAO=null — trusts sandboxed iframes and other null-origin contexts", check="CORS configuration"))
     elif co_outcome == "weak_reflective":
         parts.append(_status("fail",
             "Reflective ACAO — server echoes whatever Origin: the client sends",
-            note_lines=[
+            note_lines=_OneNote([
                 "Verified by sending Origin: https://vendor-audit-cors-probe.example",
                 "and observing the same value returned in Access-Control-Allow-Origin.",
                 "Any origin is effectively trusted; equivalent to ACAO=*.",
-            ], check="CORS configuration"))
+            ]), check="CORS configuration"))
     elif co_outcome == "error":
         parts.append(_status("info",
             f"Could not probe CORS: {cors.get('error', '?')}", check="CORS configuration"))
@@ -3472,16 +3575,14 @@ def _render_page_analysis_section(data):
                      if cap_used < 5242880 else "")
         para = (f"Body truncated. Page body exceeded {cap_str} capture "
                 f"limit — counts below are conservative.{deep_hint}")
-        for ln in _wrap_at_words(para, WIDTH - 2):
-            parts.append(f"  {ln}")
+        parts.append(_para(para))
         parts.append("")
     if not looks_html and (page.get("body_bytes") or 0) > 0:
         para = ("Response body does not look like HTML. Page-level counts "
                 "below are unreliable. Common causes: bot-mitigation "
                 "challenge page (Akamai / AWS WAF), non-HTML payload "
                 "(JSON API, PDF), or a CDN that ignored Accept-Encoding.")
-        for ln in _wrap_at_words(para, WIDTH - 2):
-            parts.append(f"  {ln}")
+        parts.append(_para(para))
         parts.append("")
 
     a = page.get("a11y") or {}
@@ -3494,14 +3595,18 @@ def _render_page_analysis_section(data):
 
     parts.append(_subheading("Parser inventory"))
     parts.append("")
-    parts.append(_kv([
+    inventory = [
         ("HTML inspected",        _fmt_kb_or_mb(body_bytes)),
         ("<script>",              str(scripts)),
         ("<link rel=stylesheet>", str(stylesheets)),
         ("<img>",                 str(img_total)),
         ("<input>",               str(inp_total)),
         ("<iframe>",              str(iframe_n)),
-    ]))
+    ]
+    if _md():
+        parts.extend(_md_table(("Item", "Count"), inventory))
+    else:
+        parts.append(_kv(inventory))
     parts.append("")
 
     if (looks_html and scripts > 0 and img_total == 0 and inp_total == 0
@@ -3510,8 +3615,7 @@ def _render_page_analysis_section(data):
                 "(Cloudflare / Akamai / AWS WAF) — could also be a real "
                 "SPA shell rendered client-side. Either way the static "
                 "HTML has no <img>/<input>.")
-        for ln in _wrap_at_words(para, WIDTH - 2):
-            parts.append(f"  {ln}")
+        parts.append(_para(para))
         parts.append("")
 
     sri_outcome = page.get("sri_outcome")
@@ -3624,8 +3728,7 @@ def _render_page_analysis_section(data):
         para = ("A11y signals are not rated as findings — they are reported for "
                 "awareness only. For a full audit use WebAIM WAVE, "
                 "Axe DevTools, or pa11y.")
-        for ln in _wrap_at_words(para, WIDTH - 2):
-            parts.append(f"  {ln}")
+        parts.append(_para(para))
 
     return "\n".join(parts)
 
@@ -3640,13 +3743,12 @@ def _render_starttls_section(data):
     parts = ["", _heading("MX STARTTLS PROBE (--deep) (RFC 3207)"), ""]
     para = ("Probing port 25 → EHLO → STARTTLS on each MX host. Many "
             "networks block port 25 egress; partial results are normal.")
-    for ln in _wrap_at_words(para, WIDTH - 2):
-        parts.append(f"  {ln}")
+    parts.append(_para(para))
     parts.append("")
 
     rows = starttls.get("results") or {}
     if not rows:
-        parts.append("    No probe results.")
+        parts.append(_para("No probe results.", 4))
         return "\n".join(parts)
 
     # Per-host vertical block — three lines per host (MX Host / TLS /
@@ -3669,6 +3771,20 @@ def _render_starttls_section(data):
         if v in ("TLSV1", "TLSV1.0", "TLSV1.1"):
             return "  ← legacy TLS, vulnerable"
         return ""
+
+    if _md():
+        table = []
+        for host, info_d in rows.items():
+            if info_d.get("error"):
+                table.append((host, f"unprobed — {info_d['error']}", "", ""))
+                continue
+            ver_raw = info_d.get("tls_version") or "?"
+            note = _tls_annotation(ver_raw).replace("←", "").strip()
+            table.append((host, f"{ver_raw} ({note})" if note else ver_raw,
+                          _expand_cert_issuer(info_d.get("cert_issuer")) or "",
+                          info_d.get("cert_expires") or ""))
+        parts.extend(_md_table(("MX host", "TLS", "Issuer", "Expires"), table))
+        return "\n".join(parts)
 
     host_list = list(rows.items())
     for i, (host, info_d) in enumerate(host_list):
@@ -3748,7 +3864,7 @@ def ipv6_only_note(results):
 
 def bot_challenge_note(server_header):
     """(heading, lines) for the notice shown when a bot defence answered the
-    audit instead of the site, or None. Shared by the .txt and the page."""
+    audit instead of the site, or None. Shared by the text report and the page."""
     sh = server_header or {}
     if not sh.get("bot_challenge"):
         return None
@@ -3765,73 +3881,53 @@ def bot_challenge_note(server_header):
     ]
 
 
-def _render_text(data):
-    """Compose the final text document from the prepared _ReportData."""
+def render_markdown(data):
+    """The whole text report, as Markdown, from the prepared _ReportData."""
+    token = _MARKDOWN.set(True)
+    try:
+        return _md_tidy(_render_markdown(data))
+    finally:
+        _MARKDOWN.reset(token)
+
+
+def _render_markdown(data):
     redirected = (data.results.get("redirect") or {}).get("redirected")
 
-    out = []
-    out.append(_render_header(data))
-    out.append("")
-    out.append("")
+    out = [_render_header(data), ""]
 
     # Partial-audit banner. Mirrors the web result page's banner so the
-    # downloadable .txt is also clearly marked as incomplete when the
+    # downloadable report is also clearly marked as incomplete when the
     # audit hit its wall-clock deadline.
     if data.results.get("_partial"):
         reason = data.results.get("_partial_reason") or \
             "Some checks did not complete."
-        out.append("  ⚠ PARTIAL AUDIT")
-        out.append(f"    {reason}")
-        out.append("")
-        out.append("")
+        out += [f"**⚠ Partial audit:** {_md_inline(reason)}", ""]
 
-    note = bot_challenge_note(data.results.get("server_header"))
-    if note:
-        head, lines = note
-        out.append(f"  {head}: {lines[0]}")
-        out.extend(f"  {line}" for line in lines[1:])
-        out.append("")
-        out.append("")
-
-    note = ipv6_only_note(data.results)
-    if note:
-        head, lines = note
-        out.append(f"  {head}: {lines[0]}")
-        out.extend(f"  {line}" for line in lines[1:])
-        out.append("")
-        out.append("")
+    for note in (bot_challenge_note(data.results.get("server_header")),
+                 ipv6_only_note(data.results)):
+        if note:
+            head, lines = note
+            out += [f"**{head}:** {_md_inline(' '.join(lines))}", ""]
 
     if redirected and data.audit_domain != data.original_domain:
-        out.append(f"  Redirect: {data.original_domain} redirects to {data.audit_domain}.")
-        out.append("  Email is audited for both domains; web / TLS reflects the destination.")
-        out.append("")
-        out.append("")
+        out += [f"**Redirect:** {data.original_domain} redirects to {data.audit_domain}. "
+                "Email is audited for both domains; web / TLS reflects the destination.", ""]
 
-    out.append(_render_score_panel(data))
-    out.append("")
-    out.append("")
-
-    out.append(_render_executive_summary(data))
-    out.append(render_detail_sections(data))
-
-    out.append(_render_scan_footer(data))
-    out.append("")
-    out.append(RULE_HEAVY)
-    out.append(f"  Generated by vendor_audit {data.report_version}")
-    out.append("  https://vendoraudit.org")
-    out.append("  https://github.com/chrono1313/Vendor-Audit")
-    out.append(RULE_HEAVY)
-    out.append("")  # final trailing newline
-
-    return strip_tags("\n".join(out))
+    out += [_render_score_panel(data), "",
+            _render_executive_summary(data), "",
+            render_detail_sections(data), "",
+            _render_scan_footer(data), "",
+            "---", "",
+            f"Generated by vendor_audit {data.report_version} · {_SITE_LINKS}"]
+    return "\n".join(out)
 
 
 def render_detail_sections(data):
-    """The detail sections, one after another, with line-kind tags.
+    """The detail sections, one after another.
 
-    Shared by the .txt report (which strips the tags) and the terminal
-    report (which reads them). Each section returns "" when its source
-    data is absent.
+    Shared by the terminal report, which reads the line-kind tags of the
+    plain form, and the Markdown text report (render_markdown sets the
+    mode). Each section returns "" when its source data is absent.
     """
     token = _CHECK_SEVERITIES.set({r["label"]: r["severity"] for r in data.finding_rows})
     try:
@@ -3867,9 +3963,9 @@ def _render_detail_sections(data):
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
-def write_txt_report(original_domain, audit_domain, results, timestamp,
-                     out_path, report_version=None):
-    """Build a detailed plain-text report and write it to disk.
+def write_md_report(original_domain, audit_domain, results, timestamp,
+                    out_path, report_version=None):
+    """Build the Markdown text report and write it to disk.
 
     Args:
         original_domain: Domain the user supplied on the CLI.
@@ -3883,19 +3979,25 @@ def write_txt_report(original_domain, audit_domain, results, timestamp,
             string in the output footer; defaults to this module's
             __version__.
 
-    File is written UTF-8 (no BOM). Targets Notepad on Windows 11, which
-    auto-detects UTF-8 since the 2019 update.
+    File is written UTF-8 (no BOM), which Notepad on Windows 11 and every
+    Markdown viewer read without being told.
 
     Raises:
         OSError: filesystem write failures bubble up unchanged.
     """
-    data = _ReportData(
+    text = markdown_report(original_domain, audit_domain, results, timestamp,
+                           report_version)
+    with open(out_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+
+
+def markdown_report(original_domain, audit_domain, results, timestamp,
+                    report_version=None):
+    """The Markdown text report as a string (the web app serves it)."""
+    return render_markdown(_ReportData(
         original_domain=original_domain,
         audit_domain=audit_domain,
         results=results,
         timestamp=timestamp,
         report_version=report_version or __version__,
-    )
-    text = _render_text(data)
-    with open(out_path, "w", encoding="utf-8", newline="") as fh:
-        fh.write(text)
+    ))

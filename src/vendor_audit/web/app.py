@@ -4,7 +4,8 @@ The web layer wraps the audit library in a small HTTP service:
 
   GET  /                       — input form
   POST /audit                  — run an audit, render result
-  GET  /audit/<domain>.txt     — re-run audit, return as plain text
+  GET  /audit/<domain>.md      — text report (Markdown), cached or re-run
+  GET  /audit/<domain>.html    — offline copy of the result page
   GET  /healthz                — liveness probe (no audit)
   GET  /robots.txt             — Disallow: /
 
@@ -109,9 +110,8 @@ AUDIT_TIMEOUT_S = int(os.environ.get("VENDOR_AUDIT_TIMEOUT_S", "35"))
 # Per-IP rate limits. Tuned by handoff guidance ("~3 per 10s") but expressed
 # as slowapi-compatible strings. The /audit POST endpoint is the expensive
 # one; the form page is lightly limited just to stop pure flooding. The
-# .txt endpoint isn't rate-limited at this layer — its in-memory cache
-# (the unified result cache) makes repeat downloads free, and fresh audits
-# triggered through it are bounded by the worker pool size.
+# download endpoints share LIMIT_AUDIT: a cache hit is free, but a miss
+# runs a full audit.
 LIMIT_AUDIT = os.environ.get("VENDOR_AUDIT_LIMIT_AUDIT", "3/10seconds")
 LIMIT_FORM  = os.environ.get("VENDOR_AUDIT_LIMIT_FORM",  "60/minute")
 
@@ -157,8 +157,8 @@ for _deprecated in ("VENDOR_AUDIT_TXT_CACHE_TTL_S", "VENDOR_AUDIT_TXT_CACHE_MAX"
 HTML_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_TTL_S", "86400"))
 
 # Hard cap on the number of result-page cache entries. Each entry holds
-# both the HTML and the TXT rendering, compressed: about 45-50KB for a
-# domain with many findings (the page is ~200KB and the txt ~25KB before
+# both the HTML page and the text report, compressed: about 45-50KB for a
+# domain with many findings (the page is ~200KB and the report ~25KB before
 # compression), so 5000 entries is roughly 250MB at most. Sized for sustained worldwide use beyond a single viral
 # link burst: technical users auditing their vendor lists collectively
 # touch thousands of distinct domains over a 24-hour window. At 1000 the
@@ -169,7 +169,7 @@ HTML_CACHE_TTL_S = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_TTL_S", "86400"))
 HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "5000"))
 
 
-# ── Unified result cache (HTML + TXT) ────────────────────────────────────────
+# ── Unified result cache (HTML + text report) ────────────────────────────────────────
 #
 # Module-level dict, intentionally simple. FastAPI request handlers run
 # on a single asyncio loop thread, so dict access between awaits is
@@ -178,18 +178,19 @@ HTML_CACHE_MAX_ENTRIES = int(os.environ.get("VENDOR_AUDIT_HTML_CACHE_MAX", "5000
 # idempotent and the wasted audit is bounded to one duplicate per
 # domain per TTL window in the worst case.
 #
-# Both rendering forms (HTML and TXT) are stored together so a download
-# triggered from a cached HTML view returns the txt that corresponds
-# *exactly* to that HTML — same audit run, same timestamp, same
-# findings. Without this unification the two caches drift independently
-# and a cached 12-hour-old HTML view would show a fresh audit's txt
+# Both rendering forms (HTML and the Markdown text report) are stored
+# together so a download triggered from a cached HTML view returns the
+# report that corresponds *exactly* to that HTML — same audit run, same
+# timestamp, same findings. Without this unification the two caches
+# drift independently and a cached 12-hour-old HTML view would show a
+# fresh audit's report
 # (which contradicts what the user is reading on screen).
 #
-# Entries: {domain: (html_z, txt_z, txt_headers, audit_ts, expires)}
+# Entries: {domain: (html_z, md_z, md_headers, audit_ts, expires)}
 #   html_z       — rendered result-page HTML with <!--AGO--> placeholder,
 #                  UTF-8 and zlib-compressed
-#   txt_z        — rendered .txt report (final, no placeholder), likewise
-#   txt_headers  — Content-Disposition etc. for the txt response
+#   md_z         — rendered .md text report (final, no placeholder), likewise
+#   md_headers   — Content-Disposition etc. for the .md response
 #   audit_ts     — unix timestamp of the audit; powers "ago" display
 #   expires      — unix timestamp; eviction trigger
 #
@@ -216,26 +217,26 @@ def _unpack(blob: bytes) -> str:
 
 
 def _result_cache_get(key: str):
-    """Return (html, txt, txt_headers, audit_ts) tuple if cached and not
+    """Return (html, md, md_headers, audit_ts) tuple if cached and not
     expired, else None.
 
     All four fields are returned together so the caller picks what it
-    needs. The HTML serve path uses html+audit_ts; the .txt download
-    path uses txt+txt_headers.
+    needs. The HTML serve path uses html+audit_ts; the .md download
+    path uses md+md_headers.
     """
     entry = _result_cache.get(key)
     if entry is None:
         return None
-    html_z, txt_z, txt_headers, audit_ts, expires = entry
+    html_z, md_z, md_headers, audit_ts, expires = entry
     if time.time() >= expires:
         # Lazy eviction — drop and return miss
         _result_cache.pop(key, None)
         return None
-    return (_unpack(html_z), _unpack(txt_z), txt_headers, audit_ts)
+    return (_unpack(html_z), _unpack(md_z), md_headers, audit_ts)
 
 
-def _result_cache_set(key: str, html: str, txt: str, txt_headers: dict, audit_ts: float):
-    """Store the rendered HTML+TXT pair with HTML_CACHE_TTL_S TTL.
+def _result_cache_set(key: str, html: str, md: str, md_headers: dict, audit_ts: float):
+    """Store the rendered page and text report with HTML_CACHE_TTL_S TTL.
 
     Approximate LRU: dropping the soonest-to-expire entry isn't true
     LRU (which would require tracking access times) but it's close
@@ -246,7 +247,7 @@ def _result_cache_set(key: str, html: str, txt: str, txt_headers: dict, audit_ts
     if len(_result_cache) >= HTML_CACHE_MAX_ENTRIES and key not in _result_cache:
         oldest_key = min(_result_cache, key=lambda k: _result_cache[k][4])
         _result_cache.pop(oldest_key, None)
-    _result_cache[key] = (_pack(html), _pack(txt), txt_headers, audit_ts, expires)
+    _result_cache[key] = (_pack(html), _pack(md), md_headers, audit_ts, expires)
 
 
 def _format_age(seconds: float) -> str:
@@ -964,27 +965,16 @@ async def _run_audit_and_render(request: Request, domain: str, *,
             ).timestamp()
         except (ValueError, AttributeError):
             audit_ts = time.time()
-        # Render the .txt eagerly and cache it alongside the HTML, so a
-        # download triggered later from this cached page returns the txt
+        # Render the text report eagerly and cache it alongside the HTML, so
+        # a download triggered later from this cached page returns the report
         # corresponding to *exactly* this audit run. ~tens of ms of extra
         # work per audit, in exchange for consistency between the on-
         # screen view and the downloadable artifact.
-        txt = _render_txt_to_string(
-            original_domain=validated.original,
-            audit_domain=envelope["audit_domain"],
-            results=envelope["results"],
-            timestamp=envelope["timestamp"],
-        )
-        txt_headers = {
-            "Content-Disposition": (
-                f'attachment; filename="{validated.domain}_'
-                f'{envelope["timestamp"].replace(":", "-")}.txt"'
-            ),
-        }
+        md, md_headers = _render_report(validated, envelope)
         # Store in cache regardless of fresh flag — fresh requests should
         # update the cache so subsequent hits get the latest result. Use
         # the deep-aware cache_key, not the bare domain.
-        _result_cache_set(cache_key, body, txt, txt_headers, audit_ts)
+        _result_cache_set(cache_key, body, md, md_headers, audit_ts)
 
         # On a fresh audit, redirect to the canonical URL (without
         # fresh=1, but keeping deep=1 if it was set). Otherwise the
@@ -1023,7 +1013,7 @@ async def _cached_or_audit(request: Request, domain: str, deep: bool):
     """The cached result for a download, running the audit on a miss.
 
     Returns (entry, None) on success, where entry is the
-    (html, txt, txt_headers, audit_ts) cache tuple, or (None, error) where
+    (html, md, md_headers, audit_ts) cache tuple, or (None, error) where
     error is (http_status, message, code).
 
     Cache: shared with the HTML serve path. Same TTL, same key. Deep and
@@ -1064,32 +1054,25 @@ async def _cached_or_audit(request: Request, domain: str, deep: bool):
                       envelope["error"]["message"], envelope["error"]["kind"])
 
     body = render_html.render_result(envelope)
-    txt = _render_txt_to_string(
-        original_domain=validated.original,
-        audit_domain=envelope["audit_domain"],
-        results=envelope["results"],
-        timestamp=envelope["timestamp"],
-    )
-    txt_headers = {
-        "Content-Disposition": (
-            f'attachment; filename="{validated.domain}_'
-            f'{envelope["timestamp"].replace(":", "-")}.txt"'
-        ),
-    }
+    md, md_headers = _render_report(validated, envelope)
     try:
         audit_ts = datetime.fromisoformat(
             envelope["timestamp"].replace("Z", "+00:00")
         ).timestamp()
     except (ValueError, AttributeError):
         audit_ts = time.time()
-    _result_cache_set(cache_key, body, txt, txt_headers, audit_ts)
-    return (body, txt, txt_headers, audit_ts), None
+    _result_cache_set(cache_key, body, md, md_headers, audit_ts)
+    return (body, md, md_headers, audit_ts), None
 
 
-@app.get("/audit/{domain}.txt", response_class=PlainTextResponse)
+@app.get("/audit/{domain}.md", response_class=PlainTextResponse)
 @limiter.limit(LIMIT_AUDIT)
-async def download_txt(request: Request, domain: str, deep: int = 0):
-    """Plain-text report, from the result cache or a new audit.
+async def download_md(request: Request, domain: str, deep: int = 0):
+    """The text report (Markdown), from the result cache or a new audit.
+
+    Until 3.5.0 this was /audit/<domain>.txt. That path is gone and
+    answers 404: the report changed format, and an old link should not
+    quietly hand back a different file.
 
     Rate-limited under LIMIT_AUDIT, the same limit as /audit/result,
     because a cache miss here runs a full audit. Without it this URL was
@@ -1104,9 +1087,10 @@ async def download_txt(request: Request, domain: str, deep: int = 0):
         heading = "# Vendor Audit\n\n"
         text = (f"Input rejected: {message}\n" if http_status == status.HTTP_400_BAD_REQUEST
                 else f"Audit could not be completed: {message}\n")
-        return PlainTextResponse(content=heading + text, status_code=http_status)
-    _, txt, txt_headers, _ = entry
-    return PlainTextResponse(content=txt, headers=txt_headers)
+        return PlainTextResponse(content=heading + text, status_code=http_status,
+                                 media_type=_MD_TYPE)
+    _, md, md_headers, _ = entry
+    return PlainTextResponse(content=md, headers=md_headers, media_type=_MD_TYPE)
 
 
 @app.get("/audit/{domain}.html", response_class=HTMLResponse)
@@ -1118,7 +1102,7 @@ async def download_html(request: Request, domain: str, deep: int = 0):
     is inlined, the audit form and download links are dropped, and a note
     marks it as a snapshot. No re-render and no audit on a cache hit, so
     the file matches the page on screen. Same rate limit and cache as the
-    .txt download.
+    .md download.
 
     Sent as an attachment. The response still carries the site CSP
     (script-src 'none' on this path), so if a browser ever displayed it
@@ -1137,11 +1121,11 @@ async def download_html(request: Request, domain: str, deep: int = 0):
                      "version": audit.__version__},
             status_code=http_status,
         )
-    page, _, txt_headers, _ = entry
+    page, _, md_headers, _ = entry
     body = render_html.to_standalone(page, SERVICE_URL, _FAVICON_SVG)
-    disposition = txt_headers["Content-Disposition"]
-    if disposition.endswith('.txt"'):
-        disposition = disposition[: -len('.txt"')] + '.html"'
+    disposition = md_headers["Content-Disposition"]
+    if disposition.endswith('.md"'):
+        disposition = disposition[: -len('.md"')] + '.html"'
     return HTMLResponse(content=body, headers={"Content-Disposition": disposition})
 
 
@@ -1379,33 +1363,22 @@ def _status_for_error_kind(kind: str) -> int:
     }.get(kind, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-def _render_txt_to_string(*, original_domain, audit_domain, results, timestamp) -> str:
-    """Run audit_txt_report.write_txt_report into an in-memory buffer.
+# Served as Markdown. Browsers download it (Content-Disposition), and a
+# text editor or Markdown viewer opens it.
+_MD_TYPE = "text/markdown"
 
-    write_txt_report writes to a file path. We don't want to write to
-    disk just to read back the bytes, so we monkeypatch open() temporarily
-    via a StringIO. There's a cleaner approach (refactor write_txt_report
-    to take a file-like object), but that's a CLI change with broader
-    consequences and we keep the web layer non-invasive for v1.
-    """
-    import io
-    import tempfile
 
-    # Easiest correct solution: write to a temp file in /tmp, read it back,
-    # delete it. The worker is short-lived, the file is small (< 50KB
-    # typical), and tempfile cleans up reliably. Avoids monkeypatching.
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".txt", delete=False
-    ) as tmp:
-        tmp_path = tmp.name
-    try:
-        audit_txt_report.write_txt_report(
-            original_domain, audit_domain, results, timestamp, tmp_path,
-        )
-        with open(tmp_path, "r", encoding="utf-8") as f:
-            return f.read()
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+def _render_report(validated, envelope):
+    """(report, headers): the Markdown text report for one audit, and the
+    Content-Disposition that names it <domain>_<ISO time>.md."""
+    md = audit_txt_report.markdown_report(
+        validated.original, envelope["audit_domain"],
+        envelope["results"], envelope["timestamp"],
+    )
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{validated.domain}_'
+            f'{envelope["timestamp"].replace(":", "-")}.md"'
+        ),
+    }
+    return md, headers

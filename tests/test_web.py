@@ -75,8 +75,9 @@ def test_routes_registered_once():
     check(not dupes, f"routes registered more than once: {dupes}")
     names = [m.cls.__name__ for m in appmod.app.user_middleware]
     check(names.count("SecurityHeadersMiddleware") == 1, f"middleware stack: {names}")
-    for path in ("/audit/{domain}.txt", "/audit/{domain}.html", "/audit/result", "/static/result.js"):
+    for path in ("/audit/{domain}.md", "/audit/{domain}.html", "/audit/result", "/static/result.js"):
         check(any(p == path for p, _m in pairs), f"route {path} missing")
+    check(not any(p == "/audit/{domain}.txt" for p, _m in pairs), "the .txt download was removed in 3.5.0")
 
 
 def test_workers_guard_connections():
@@ -94,7 +95,7 @@ def test_cache_compressed():
     if _skip():
         return
     page = "<p>Vendor Audit — résumé · ✓</p>\n" * 6000
-    txt = "FINDINGS    2 critical · 4 high\n" * 800
+    txt = "- **HIGH** Website — résumé · ✓\n" * 800
     key = "cache-test.example"
     appmod._result_cache_set(key, page, txt, {"Content-Disposition": "x"}, 1.0)
     stored = appmod._result_cache[key]
@@ -270,10 +271,47 @@ def test_fast_clicks_share_one_audit():
     asyncio.run(scenario())
 
 
+def test_downloads():
+    """3.5.0: the text report downloads as .md; the old .txt path is gone
+    (404), and the web page download is named after the same audit."""
+    if _skip():
+        return
+    import types
+    sys.path.insert(0, os.path.dirname(__file__))
+    from test_findings import sample
+    d = sample(); d["_scan"] = {"deep": False, "version": appmod.audit.__version__}
+    env = {"ok": True, "domain": "dl-test.example", "audit_domain": "dl-test.example",
+           "results": d, "timestamp": "2026-11-25T04:46:50Z", "duration_ms": 1}
+    md, headers = appmod._render_report(
+        types.SimpleNamespace(original="dl-test.example", domain="dl-test.example"), env)
+    page = appmod.render_html.render_result(env)
+    appmod._result_cache_set("dl-test.example", page, md, headers, 1.0)
+    try:
+        r = _request("GET", "/audit/dl-test.example.md")
+        check(r.status_code == 200, f".md download: {r.status_code}")
+        check(r.headers.get("content-type", "").startswith("text/markdown"), f".md type: {r.headers.get('content-type')}")
+        check(r.headers.get("content-disposition", "").endswith('_2026-11-25T04-46-50Z.md"'),
+              f".md name: {r.headers.get('content-disposition')}")
+        check(r.text.startswith("# Vendor Audit — dl-test.example\n"), "the .md is the Markdown report")
+        h = _request("GET", "/audit/dl-test.example.html")
+        check(h.headers.get("content-disposition", "").endswith('_2026-11-25T04-46-50Z.html"'),
+              f".html name: {h.headers.get('content-disposition')}")
+        check(_request("GET", "/audit/dl-test.example.txt").status_code == 404, "old .txt links answer 404")
+        check('href="/audit/dl-test.example.md"' in page and ">Download text report (.md)<" in page
+              and ">Download web page (.html)<" in page, "the page links to both downloads")
+        form = _request("GET", "/").text
+        check("Every report can be downloaded as a text file or a web page." in form
+              and "Please share the text report with the vendor." in form
+              and ".txt" not in form.replace("security.txt", ""),
+              "the front page describes the two downloads")
+    finally:
+        appmod._result_cache.pop("dl-test.example", None)
+
+
 def run():
     for fn in (test_no_duplicate_definitions, test_routes_registered_once,
                test_workers_guard_connections, test_cache_compressed, test_slow_dns_does_not_stall_other_requests,
-               test_csp_styles, test_front_page_counts, test_head, test_fast_clicks_share_one_audit):
+               test_csp_styles, test_front_page_counts, test_head, test_fast_clicks_share_one_audit, test_downloads):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

@@ -200,9 +200,9 @@ _STANDARD = {
 
 _CHECK_TEXT = {
     "SPF lookup count": (
-        "Evaluating an SPF record may trigger at most 10 DNS lookups.",
+        "Evaluating an SPF record may trigger at most 10 DNS lookups, and the lookups inside included records count too: an include: whose record includes other domains in turn uses a lookup for each of them.",
         "Past that limit receivers treat the record as broken, so SPF no longer stops anyone sending mail that claims to be from the domain.",
-        "Remove include: entries that are no longer used, or replace them with IP ranges."),
+        "Remove include: entries that are no longer used, or replace them with IP ranges. Check what each include: pulls in, since one provider's record often includes several more."),
     "MX target hygiene": (
         "An MX record must point to a host name that has its own address records, not to an IP address or a CNAME.",
         "Mail servers handle the invalid forms differently, so some mail is delayed or bounced.",

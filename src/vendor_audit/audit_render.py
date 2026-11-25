@@ -32,7 +32,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.4.11"
+__version__ = "3.5.0"
 
 import sys
 from datetime import datetime, timezone
@@ -117,7 +117,7 @@ def render(original_domain, audit_domain, r, dns_server):
         return
 
     # ── Detail sections ──────────────────────────────────────────────────────
-    # The same sections as the .txt report: each check is worded once, in
+    # The same sections as the text report: each check is worded once, in
     # audit_txt_report, and printed here in colour without the What / Why /
     # Fix paragraphs. See "Line kinds" in audit_txt_report.
     from .audit_txt_report import _ReportData as _RD, render_detail_sections
@@ -133,7 +133,7 @@ def render(original_domain, audit_domain, r, dns_server):
         print(f"  {c(GREY, '→')} {original_domain} redirects to {audit_domain} — email audited for both domains; web/TLS reflects {audit_domain}\n")
 
     # ── Summary: findings by severity ────────────────────────────────────────
-    # Built from the same finding rows the .txt and HTML reports use, so all
+    # Built from the same finding rows the text and HTML reports use, so all
     # three agree. There are no points: each finding has a severity, and the
     # totals line counts them.
     from .audit_txt_report import (_ReportData, ISSUE_SEVERITIES,
@@ -207,7 +207,7 @@ def render(original_domain, audit_domain, r, dns_server):
 
 
 
-# ── Detail sections (shared with the .txt report) ─────────────────────────────
+# ── Detail sections (shared with the text report) ────────────────────────────
 
 # Colour of a status line's word (see "Status-line words" in
 # audit_txt_report). NOTE stays uncoloured: observed, not rated.
@@ -220,12 +220,12 @@ _TERM_WIDTH = 56
 
 
 def _print_detail_sections(tagged):
-    """Print the .txt report's detail sections for a terminal.
+    """Print the text report's detail sections for a terminal.
 
     Reads the line-kind tags (audit_txt_report, "Line kinds"): headings are
     coloured, a status line's word takes its severity's colour, the
     What / Why / Fix paragraphs are left out, and runs of blank lines
-    become one. Everything else prints as the .txt has it.
+    become one. Everything else prints as the plain form has it.
     """
     from .audit_txt_report import split_tag
     blank = True                       # no blank line before the first heading

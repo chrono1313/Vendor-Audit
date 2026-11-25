@@ -729,12 +729,12 @@ def test_ipv6_only_site_from_ipv4_only_auditor():
     check(not cats & {"TLS", "HTTP", "Website"}, f"no website/TLS/HTTP findings when the auditor can't reach: {cats}")
     check(f.get("IPv6") == "pass" and f.get("IPv6 RPKI") == "pass", "DNS and routing still rated")
     check(f.get("TLS connection") is None, "the false 'No HTTPS' critical is gone")
-    txt = t._render_text(atr._ReportData("example.com", "example.com", d, "2026-11-21T00:00:00Z", "3.4.3"))
-    check("IPv6-only site: this site has only IPv6 addresses" in txt, "the .txt explains why")
+    txt = t.render_markdown(atr._ReportData("example.com", "example.com", d, "2026-11-21T00:00:00Z", "3.4.3"))
+    check("**IPv6-only site:** this site has only IPv6 addresses" in txt, "the text report explains why")
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-21T00:00:00Z", "duration_ms": 1})
     check("IPv6-only site:" in page, "the page explains why")
-    check(re.search(r"^  TLS\s+not checked \(site unreachable from this audit server\)$", txt, re.M),
+    check(re.search(r"^\| TLS \| not checked \(site unreachable from this audit server\) \| — \|$", txt, re.M),
           "the summary row says not checked, not 'no issues'")
     check("Site unreachable from this audit server (no IPv6)" in page, "the page's category card too")
 

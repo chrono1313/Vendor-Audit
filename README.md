@@ -20,15 +20,18 @@ image to see it full size.*
 command-line tool. The report is one page:
 
 - a summary with the share of checks passed and the findings by severity
-- the findings to fix first
-- a table of every check, filtered by severity or category, and searchable
+- the categories, each with its findings and passed checks; choosing one
+  filters the checks to it
+- a table of every check, showing the findings, all checks or the passes
 - a detail panel for each check: what was found, what the practice is, why
   it matters and how to fix it
 
 A link to a report can point at one check. Every report can be downloaded
-as a `.txt` file to share with the vendor, or as an `.html` file: a saved
-copy of the report page that works offline, with its filters and check
-details, and makes no network requests when opened.
+as a text file or a web page. The text report (`.md`) is the one to share
+with the vendor: it is Markdown, so it reads as plain text in any editor
+and as a formatted page wherever Markdown is shown. The web page (`.html`)
+is a saved copy of the report page that works offline, with its filters
+and check details, and makes no network requests when opened.
 
 The **Deep** checkbox adds DANE, the STARTTLS check on mail servers and a
 read of the home page, for 3–5 extra seconds. SSL Labs grades (`--ssl`) and
@@ -45,7 +48,7 @@ extra) pulls in FastAPI, uvicorn and the rest.
 ## On the command line
 
 The command-line version audits one domain or a whole list, and writes the
-same findings to the terminal, a plain-text report, a CSV row per domain or
+same findings to the terminal, a text report (Markdown), a CSV row per domain or
 JSON:
 
 ```bash
@@ -69,8 +72,8 @@ Findings aren't a deal-breaker on their own, but they're a useful
 conversation starter and a data point alongside everything else you're
 evaluating.
 
-**Please share the report with the vendor.** The plain-text output
-(`--report`) is designed to be readable by their technical team, and
+**Please share the text report with the vendor.** The text report
+(`--report`, Markdown) is designed to be readable by their technical team, and
 every section cites the RFC, W3C spec, OWASP guidance, or CA/Browser Forum
 baseline it's measured against — so the report reads as feedback, not as
 an accusation. Most vendors appreciate a heads-up they can act on; the
@@ -111,8 +114,9 @@ a one-line verdict taken from the worst severity present. Nothing is added
 up, and one cause is one finding: a missing HSTS header is a single High
 finding, not three.
 
-In the detail sections of the plain-text and terminal reports, each line
-starts with a word that follows the same severities:
+In the detail sections of the text and terminal reports, each line
+starts with a word that follows the same severities (in the text report,
+in bold: `- **HIGH** …`):
 
 | Word | Meaning |
 | --- | --- |
@@ -273,7 +277,7 @@ and pull request, on Python 3.12 through 3.14
 ```bash
 vendor-audit example.com                    # terminal report only
 vendor-audit example.com --outcsv out.csv   # also write CSV
-vendor-audit example.com --report           # also write .txt report
+vendor-audit example.com --report           # also write the .md text report
 vendor-audit example.com --json             # raw JSON for piping
 ```
 
@@ -286,7 +290,7 @@ vendor-audit --file domains.txt --outcsv results.csv --report reports/
 
 In bulk mode, domains are audited in parallel (10 at a time by default,
 adjustable via `--concurrency`). With `--report`, each successfully-audited
-domain produces a separate `<domain>_<ISO>.txt` report in the given directory.
+domain produces a separate `<domain>_<ISO>.md` report in the given directory.
 
 ### Comparing two scans
 
@@ -353,13 +357,15 @@ by default (override with `--ssl-no-cache`).
 
 Three output formats, used independently or together:
 
-- **Terminal report** (default) — the plain-text report's detail lines in
+- **Terminal report** (default) — the text report's detail lines in
   colour, without its explanation paragraphs, followed by a summary.
 - **CSV** (`--outcsv`) — one row per domain with every measured field. The CSV
   schema is versioned (`meta_schema_version`); upgrades that change the schema
   cause Vendor Audit to refuse to append to the old file.
-- **Plain-text report** (`--report`) — 100-column UTF-8, severity-grouped
-  findings, suitable for sharing with the vendor's technical team.
+- **Text report** (`--report`) — Markdown, UTF-8: severity-grouped
+  findings, then every check with its evidence and the What / Why / Fix
+  for each section. One finding per line and no hard wrapping, so it greps
+  cleanly; suitable for sharing with the vendor's technical team.
 - **JSON** (`--json`) — the raw result of every check, plus `findings`
   (each with its severity, category and sentence) and a `summary` with the
   counts by severity. The banner goes to stderr, so `--json > scan.json`

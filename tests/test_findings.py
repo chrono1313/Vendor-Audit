@@ -327,11 +327,11 @@ def test_bot_challenge():
               for f in rated.values()), "sample should keep a rated non-Website finding")
 
     data = atr._ReportData("example.com", "example.com", d, "2026-11-19T04:55:32Z", "2.1.0")
-    txt = atr._render_text(data)
+    txt = atr.render_markdown(data)
     check("Bot challenge:" in txt and "shown as Informational" in txt, "text report should carry the challenge note")
     d2 = dict(d, server_header=dict(d["server_header"], bot_challenge_kind="block"))
-    txt2 = atr._render_text(atr._ReportData("example.com", "example.com", d2, "2026-11-19T04:55:32Z", "2.1.0"))
-    check("Blocked: Cloudflare answered this audit with its block page (HTTP 403)." in txt2, "text report should name the block page")
+    txt2 = atr.render_markdown(atr._ReportData("example.com", "example.com", d2, "2026-11-19T04:55:32Z", "2.1.0"))
+    check("**Blocked:** Cloudflare answered this audit with its block page (HTTP 403)." in txt2, "text report should name the block page")
     try:
         from vendor_audit.web import render_html
     except Exception:

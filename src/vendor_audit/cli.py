@@ -22,7 +22,7 @@ The project is split into seven files:
     vendor_audit.py        — CLI, runner, SSL Labs integration  (this file)
     audit_checks.py        — network primitives, all check_* functions, scoring
     audit_render.py        — terminal report and CSV output
-    audit_txt_report.py    — detailed plain-text report
+    audit_txt_report.py    — detailed text report (Markdown)
     rubric.json    — severity per check outcome, wording, thresholds
     library_eol.json       — end-of-life data for client-side libraries
     os_eol.json            — end-of-life data for server operating systems
@@ -62,7 +62,7 @@ Usage:
     python3 vendor_audit.py --file domains.txt --outcsv results.csv --dns-server 1.1.1.1
     python3 vendor_audit.py example.com --ssl you@yourorg.com
     python3 vendor_audit.py example.com --report            # text report
-    python3 vendor_audit.py example.com --report report.txt  # explicit path
+    python3 vendor_audit.py example.com --report report.md   # explicit path
     python3 vendor_audit.py --file domains.txt --outcsv out.csv --report   # one report per domain in cwd
     python3 vendor_audit.py --file domains.txt --outcsv out.csv --report reports/  # in named directory
 
@@ -78,7 +78,7 @@ Minimum Python version: 3.8+
 """
 from __future__ import annotations
 
-__version__ = "3.4.11"
+__version__ = "3.5.0"
 
 import os
 import sys
@@ -253,7 +253,7 @@ def _resolve_outcsv(value):
 
 
 # Same sentinel mechanism for --report (text technical report). Auto-name
-# is "<domain>_<ISO-with-time>.txt" — domain-keyed rather than
+# is "<domain>_<ISO-with-time>.md" — domain-keyed rather than
 # vendor_audit-prefixed because the report is single-domain by design,
 # so the filename should lead with the domain it describes.
 _REPORT_AUTO_SENTINEL = "__AUTO__"
@@ -263,19 +263,19 @@ def _auto_report_name(domain, in_default_dir: bool = True):
     """Return a default --report path (or filename) for the given domain.
 
     Uses the same ISO-with-time format as the CSV auto-naming so timestamps
-    sort lexicographically and a CSV + TXT pair from the same scan sit next
+    sort lexicographically and a CSV + report pair from the same scan sit next
     to each other in a directory listing.
 
-    in_default_dir=True   → returns reports/<domain>_<ISO>.txt and creates
+    in_default_dir=True   → returns reports/<domain>_<ISO>.md and creates
                             the dir. New auto-naming default.
-    in_default_dir=False  → returns just <domain>_<ISO>.txt (bare filename) —
+    in_default_dir=False  → returns just <domain>_<ISO>.md (bare filename) —
                             for callers that already have a destination
                             directory in hand: bulk mode with an explicit
                             --report DIR, or the directory-shaped path
                             branch in _resolve_report.
     """
     safe_domain = domain.replace("/", "_").replace("\\", "_")
-    fname = datetime.now().strftime(f"{safe_domain}_%Y-%m-%dT%H-%M-%S.txt")
+    fname = datetime.now().strftime(f"{safe_domain}_%Y-%m-%dT%H-%M-%S.md")
     if in_default_dir:
         return os.path.join(_ensure_reports_dir(), fname)
     return fname
@@ -1048,9 +1048,9 @@ def run_bulk(domains, outcsv_path, ssl_args=None, concurrency=None, report_dir=N
 
     DNS server and HTTP timeout must be configured globally before calling.
 
-    If report_dir is provided, a detailed plain-text report is written for
-    each successfully-audited domain into that directory. The filename
-    follows the same "<domain>_<ISO-with-time>.txt" pattern used for the
+    If report_dir is provided, a detailed text report (Markdown) is written
+    for each successfully-audited domain into that directory. The filename
+    follows the same "<domain>_<ISO-with-time>.md" pattern used for the
     single-domain auto-named report. Errored domains are skipped — the
     audit_txt_report module expects a populated results dict and would
     otherwise crash mid-bulk.
@@ -1070,7 +1070,7 @@ def run_bulk(domains, outcsv_path, ssl_args=None, concurrency=None, report_dir=N
         try:
             filename = _auto_report_name(original, in_default_dir=False)
             path = os.path.join(report_dir, filename)
-            audit_txt_report.write_txt_report(
+            audit_txt_report.write_md_report(
                 original_domain=original,
                 audit_domain=audit_domain,
                 results=results,
@@ -1452,7 +1452,7 @@ COMMON RECIPES
   Bulk audit using Cloudflare DNS:
     python3 vendor_audit.py --file domains.txt --outcsv results.csv --dns-server 1.1.1.1
 
-  Bulk audit with one plain-text report per domain (in cwd):
+  Bulk audit with one text report (.md) per domain (in cwd):
     python3 vendor_audit.py --file domains.txt --outcsv results.csv --report
 
   Bulk audit with reports written to a named directory:
@@ -1517,22 +1517,22 @@ PROJECT
     parser.add_argument("--json", action="store_true",
                         help="Print raw JSON instead of the formatted report (single-domain mode only)")
 
-    # Detailed plain-text report. Pre-resolves to an auto-named
-    # "<domain>_<ISO-with-time>.txt" when the flag is given without a
+    # Detailed text report (Markdown). Pre-resolves to an auto-named
+    # "<domain>_<ISO-with-time>.md" when the flag is given without a
     # value, mirroring --outcsv's pattern. In single-domain mode an
     # explicit value is treated as the output file path. In bulk mode
     # (with --file) an explicit value is treated as a destination
     # *directory* — one file per domain is written into it.
-    parser.add_argument("--report", metavar="TXT_OR_DIR", nargs="?", const="__AUTO__",
-                        help="Write a detailed plain-text technical report. "
+    parser.add_argument("--report", metavar="MD_OR_DIR", nargs="?", const="__AUTO__",
+                        help="Write a detailed technical report as a Markdown text file. "
                              "Single-domain: with no value, the report is written to "
-                             "<domain>_<ISO-with-time>.txt in the current directory; "
+                             "<domain>_<ISO-with-time>.md in the current directory; "
                              "pass an explicit path to override. "
                              "Bulk (with --file): one report per successfully-audited "
                              "domain. With no value the reports are written to the "
                              "current directory; pass a directory path to override "
                              "(it will be created if it does not exist). The files are "
-                             "UTF-8 encoded and 100 columns wide.")
+                             "UTF-8 encoded, one finding per line.")
 
     # ── DNS / network ─────────────────────────────────────────────────────────
     parser.add_argument("--dns-server", metavar="IP",
@@ -1644,7 +1644,7 @@ PROJECT
         if args.outcsv in (None, _OUTCSV_AUTO_SENTINEL):
             print(c(GREY, f"  No --outcsv path given — writing to {c(BOLD, outcsv_path)}"))
 
-        # In bulk mode --report (when given) means "one .txt per domain".
+        # In bulk mode --report (when given) means "one .md per domain".
         # The argparse value is interpreted as a destination *directory*
         # rather than a single filename — a single path can't hold N
         # reports. Sentinel (bare flag) → ./reports/; explicit value → that
@@ -1764,8 +1764,8 @@ PROJECT
                 writer.writerow(row)
             print(f"\n{c(GREEN, '✔')} Result written to {c(BOLD, outcsv_path)}")
 
-        # ── Plain-text report (--report) ─────────────────────────────────────
-        # In single-domain mode --report writes one detailed .txt at the
+        # ── Text report (--report) ───────────────────────────────────────────
+        # In single-domain mode --report writes one detailed .md at the
         # given path (or auto-named if the flag is bare). Bulk-mode
         # report writing is handled inside run_bulk(). Module is already
         # imported at module load (for the version-mismatch guard), so
@@ -1773,7 +1773,7 @@ PROJECT
         report_path = _resolve_report(args.report, original)
         if report_path:
             try:
-                audit_txt_report.write_txt_report(
+                audit_txt_report.write_md_report(
                     original_domain=original,
                     audit_domain=audit_domain,
                     results=results,

@@ -4,7 +4,7 @@ ARCHITECTURE
 ------------
 The audit produces one results dict. Three renderers consume it:
   - audit_render.render            terminal
-  - audit_txt_report._render_text  plain text
+  - audit_txt_report.render_markdown  text report (.md)
   - this module                    HTML (web result page)
 
 The page is built from two structured sources and nothing else:
@@ -25,7 +25,7 @@ One server-rendered response. One first-party script (/static/result.js).
 No stylesheet, image or font is fetched; the ring and the bars are inline
 SVG and plain elements sized with numbers computed here.
 
-  top bar      brand, domain, audit-another-domain form, .txt download
+  top bar      brand, domain, audit-another-domain form, downloads
   side nav     anchor links
   overview     headline, stat cards, pass-rate ring, findings by severity
   categories   one card per category
@@ -211,10 +211,10 @@ def _short(text):
 
 
 def _download_hrefs(domain, deep):
-    """Site paths of the .txt and .html downloads for this result."""
+    """Site paths of the .md and .html downloads for this result."""
     q = "?deep=1" if deep else ""
     d = quote(domain)
-    return f"/audit/{_h(d)}.txt{q}", f"/audit/{_h(d)}.html{q}"
+    return f"/audit/{_h(d)}.md{q}", f"/audit/{_h(d)}.html{q}"
 
 
 def _badge(sev):
@@ -271,14 +271,14 @@ def _stacked_bar_html(counts, total, label):
 
 def _render_top_bar_html(data, domain):
     """Brand, the audited domain, the audit-another-domain form and the
-    .txt and .html downloads.
+    .md and .html downloads.
 
     The hidden `from` field carries the domain on screen. /audit compares
     it with the submitted one and, when they match, bypasses the cache so
     re-submitting the same domain runs a fresh audit.
     """
     deep = bool(data.results.get("_scan", {}).get("deep", False))
-    txt_href, html_href = _download_hrefs(domain, deep)
+    md_href, html_href = _download_hrefs(domain, deep)
     checked = " checked" if deep else ""
     return "\n".join([
         '<header class="top-bar">',
@@ -302,8 +302,8 @@ def _render_top_bar_html(data, domain):
         '    <button type="submit">Audit</button>',
         '  </form>',
         '  <span class="downloads">',
-        f'  <a class="download-link" href="{txt_href}" download>Download .txt</a>',
-        f'  <a class="download-link" href="{html_href}" download>Download .html</a>',
+        f'  <a class="download-link" href="{md_href}" download>Download text report (.md)</a>',
+        f'  <a class="download-link" href="{html_href}" download>Download web page (.html)</a>',
         '  </span>',
         '  </div>',
         '  <!--/site-->',
@@ -899,7 +899,7 @@ def _render_footer_html(data, domain):
         key=lambda kv: -kv[1],
     )[:5]
     deep = bool(scan.get("deep", False))
-    txt_href, html_href = _download_hrefs(domain, deep)
+    md_href, html_href = _download_hrefs(domain, deep)
 
     out = ['<footer class="report-footer" id="scan">',
            '  <div class="block-head"><h2>Scan details</h2></div>']
@@ -922,8 +922,8 @@ def _render_footer_html(data, domain):
     out.append('  </div>')
     out.append('  <!--site-->')
     out.append('  <div class="footer-actions">')
-    out.append(f'    <a class="download-link" href="{txt_href}" download>Download as .txt</a>')
-    out.append(f'    <a class="download-link" href="{html_href}" download>Download as .html</a>')
+    out.append(f'    <a class="download-link" href="{md_href}" download>Download text report (.md)</a>')
+    out.append(f'    <a class="download-link" href="{html_href}" download>Download web page (.html)</a>')
     out.append('    <a href="/">Audit another domain</a>')
     out.append('  </div>')
     out.append('  <!--/site-->')

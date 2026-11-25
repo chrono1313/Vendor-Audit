@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Report tests — one source for the .txt and terminal reports.
+"""Report tests — one source for the text (.md) and terminal reports.
 
-Since 3.0 each check is worded once, in the .txt report's detail
-sections, and the terminal report prints those same lines. These tests
-hold that in place:
+Since 3.0 each check is worded once, in the text report's detail
+sections, and the terminal report prints those same lines. Since 3.5
+the text report is Markdown: the same line builders write it, and the
+terminal keeps the plain form. These tests hold that in place:
 
-  - no line-kind tag ever reaches the .txt file or the terminal
+  - no line-kind tag ever reaches the .md file or the terminal
   - every status line that names a check names one that exists in
     rubric.json
   - a status line's word follows the check's finding: a flagged line shows
     the finding's severity, a passing detail shows PASS, an unrated
     observation shows NOTE
   - redirect-target email lines resolve to the redirect-target findings
-  - the terminal report shows every status line of the .txt detail, and
+  - the terminal report shows every status line of the detail, and
     none of the What / Why / Fix paragraphs
+  - the Markdown report has a line for every status line, one finding
+    per line, and renders as Markdown
 
 Run:  python3 tests/test_reports.py
 Exits non-zero on failure.
@@ -68,8 +71,8 @@ def _terminal(d, domain="example.com", audit=None):
 
 def test_no_tags_leak():
     for name, d, aud in (("sample", sample(), None), ("redirected", _redirected(), "app.example.net")):
-        txt = atr._render_text(_data(d, audit=aud))
-        check("\x1e" not in txt and "\x1f" not in txt, f"{name}: a line-kind tag reached the .txt")
+        txt = atr.render_markdown(_data(d, audit=aud))
+        check("\x1e" not in txt and "\x1f" not in txt, f"{name}: a line-kind tag reached the .md")
         term = _terminal(copy.deepcopy(d), audit=aud)
         check("\x1e" not in term and "\x1f" not in term, f"{name}: a line-kind tag reached the terminal")
 
@@ -200,11 +203,86 @@ def test_terminal_shows_txt_lines():
     check("Summary of example.com" in term, "terminal summary missing")
 
 
+_WORD_LINE = re.compile(r"^- \*\*(CRITICAL|HIGH|MEDIUM|LOW|INFO|PASS|NOTE)\*\* ")
+
+
+def test_markdown_report():
+    """3.5.0: the text report is Markdown, written by the same line
+    builders as the terminal's plain detail."""
+    for name, d, aud in (("sample", sample(), None), ("redirected", _redirected(), "app.example.net")):
+        data = _data(d, audit=aud)
+        plain_before = atr.render_detail_sections(data)
+        md = atr.render_markdown(data)
+        check(not atr._md(), f"{name}: Markdown mode left on after rendering")
+        check(atr.render_detail_sections(data) == plain_before, f"{name}: rendering Markdown changed the plain detail")
+        lines = md.split("\n")
+        check(lines[0] == "# Vendor Audit — example.com", f"{name}: title line is {lines[0]!r}")
+        summary = md[md.index("## Executive summary"):md.index("\n## Email")]
+        check("### Passing" not in summary and "**PASS**" not in summary,
+              f"{name}: passing checks should not be repeated in the summary")
+        for r in data.finding_rows:
+            want = f"- **{atr._STATUS_WORDS[r['severity']]}** {r['category']} — {atr._md_inline(r['display'])}"
+            if r["severity"] == "pass":
+                continue
+            check(want in lines, f"{name}: summary line missing: {want}")
+
+        # One Markdown status line for every plain status line that has a word.
+        plain_words = sum(1 for ln in plain_before.split("\n")
+                          if atr.split_tag(ln)[0].startswith("S:") and atr.split_tag(ln)[0] != "S:none")
+        detail = md[md.index("\n## Email"):].split("\n")
+        md_words = sum(1 for ln in detail if _WORD_LINE.match(ln))
+        check(md_words == plain_words, f"{name}: {md_words} Markdown status lines for {plain_words} plain ones")
+        whats = sum(1 for kind, text in map(atr.split_tag, plain_before.split("\n"))
+                    if kind == "E" and text.lstrip().startswith("What: "))
+        check(md.count("\n**What:** ") == whats, f"{name}: What / Why / Fix paragraphs differ from the plain form")
+
+        in_fence = False
+        for ln in lines:
+            if ln == "```" or ln.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            check(not (ln.startswith(" ") and not ln.startswith("    - ")),
+                  f"{name}: indented line would render as code: {ln[:60]!r}")
+            check(not re.match(r"^\s+\S+\s{3,}\S", ln), f"{name}: column-aligned line: {ln[:60]!r}")
+        check(not in_fence, f"{name}: a code block is never closed")
+
+        try:
+            import markdown
+        except ImportError:
+            continue
+        html = markdown.markdown(md, extensions=["tables", "fenced_code", "sane_lists"])
+        check(html.count("<table>") == md.count("\n| --- |"),
+              f"{name}: every table renders")
+        check(html.count("<pre>") == sum(1 for ln in lines if ln == "```") // 2,
+              f"{name}: only fenced blocks render as code")
+        check("<img" not in html and "<html" not in html, f"{name}: a tag name in the text became markup")
+        check("<strong>What:</strong>" in html, f"{name}: What / Why / Fix render as paragraphs")
+
+
+def test_spf_lookup_limit_note():
+    """3.5.0: the lookup-limit line explains that included records' own
+    lookups count, which is how one include: can use several."""
+    d = sample()
+    d["spf"] = dict(d["spf"], lookup_count=12)
+    data = _data(d)
+    plain = " ".join(atr.strip_tags(atr.render_detail_sections(data)).split())
+    want = "The limit counts the lookups inside included records too"
+    check(want in plain, "terminal detail should explain nested lookups")
+    md = atr.render_markdown(data)
+    check(re.search(r"^- \*\*HIGH\*\* SPF lookup count: 12 .*\n    - " + want, md, re.M),
+          "Markdown: the explanation is a note under the HIGH line")
+    from vendor_audit import audit_records
+    check("included records count too" in audit_records._CHECK_TEXT["SPF lookup count"][0],
+          "the page's check text says the same")
+
+
 def run():
     for fn in (test_no_tags_leak, test_check_labels_exist, test_words_follow_findings,
                test_redirect_target_lines, test_redirect_target_mta_sts,
                test_redirect_target_tls_rpt, test_eol_heading,
-               test_terminal_shows_txt_lines):
+               test_terminal_shows_txt_lines, test_markdown_report, test_spf_lookup_limit_note):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")
