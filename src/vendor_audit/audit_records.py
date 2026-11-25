@@ -416,6 +416,11 @@ _CERT_BLOCKED = ("Browsers show a full-page warning and most visitors cannot con
                  "through, and apps and scripts that skip the check, lose the protection a certificate gives "
                  "against someone on the network impersonating the site.")
 _OUTCOME_TEXT = {
+    ("DKIM key strength", "weak_rotation"): (
+        "Every DKIM key a domain publishes can verify mail signed with it.",
+        "A 1024-bit key beside a 2048-bit one is usually left over from a key rotation, but receivers still "
+        "accept signatures made with it, so anyone who factors it can sign mail as the domain.",
+        "Rotate once more so the old selector also gets a 2048-bit key, or remove the old key once nothing signs with it."),
     ("TLS connection", "cert_expired"): (
         "The site's TLS certificate has passed its expiry date.",
         _CERT_BLOCKED,
@@ -524,11 +529,17 @@ _SPF_ENDING = {
 
 def _ev_spf(G):
     spf = G("spf")
+    mx = G("mx")
+    # 3.4.6: a domain with no SPF and no MX most likely sends no mail at all.
+    no_mail = ("no MX records, so the domain appears to send no mail: v=spf1 -all is all it needs"
+               if spf.get("status") == "missing" and not spf.get("record") and "entries" in mx
+               and not mx["entries"] and not mx.get("null_mx") and not mx.get("error") else None)
     return (_kv(("Ends with", _SPF_ENDING.get(spf.get("status"), spf.get("status"))),
                 ("DNS lookups", None if spf.get("lookup_count") is None
                  else f'{spf["lookup_count"]} of 10 allowed'),
                 ("Redirects to", spf.get("redirect_target")),
-                ("Lookup error", spf.get("error")))
+                ("Lookup error", spf.get("error")),
+                ("Mail", no_mail))
             + _code("SPF record published", spf.get("record")))
 
 
@@ -732,8 +743,19 @@ def _ev_cert(G):
 
 def _ev_cert_names(G):
     t, v = G("tls"), G("cert_variant")
+    # 3.4.6: a wrong certificate on the bare name of a site that lives on www.
+    wau, landing = G("www_apex_unified"), None
+    if t.get("cert_names_match") is False:
+        for final in (wau.get("www_final"), wau.get("apex_final")):
+            if final and wau.get("apex_host") and final.lower() != wau["apex_host"].lower():
+                landing = final
+                break
     return (_kv(("Name matches", None if t.get("cert_names_match") is None
                  else _yn(t.get("cert_names_match"))),
+                ("Site lands on", landing),
+                ("Why a browser may look fine", None if not landing else
+                 "typing the bare name usually starts on http://, which redirects to the site; "
+                 "links and bookmarks to the https:// bare name get the warning"),
                 ("www / apex coverage", {"covers": "both names are on the certificate",
                                          "missing_variant": "one of the two names is missing",
                                          "no_redirect": None}.get(v.get("outcome"), v.get("outcome"))),

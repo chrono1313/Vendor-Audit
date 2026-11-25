@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.4.5"
+__version__ = "3.4.6"
 
 import os
 import re
@@ -7005,7 +7005,14 @@ def _collect_outcomes(results):
             # found — otherwise we have no key to evaluate. Maps the
             # check's worst_strength directly to a rubric outcome key.
             ws = dkim.get("worst_strength")
-            if ws in ("good", "weak", "broken", "unparseable", "revoked"):
+            # 3.4.6: a 1024-bit key published beside a 2048-bit one is the
+            # usual trace of a key rotation (Microsoft 365 alternates
+            # selector1 and selector2); the stronger key is likely the one
+            # in use. Still worth retiring, so Low rather than Medium.
+            if ws == "weak" and any((k or {}).get("strength") == "good"
+                                    for k in (dkim.get("keys") or {}).values()):
+                ws = "weak_rotation"
+            if ws in ("good", "weak", "weak_rotation", "broken", "unparseable", "revoked"):
                 _p("DKIM key strength", ws)
             # ws is None → no found selectors; not scored (consistent with
             # 'not_found' on the parent DKIM check).

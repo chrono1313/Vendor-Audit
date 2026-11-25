@@ -866,12 +866,20 @@ def _render_reference_html(records):
         name = audit_records.TOPIC_TITLES.get(topic, topic)
         blocks.append(f'  <details id="about-{_h(topic)}"><summary>{_h(name)}</summary>'
                       '<div class="about-body">'
-                      + "".join(f'<p>{_h(p)}</p>' for p in paras) + '</div></details>')
+                      + "".join(_about_para(p) for p in paras) + '</div></details>')
     if not blocks:
         return ""
     return "\n".join(['<section class="block reference" id="reference" aria-label="Background reading">',
                       '  <div class="block-head"><h2>Background reading</h2></div>']
                      + blocks + ['</section>'])
+
+
+def _about_para(p):
+    """One background paragraph; a (heading, text) pair gets a bold lead-in."""
+    if isinstance(p, tuple):
+        heading, text = p
+        return f'<p><strong>{_h(heading)}</strong> {_h(text)}</p>'
+    return f'<p>{_h(p)}</p>'
 
 
 # ── Footer: scan details ────────────────────────────────────────────────────

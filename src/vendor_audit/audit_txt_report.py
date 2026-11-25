@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.4.5"
+__version__ = "3.4.6"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -436,10 +436,13 @@ EXPLANATIONS = {
     "spf": {
         "what": "SPF is a DNS record that lists which mail servers are allowed to send email using your domain.",
         "why":  "Without enforcement, anyone can spoof your domain in phishing emails — recipients can't tell a forgery from a real message.",
-        "fix":  "Publish a v=spf1 record listing your senders and end with -all (hard fail) so receivers reject unauthorised mail.",
+        "fix":  "Publish a v=spf1 record that lists your senders and ends with -all. A domain that sends no mail needs only v=spf1 -all.",
         "details": [
             "Sender Policy Framework (SPF, RFC 7208) is published as a DNS TXT record on your domain. When a receiving mail server gets a message claiming to be from your domain, it can read the SPF record and check whether the sending IP appears on your authorised list. If it doesn't, the receiver applies whatever policy your record's qualifier specifies.",
             "The qualifier — the symbol before all in the record — is what determines what receivers actually do. -all means hard fail (reject). ~all means soft fail (accept but mark, often spam-folder). ?all is neutral (no opinion). +all is permissive (anyone can send, almost certainly a misconfiguration). Only -all and a properly-published null sender (v=spf1 -all) on a non-sending domain are considered fully enforcing.",
+            # 3.4.6: a (heading, text) pair renders as a short titled paragraph.
+            ("Domains that don't send email.",
+             "A domain that never sends email still needs SPF. Parked, redirect-only and brand-protection domains look legitimate to recipients, and attackers pick them because nobody watches them. Publish three records: v=spf1 -all as SPF (no server may send for the domain), a null MX of 0 . (RFC 7505: the domain accepts no mail), and a DMARC record of v=DMARC1; p=reject (receivers reject anything claiming to come from it). Together they tell every receiver that mail from this domain is always forged."),
             "SPF has a well-known limitation: each include= or redirect= mechanism counts toward a hard cap of 10 DNS lookups per evaluation (RFC 7208 §4.6.4). Exceeding the cap causes receivers to treat the result as PermError and silently fail mail. If you use several SaaS providers (marketing, transactional, helpdesk) you can hit this quickly — flatten or consolidate via a SPF management service if you do.",
             "SPF alone does not survive forwarding. When a mailing list or auto-forward rewrites the message, the original sender's SPF check fails for the new envelope sender. This is why DKIM and DMARC together cover what SPF can't — they sign the message itself, not just authorise the IP. A modern email-authentication setup uses all three.",
         ],
@@ -462,7 +465,7 @@ EXPLANATIONS = {
         "details": [
             "DomainKeys Identified Mail (DKIM, RFC 6376) signs outgoing mail with a private key held by your mail-sending infrastructure. The public key is published in DNS, so any receiving server can verify the signature without contacting you. The signature covers the message body and selected headers — if either is altered in transit, verification fails.",
             "Each signing key is identified by a selector, a short label your mail provider chooses. The DNS record lives at <selector>._domainkey.<domain>. Most providers choose semi-arbitrary selector names (google, default, mail, k1, selector1, etc.), so detection by external tools is heuristic — Vendor Audit probes the most common selectors and reports what it finds.",
-            "Key strength matters. RSA-1024 has been formally deprecated by RFC 8301 since 2018; modern best practice is RSA-2048 or higher, or the more efficient Ed25519. M3AAWG's DKIM Key Rotation Best Common Practices recommends rotating keys roughly every six months, which the selector mechanism makes easy: publish a new key under a new selector, switch your signer to it, retire the old selector after a propagation window.",
+            "Key strength matters. RFC 8301 (2018) requires DKIM keys of at least 1024 bits and recommends 2048; 1024-bit RSA is within reach of well-funded attackers, so modern best practice is RSA-2048 or higher, or the more efficient Ed25519. M3AAWG's DKIM Key Rotation Best Common Practices recommends rotating keys roughly every six months, which the selector mechanism makes easy: publish a new key under a new selector, switch your signer to it, retire the old selector after a propagation window.",
             "DKIM survives forwarding because the signature travels with the message. SPF doesn't, because the envelope changes. This is why DMARC requires either SPF or DKIM to pass with alignment — DKIM is the one that holds up when a mailing list or corporate gateway rewrites the path.",
         ],
     },
@@ -1831,9 +1834,17 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 if ws == "good":
                     items.append(_status("pass",
                         f"DKIM key strength acceptable: {desc}", check=chk + "DKIM key strength"))
+                elif ws == "weak" and any((k or {}).get("strength") == "good" for k in keys.values()):
+                    # 3.4.6: rotation leftover — see _collect_outcomes.
+                    items.append(_status("warn",
+                        f"DKIM key strength: {desc} — an RSA-1024 key is still published beside a stronger one",
+                        note_lines=["Usually left over from a key rotation (Microsoft 365, for example, alternates "
+                                    "selector1 and selector2). Receivers still verify mail against it, so rotate "
+                                    "again or remove it until every published key is 2048-bit or Ed25519."],
+                        check=chk + "DKIM key strength"))
                 elif ws == "weak":
                     items.append(_status("warn",
-                        f"DKIM key strength: {desc} — RSA-1024 deprecated by RFC 8301",
+                        f"DKIM key strength: {desc} — RFC 8301 recommends RSA-2048 or Ed25519",
                         note_lines=["Upgrade to RSA-2048+ or Ed25519."], check=chk + "DKIM key strength"))
                 elif ws == "broken":
                     items.append(_status("fail",
@@ -2295,11 +2306,13 @@ def _render_routing_section(data):
             checked = "" if total == len(hosts) else " checked"
             sampled = ([f"Checked the first {len(hosts)} of {total} mail servers, by MX priority"]
                        if checked else None)
+            noun = "mail server" if len(hosts) == 1 else "mail servers"
             if len(n6) == len(hosts):
-                rows.append(_status("pass", f"All {len(hosts)} mail servers{checked} reachable over IPv6",
-                                    note_lines=sampled, check="Mail servers on IPv6"))
+                head = ("The mail server is reachable over IPv6" if len(hosts) == 1
+                        else f"All {len(hosts)} mail servers{checked} reachable over IPv6")
+                rows.append(_status("pass", head, note_lines=sampled, check="Mail servers on IPv6"))
             else:
-                rows.append(_status("warn", f"{len(n6)} of {len(hosts)} mail servers{checked} reachable over IPv6",
+                rows.append(_status("warn", f"{len(n6)} of {len(hosts)} {noun}{checked} reachable over IPv6",
                                     note_lines=sampled,
                                     sub_lines=[f"No IPv6: {', '.join(sorted(h for h in hosts if h not in n6))}"],
                                     check="Mail servers on IPv6"))
@@ -2329,6 +2342,29 @@ def _render_routing_section(data):
         parts.extend(rows)
 
     return "\n".join(parts)
+
+
+def _landing_host(results, domain):
+    """The host the site ends up on when it isn't `domain` itself (e.g. the
+    bare name redirects to www), else None."""
+    wau = results.get("www_apex_unified") or {}
+    for final in (wau.get("www_final"), wau.get("apex_final")):
+        if final and final.lower().rstrip(".") != (domain or "").lower():
+            return final
+    return None
+
+
+def _mismatch_notes(data, san_names):
+    """3.4.6: when the bare name's certificate is wrong but the site lives on
+    another host, say why a browser may still seem fine."""
+    landing = _landing_host(data.results, data.audit_domain)
+    if not landing:
+        return None
+    names = ", ".join(san_names[:3]) if san_names else "other names"
+    return [f"https://{data.audit_domain} presents a certificate for {names}, so a browser that goes there "
+            f"over HTTPS stops at a certificate warning.",
+            f"The site itself is at {landing}. Visitors who type the bare name usually start on http://, "
+            f"follow the redirect and never see the problem; links and bookmarks to https://{data.audit_domain} do."]
 
 
 def _infra_max_lookups():
@@ -2438,7 +2474,8 @@ def _render_tls_section(data):
                                  note_lines=note, check="Certificate name match"))
         elif names_match is False:
             parts.append(_status("fail",
-                f"Certificate name mismatch — cert does not cover {data.audit_domain}", check="Certificate name match"))
+                f"Certificate name mismatch — cert does not cover {data.audit_domain}",
+                note_lines=_mismatch_notes(data, san_names), check="Certificate name match"))
 
         lifetime = tls.get("cert_lifetime_days")
         issued   = tls.get("cert_issued",  "")

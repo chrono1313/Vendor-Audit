@@ -933,6 +933,77 @@ def test_report_polish():
           "security.txt error in plain words")
 
 
+def test_spf_no_mail_guidance():
+    # 3.4.6: SPF's background text covers domains that send no mail, and a
+    # domain with no SPF and no MX is told v=spf1 -all is all it needs.
+    from vendor_audit import audit_records as ar
+    from vendor_audit.web import render_html
+    what, why, fix = ar.explanation_for("SPF policy", "missing")
+    check("v=spf1 -all" in fix and "sends no mail" in fix, f"SPF fix covers no-mail domains: {fix}")
+    d = sample()
+    d["spf"] = {"status": "missing", "record": None, "error": None}
+    d["mx"] = {"entries": [], "null_mx": False, "error": None}
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    check("<strong>Domains that don&#x27;t send email.</strong>" in page
+          or "<strong>Domains that don't send email.</strong>" in page, "no-mail section in SPF background reading")
+    check("v=spf1 -all is all it needs" in page, "no-MX evidence note on the SPF card")
+    d["mx"] = {"entries": [{"priority": 10, "host": "mx.example.com"}], "null_mx": False, "error": None}
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    check("v=spf1 -all is all it needs" not in page, "no note when the domain has MX records")
+
+
+def test_bare_name_certificate_mismatch():
+    # 3.4.6 (rcrracing.com): the bare name serves a CDN's default certificate
+    # but redirects to www, so a browser looks fine. The report says why.
+    d = sample()
+    d["tls"] = {**d["tls"], "cert_names_match": False, "cert_san_names": ["*.cloudfront.net", "cloudfront.net"]}
+    d["www_apex_unified"] = {"outcome": "unified", "apex_host": "example.com", "www_host": "www.example.com",
+                             "apex_resolves": True, "www_resolves": True,
+                             "apex_final": "www.example.com", "www_final": "www.example.com"}
+    txt = detail(d)
+    check(line(txt, "CRITICAL", "Certificate name mismatch — cert does not cover example.com"), "mismatch still Critical")
+    check("presents a certificate for *.cloudfront.net, cloudfront.net" in txt, "names the wrong certificate")
+    check("The site itself is at www.example.com" in txt, "names where the site lives")
+    from vendor_audit.web import render_html
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    check("Why a browser may look fine" in page, "web card explains why the browser looks fine")
+
+    # One mail server: no "All 1 mail servers".
+    d = sample()
+    d["infra_routing"] = {"ns": {"hosts": {}, "lookups": [], "error": None},
+                          "mx": {"hosts": {"mx.example.com": {"v4": ["192.0.2.9"], "v6": ["2001:db8::9"]}},
+                                 "lookups": [], "error": None, "total": 1, "unchecked": 0}}
+    txt = detail(d)
+    check(line(txt, "PASS", "The mail server is reachable over IPv6"), "singular wording for one mail server")
+    check("All 1 mail servers" not in txt, "no 'All 1 mail servers'")
+
+
+def test_dkim_rotation_pair():
+    # 3.4.6 (rcrracing.com): RSA-1024 on selector1 beside RSA-2048 on
+    # selector2 is a rotation leftover (Low); 1024-bit only is Medium.
+    from vendor_audit import audit_records as ar
+    def dkim(*strengths):
+        keys = {f"selector{i + 1}": {"algorithm": "rsa", "bits": 1024 if st == "weak" else 2048, "strength": st}
+                for i, st in enumerate(strengths)}
+        return {"checked": ["selector1", "selector2"], "found": list(keys), "keys": keys,
+                "worst_strength": "weak" if "weak" in strengths else "good"}
+    d = sample()
+    d["dkim"] = dkim("weak", "good")
+    check(findings(d).get("DKIM key strength") == "low", "1024 beside 2048 → low")
+    txt = detail(d)
+    check(line(txt, "LOW", "DKIM key strength: selector1: RSA-1024; selector2: RSA-2048"), "rotation line reads LOW")
+    check("published beside a stronger one" in txt, "rotation wording")
+    check(ar.explanation_for("DKIM key strength", "weak_rotation")[2].startswith("Rotate once more"), "rotation fix text")
+    d["dkim"] = dkim("weak")
+    check(findings(d).get("DKIM key strength") == "medium", "1024 only → medium")
+    txt = detail(d)
+    check(line(txt, "MEDIUM", "RFC 8301 recommends RSA-2048 or Ed25519"), "1024-only wording, MEDIUM")
+    check("deprecated by RFC 8301" not in txt, "no claim that RFC 8301 deprecated 1024")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -940,7 +1011,9 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_csp_subchecks, test_security_txt_subchecks, test_deprecated_headers_and_lang,
          test_slow_upstreams_are_bounded, test_slow_ripestat_routing, test_slow_mail_server_bounded,
          test_ipv6_only_site_from_ipv4_only_auditor, test_unrouted_ipv6,
-         test_report_polish, test_every_new_check_end_to_end]
+         test_report_polish, test_spf_no_mail_guidance, test_bare_name_certificate_mismatch,
+         test_dkim_rotation_pair,
+         test_every_new_check_end_to_end]
 
 
 def run():
