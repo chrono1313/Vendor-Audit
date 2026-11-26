@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.3"
+__version__ = "3.5.4"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -797,8 +797,19 @@ EXPLANATIONS = {
         "details": [
             "Server software has a fixed support lifecycle just like an operating system. PHP releases get two years of active support and two of security fixes. Apache httpd maintains only the 2.4 branch. OpenSSL, Tomcat, Python, Ruby and Perl each publish end-of-life dates per release. Past that date no fixes are issued.",
             "This finding is distinct from plain version disclosure. Revealing \"PHP\" is a minor leak; revealing \"PHP/8.1.34\" after 8.1 has reached end of life tells a reader both what is running and that it is no longer maintained.",
-            "Vendor Audit reads versions the server already volunteers: the Server and X-Powered-By headers (Apache, nginx, OpenSSL, PHP, Python, Ruby, Perl, Jetty), X-AspNet-Version and X-AspNetMvc-Version, the MicrosoftSharePointTeamServices header, and the footer of a default error page (Apache, nginx, Tomcat). Each is compared with its end-of-life date from endoflife.date, checked against today's date. Linux distributions keep patching the versions they ship long after upstream stops, so for software distributions backport (nginx, OpenSSL, Tomcat, Jetty, Python, Ruby, Perl) only versions old enough that every distribution that shipped them is itself unsupported are flagged, and a PHP version carrying an Ubuntu or Debian package suffix is judged by that distro release instead of by php.net. If a CDN or reverse proxy strips these headers the check sees nothing and flags nothing.",
+            "Vendor Audit reads versions the server already volunteers: the Server and X-Powered-By headers (Apache, nginx, OpenSSL, PHP, Python, Ruby, Perl, Jetty), X-AspNet-Version and X-AspNetMvc-Version, the MicrosoftSharePointTeamServices, X-OWA-Version and X-Jenkins headers, the build in an Outlook Web App sign-in page, the version tag on Confluence and Jira pages, and the footer of a default error page (Apache, nginx, Tomcat). Each is compared with its end-of-life date from endoflife.date, checked against today's date. Linux distributions keep patching the versions they ship long after upstream stops, so for software distributions backport (nginx, OpenSSL, Tomcat, Jetty, Python, Ruby, Perl) only versions old enough that every distribution that shipped them is itself unsupported are flagged, and a PHP version carrying an Ubuntu or Debian package suffix is judged by that distro release instead of by php.net. If a CDN or reverse proxy strips these headers the check sees nothing and flags nothing.",
             "The fix has two halves. First, upgrade to a supported release. Second, stop advertising versions: ServerTokens Prod and ServerSignature Off for Apache, server_tokens off for nginx, expose_php = Off for PHP, and remove X-AspNet-Version / X-AspNetMvc-Version in web.config. Hiding the version patches nothing, so do it after the upgrade, not instead of it.",
+        ],
+    },
+    # 3.5.4: mail server software named in the SMTP greeting (deep scans).
+    "eol_mail": {
+        "what": "End-of-life mail server software, named in the greeting the domain's mail servers send to every connecting server, no longer receives security patches.",
+        "why":  "Mail servers face the whole internet, and the greeting states exactly which version is running. Exim has had remotely exploitable flaws, such as CVE-2019-10149, that were attacked at scale soon after they were published.",
+        "fix":  "Upgrade to a supported release, or to the version your distribution still patches, then set smtp_banner so the greeting no longer names the version.",
+        "details": [
+            "Every mail server greets a connecting server with a line starting 220. Exim's default names its version (\"ESMTP Exim 4.94.2\"). The deep scan already connects to each mail server to test STARTTLS, so it reads that line at no extra cost.",
+            "Exim's developers support only the newest release, but Debian and Ubuntu patch the version they ship for the life of the distribution. So only versions older than any supported distribution ships (below 4.95) are flagged: those are unpatched everywhere.",
+            "The fix has two halves. First, upgrade. Second, set smtp_banner in the Exim configuration to leave out $version_number. Hiding the version patches nothing, so do it after the upgrade, not instead of it.",
         ],
     },
     "error_page": {
@@ -1409,7 +1420,8 @@ class _ReportData:
             # eol_message already includes the tech name + version; use it
             # directly for the parenthetical detail but lead with a clear
             # "End-of-life runtime:" framing.
-            out[key] = f"End-of-life server software: {disp} {ver} ({msg})"
+            kind = "mail server software" if t.get("source") == "smtp_banner" else "server software"
+            out[key] = f"End-of-life {kind}: {disp} {ver} ({msg})"
         return out
 
 
@@ -2988,39 +3000,9 @@ def _render_server_disclosure_section(data):
     # cover the "version is revealed" finding; this subsection adds the
     # "and that version is end-of-life" dimension.
     tech_eol = r.get("tech_eol") or {}
-    eol_techs = [t for t in (tech_eol.get("techs") or [])
-                 if t.get("eol_status") in ("eol", "undetermined")]
-    if eol_techs:
-        parts.append("")
-        parts.append("")
-        # "End-of-life" only when something is; an undetermined version
-        # alone (ASP.NET 2.0.50727) gets a neutral heading.
-        any_eol = any(t.get("eol_status") == "eol" for t in eol_techs)
-        parts.extend(_subheading_with_explanation(
-            "End-of-life server software" if any_eol else "Server software support", "eol_tech"))
-        for t in eol_techs:
-            disp = t.get("name") or _TECH_DISPLAY_NAMES.get(t.get("tech", ""), (t.get("tech") or "?").upper())
-            ver  = t.get("version", "?")
-            msg  = t.get("eol_message") or ""
-            date = t.get("eol_last_release", "")
-            detail = f" — EOL {date}" if date else " — end of life"
-            src_label = {"error_page": "seen on the default error page",
-                         "server_header": "disclosed in the Server header",
-                         "x_powered_by": "disclosed in X-Powered-By",
-                         "x_aspnet_version": "disclosed in X-AspNet-Version",
-                         "x_aspnetmvc_version": "disclosed in X-AspNetMvc-Version",
-                         "sharepoint_header": "from the MicrosoftSharePointTeamServices header",
-                         "owa_header": f"build {t.get('detail')}, disclosed in the X-OWA-Version header",
-                         "owa_page": f"build {t.get('detail')}, seen in the Outlook Web App sign-in page",
-                         }.get(t.get("source") or "")
-            if t.get("eol_status") == "undetermined":
-                parts.append(_status("info", f"{disp} {ver} — support undetermined: {msg}",
-                    note_lines=[src_label[0].upper() + src_label[1:]] if src_label else None,
-                    check=(f"EOL tech: {t.get('tech', '?')} {t.get('version') or ''}").rstrip()))
-                continue
-            parts.append(_status("fail",
-                f"{disp} {ver}{detail} — no longer receives security patches",
-                note_lines=[src_label[0].upper() + src_label[1:]] if src_label else None, check=(f"EOL tech: {t.get('tech', '?')} {t.get('version') or ''}").rstrip()))
+    parts.extend(_eol_tech_block(
+        [t for t in (tech_eol.get("techs") or []) if t.get("source") != "smtp_banner"],
+        "End-of-life server software", "Server software support"))
 
     # Technology stack
     stack = srv.get("stack", []) or []
@@ -3739,7 +3721,60 @@ def _render_page_analysis_section(data):
 
 # ── Detailed sections: STARTTLS-MX probe (--deep) ───────────────────────────
 
+def _eol_tech_block(techs, eol_title, neutral_title, key="eol_tech"):
+    """The end-of-life lines for some of tech_eol's software, under their
+    own subheading; [] when none of it is end of life or undetermined.
+    "End-of-life" heads it only when something is; an undetermined
+    version alone (ASP.NET 2.0.50727) gets the neutral heading."""
+    techs = [t for t in techs if t.get("eol_status") in ("eol", "undetermined")]
+    if not techs:
+        return []
+    any_eol = any(t.get("eol_status") == "eol" for t in techs)
+    parts = ["", ""]
+    parts.extend(_subheading_with_explanation(eol_title if any_eol else neutral_title, key))
+    for t in techs:
+        disp = t.get("name") or _TECH_DISPLAY_NAMES.get(t.get("tech", ""), (t.get("tech") or "?").upper())
+        ver  = t.get("version", "?")
+        msg  = t.get("eol_message") or ""
+        date = t.get("eol_last_release", "")
+        detail = f" — EOL {date}" if date else " — end of life"
+        src_label = {"error_page": "seen on the default error page",
+                     "server_header": "disclosed in the Server header",
+                     "x_powered_by": "disclosed in X-Powered-By",
+                     "x_aspnet_version": "disclosed in X-AspNet-Version",
+                     "x_aspnetmvc_version": "disclosed in X-AspNetMvc-Version",
+                     "sharepoint_header": "from the MicrosoftSharePointTeamServices header",
+                     "owa_header": f"build {t.get('detail')}, disclosed in the X-OWA-Version header",
+                     "owa_page": f"build {t.get('detail')}, seen in the Outlook Web App sign-in page",
+                     "jenkins_header": "disclosed in the X-Jenkins header",
+                     "atlassian_page": "named in the page's ajs-version-number tag",
+                     "smtp_banner": f"named in the mail server greeting from {t.get('detail')}",
+                     }.get(t.get("source") or "")
+        check = f"EOL tech: {t.get('tech', '?')} {t.get('version') or ''}".rstrip()
+        notes = [src_label[0].upper() + src_label[1:]] if src_label else None
+        if t.get("eol_status") == "undetermined":
+            parts.append(_status("info", f"{disp} {ver} — support undetermined: {msg}",
+                                 note_lines=notes, check=check))
+            continue
+        parts.append(_status("fail", f"{disp} {ver}{detail} — no longer receives security patches",
+                             note_lines=notes, check=check))
+    return parts
+
+
 def _render_starttls_section(data):
+    """The STARTTLS probe's hosts, then (3.5.4) any end-of-life mail
+    server software their greetings named."""
+    body = _render_starttls_hosts(data)
+    if not body:
+        return body
+    tech_eol = data.results.get("tech_eol") or {}
+    extra = _eol_tech_block(
+        [t for t in (tech_eol.get("techs") or []) if t.get("source") == "smtp_banner"],
+        "End-of-life mail server software", "Mail server software support", key="eol_mail")
+    return "\n".join([body, *extra]) if extra else body
+
+
+def _render_starttls_hosts(data):
     starttls = data.results.get("starttls_mx")
     if starttls is None or starttls.get("mx_count", 0) == 0:
         return ""

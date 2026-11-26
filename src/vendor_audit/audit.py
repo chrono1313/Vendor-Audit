@@ -102,7 +102,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "3.5.3"
+__version__ = "3.5.4"
 
 log = logging.getLogger(__name__)
 
@@ -686,7 +686,8 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
     tech_t0 = time.monotonic()
     try:
         results["tech_eol"] = check_tech_eol(results.get("server_header") or {},
-                                             results.get("error_page") or {})
+                                             results.get("error_page") or {},
+                                             starttls_mx=results.get("starttls_mx"))
     except Exception as exc:
         results["tech_eol"] = {"techs": [], "any_eol": False, "error": str(exc)}
     check_timings["tech_eol"] = round(time.monotonic() - tech_t0, 3)

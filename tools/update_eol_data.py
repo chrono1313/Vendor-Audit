@@ -34,6 +34,7 @@ The "endoflife" block
         "field":       "eol",          # optional; date field to use (default "eol")
         "granularity": "major",        # optional; collapse cycles to their major
         "cycle_map":   {"7.5": "2008-r2-sp1"}   # optional; our key -> their cycle
+        "skip_cycles": ["2"]           # optional; upstream cycles not to write
     }
 
 "granularity": "major" is for libraries where we only ever judge the major
@@ -44,6 +45,10 @@ if any of its cycles is still supported.
 "cycle_map" is for products we detect under a different numbering than the
 one endoflife.date uses (an IIS version maps to a Windows Server release).
 Only the mapped keys are written.
+
+"skip_cycles" drops upstream cycles that would match too much. Jenkins
+lists its weekly line as one cycle "2" with no end date; kept, it would
+match every 2.x version and mark them all supported.
 """
 from __future__ import annotations
 
@@ -131,6 +136,9 @@ def _build_releases(product: dict, cfg: dict) -> dict:
         if isinstance(ext, str) and field != "eoes":
             row["extended"] = ext
         rows[cycle] = row
+
+    for cycle in cfg.get("skip_cycles") or ():
+        rows.pop(str(cycle), None)
 
     cycle_map = cfg.get("cycle_map")
     if cycle_map:

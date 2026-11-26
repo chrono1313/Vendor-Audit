@@ -117,7 +117,8 @@ TOPIC_TITLES = {
     "csp": "Content Security Policy", "security_headers": "Browser security headers",
     "cookies": "Cookies", "security_txt": "security.txt",
     "eol_os": "End-of-life operating systems", "eol_libraries": "End-of-life libraries",
-    "eol_tech": "End-of-life server software", "error_page": "Default error pages",
+    "eol_tech": "End-of-life server software", "eol_mail": "End-of-life mail server software",
+    "error_page": "Default error pages",
     "cors": "CORS", "rpki": "RPKI", "routing": "Routing", "ipv6": "IPv6",
     "page_analysis": "Page analysis",
     "dangling_dns": "Dangling DNS records", "infra_routing": "Nameserver and mail server addresses",
@@ -482,6 +483,8 @@ def topic_for(label):
         return "eol_os"
     if base.startswith("EOL library"):
         return "eol_libraries"
+    if base.startswith("EOL tech: exim "):
+        return "eol_mail"
     if base.startswith("EOL "):
         return "eol_tech"
     return _TOPIC.get(base)
@@ -848,7 +851,10 @@ def _ev_powered_by(G):
                ("X-AspNet-Version header", s.get("x_aspnet_version")),
                ("X-AspNetMvc-Version header", s.get("x_aspnetmvc_version")),
                ("SharePoint version header", s.get("sharepoint_version")),
-               ("Exchange build", s.get("exchange_version")))
+               ("Exchange build", s.get("exchange_version")),
+               ("X-Jenkins", s.get("jenkins_version")),
+               ("Atlassian version", " ".join(filter(None, (s.get("atlassian_product"), s.get("atlassian_version"))))
+                or None))
 
 
 def _ev_clickjacking(G):
@@ -1152,12 +1158,16 @@ def _ev_eol(label, results):
             return rows(lib, f'{lib.get("name") or lib.get("library")} {lib.get("version")}',
                         (("Last release in this line", lib.get("eol_last_version")),))
     seen_in = {"owa_page": "the Outlook Web App sign-in page",
-               "owa_header": "X-OWA-Version header"}
+               "owa_header": "X-OWA-Version header",
+               "jenkins_header": "X-Jenkins header",
+               "atlassian_page": "the page's ajs-version-number tag",
+               "smtp_banner": "the mail server greeting"}
     for tech in ((results.get("tech_eol") or {}).get("techs") or []):
         if label.endswith(f'{tech.get("tech")} {tech.get("version")}'):
             src = tech.get("source") or ""
             return rows(tech, f'{tech.get("name") or tech.get("tech")} {tech.get("version")}',
                         (("Build", tech.get("detail") if tech.get("tech") == "exchange" else None),
+                         ("Mail servers", tech.get("detail") if src == "smtp_banner" else None),
                          ("Seen in", seen_in.get(src, src.replace("_", " ")))))
     return []
 

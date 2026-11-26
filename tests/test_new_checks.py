@@ -697,7 +697,10 @@ def test_slow_mail_server_bounded():
     import time
 
     class SlowSMTP:
-        def __init__(self, host, port, timeout=None):
+        # 3.5.4: the probe connects separately, to keep the greeting.
+        def __init__(self, host="", port=0, timeout=None):
+            pass
+        def connect(self, host, port):
             if host == "slow.example.net":
                 time.sleep(10)
             raise OSError("connection refused")

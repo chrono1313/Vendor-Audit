@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.3"
+__version__ = "3.5.4"
 
 import os
 import re
@@ -3962,6 +3962,10 @@ def check_server_header(domain, _cached_response=None):
             # Outlook Web App sign-in page, whose files sit under
             # /owa/<build>/ (2007, 2010) or /owa/auth/<build>/ (2013 on).
             **_exchange_build(h, body),
+            # 3.5.4: Jenkins names its version in every response's
+            # X-Jenkins header; Confluence and Jira in their page markup.
+            "jenkins_version":     (h.get("X-Jenkins") or "").strip() or None,
+            **_atlassian_version(body),
             "final_url":           resp.url,
             # HTTP status of the page the header checks read, and whether
             # a bot defence answered instead of the site (see
@@ -5212,6 +5216,74 @@ def _exchange_build(headers, body):
     return {"exchange_version": None, "exchange_version_source": None}
 
 
+# Confluence and Jira (Server / Data Center) put their version in a meta
+# tag on every page, the sign-in page included:
+#   <meta name="ajs-version-number" content="7.19.16">
+# Jira 7 and 8 also have <meta name="application-name" content="JIRA"
+# data-name="jira" data-version="8.20.10"> and a footer "(v8.20.10#...".
+# Atlassian Cloud pages carry build numbers like 1000.0.0, which are newer
+# than every tracked release and so never judged.
+_AJS_VERSION_RE = re.compile(
+    r"""<meta\s[^>]*?(?:name=["']ajs-version-number["'][^>]*?content=["'](\d+(?:\.\d+)+)["']"""
+    r"""|content=["'](\d+(?:\.\d+)+)["'][^>]*?name=["']ajs-version-number["'])""", re.IGNORECASE)
+_JIRA_APPNAME_RE = re.compile(r"""data-name=["']jira["'][^>]*?data-version=["'](\d+(?:\.\d+)+)""", re.IGNORECASE)
+_JIRA_FOOTER_RE = re.compile(r"Atlassian Jira[^<(]{0,80}\(v(\d+(?:\.\d+)+)#", re.IGNORECASE)
+_CONFLUENCE_MARKERS = re.compile(
+    r"confluence-request-time|ajs-is-confluence-admin|com-atlassian-confluence|"
+    r"confluence-base-url|Atlassian Confluence", re.IGNORECASE)
+_JIRA_MARKERS = re.compile(
+    r"""data-name=["']jira["']|content=["']JIRA["']|Atlassian Jira|jira\.webresources|ajs-jira-""",
+    re.IGNORECASE)
+
+
+def _atlassian_version(body):
+    """{"atlassian_product", "atlassian_version"} for one page: "confluence"
+    or "jira" and its version, or both None. Which product it is comes
+    from markers only that product's pages carry; a version with neither
+    (Bitbucket, Bamboo, a page that only links to Jira) is not reported."""
+    none = {"atlassian_product": None, "atlassian_version": None}
+    body = body or ""
+    low = body.lower()
+    if "ajs-" not in low and "jira" not in low and "confluence" not in low:
+        return none
+    conf = len(_CONFLUENCE_MARKERS.findall(body))
+    jira = len(_JIRA_MARKERS.findall(body))
+    if not conf and not jira:
+        return none
+    product = "confluence" if conf > jira else "jira"
+    m = _AJS_VERSION_RE.search(body)
+    version = (m.group(1) or m.group(2)) if m else None
+    if version is None and product == "jira":
+        m = _JIRA_APPNAME_RE.search(body) or _JIRA_FOOTER_RE.search(body)
+        version = m.group(1) if m else None
+    if version is None:
+        return none
+    return {"atlassian_product": product, "atlassian_version": version}
+
+
+# Exim names its version in the SMTP greeting by default
+# ("220 mx.example.com ESMTP Exim 4.96 Thu, 26 Nov 2026 ...").
+_EXIM_BANNER_RE = re.compile(r"\bExim\s+(\d+\.\d+(?:\.\d+)*)\b")
+
+
+def _mail_server_techs(starttls_mx, today=None):
+    """End-of-life judgements for mail server software named in the
+    greetings the deep STARTTLS probe received (3.5.4: Exim). One entry per
+    version, naming the mail servers that sent it."""
+    hosts_by_version = {}
+    for host, res in ((starttls_mx or {}).get("results") or {}).items():
+        m = _EXIM_BANNER_RE.search((res or {}).get("banner") or "")
+        if m:
+            hosts_by_version.setdefault(m.group(1), []).append(host)
+    techs = []
+    for version, hosts in sorted(hosts_by_version.items()):
+        t = _annotate_tech_eol("exim", version, today)
+        t["source"] = "smtp_banner"
+        t["detail"] = ", ".join(hosts)
+        techs.append(t)
+    return techs
+
+
 def _exchange_release(build: str):
     """Map an Exchange build to its release (Microsoft's build numbers).
 
@@ -5316,7 +5388,7 @@ def _annotate_tech_eol(tech: str, version: str, today=None, ignore_gate=False) -
 
 
 def check_tech_eol(server_header_result: dict, error_page_result: dict | None = None,
-                   today=None) -> dict:
+                   today=None, starttls_mx: dict | None = None) -> dict:
     """Detect end-of-life server software from already-captured responses.
 
     Inputs are the dicts returned by check_server_header and (optionally)
@@ -5334,11 +5406,16 @@ def check_tech_eol(server_header_result: dict, error_page_result: dict | None = 
       }
 
     Only software that could be judged ('eol' or 'ok') is returned.
+
+    starttls_mx (deep scans) adds the mail server software named in the
+    SMTP greetings, which needs no web presence.
     """
     sh = server_header_result or {}
     ep = error_page_result or {}
+    mail = [t for t in _mail_server_techs(starttls_mx, today)
+            if t.get("eol_status") in ("eol", "ok", "undetermined")]
     if sh.get("error") and not ep.get("banner"):
-        return {"techs": [], "any_eol": False}
+        return {"techs": mail, "any_eol": any(t.get("eol_status") == "eol" for t in mail)}
 
     srv    = sh.get("server") or ""
     xpb    = sh.get("x_powered_by") or ""
@@ -5437,6 +5514,18 @@ def check_tech_eol(server_header_result: dict, error_page_result: dict | None = 
                                        ex_raw.strip(), today)
         if t:
             techs.append(t)
+
+    # 3.5.4: Jenkins (X-Jenkins header), Confluence and Jira (page markup).
+    if sh.get("jenkins_version"):
+        t = _annotate_tech_eol("jenkins", sh["jenkins_version"], today)
+        t["source"] = "jenkins_header"
+        techs.append(t)
+    if sh.get("atlassian_product") and sh.get("atlassian_version"):
+        t = _annotate_tech_eol(sh["atlassian_product"], sh["atlassian_version"], today)
+        t["source"] = "atlassian_page"
+        techs.append(t)
+
+    techs += mail
 
     # Only surface software we could judge, or could name as undecidable.
     techs = [t for t in techs if t.get("eol_status") in ("eol", "ok", "undetermined")]
@@ -6075,7 +6164,8 @@ def check_starttls_mx(mx_entries):
 
     def _probe(host):
         out = {"tls_version": None, "cert_subject": None, "cert_issuer": None,
-               "cert_expires": None, "cert_lifetime_days": None, "error": None}
+               "cert_expires": None, "cert_lifetime_days": None, "error": None,
+               "banner": None}
 
         # Build TLS context. We turn OFF hostname verification because MX
         # certs frequently don't list every routing hostname (e.g. Outlook
@@ -6092,7 +6182,15 @@ def check_starttls_mx(mx_entries):
             if not verify:
                 ctx.verify_mode = ssl.CERT_NONE
             try:
-                with smtplib.SMTP(host, 25, timeout=timeout) as smtp:
+                with smtplib.SMTP(timeout=timeout) as smtp:
+                    # 3.5.4: connect() separately to keep the greeting,
+                    # which often names the mail server software (Exim).
+                    code, greeting = smtp.connect(host, 25)
+                    if isinstance(greeting, bytes):
+                        greeting = greeting.decode("utf-8", "replace")
+                    out["banner"] = " ".join(str(greeting).split())[:300] or None
+                    if code != 220:
+                        raise smtplib.SMTPConnectError(code, greeting)
                     smtp.ehlo()
                     if not smtp.has_extn("STARTTLS"):
                         return None, "Server does not advertise STARTTLS"
@@ -6148,7 +6246,7 @@ def check_starttls_mx(mx_entries):
             _h, out = res
         else:
             out = {"tls_version": None, "cert_subject": None, "cert_issuer": None,
-                   "cert_expires": None, "cert_lifetime_days": None,
+                   "cert_expires": None, "cert_lifetime_days": None, "banner": None,
                    "error": f"no answer within {_STARTTLS_BUDGET:.0f}s (mail servers often delay "
                             "or limit connections from unknown hosts)"}
         results[host] = out
@@ -7315,15 +7413,18 @@ def _collect_outcomes(results):
     #
     # Label prefix "EOL tech:" gets top-tier criticality via _criticality_rank
     # (same treatment as EOL OS / EOL library) so these lead the Possible
-    # Issues list, and maps to the Website category in audit_render.
+    # Issues list, and maps to the Website category (Email for mail server
+    # software; see _category_for_label).
     tech_eol = results.get("tech_eol") or {}
-    if not no_web_presence:
-        for t in tech_eol.get("techs") or []:
-            if t.get("eol_status") in ("eol", "undetermined"):
-                tech_name = t.get("tech", "?")
-                ver       = t.get("version") or ""
-                label = f"EOL tech: {tech_name} {ver}".rstrip()
-                pts.append((label, t["eol_status"]))
+    for t in tech_eol.get("techs") or []:
+        # Mail server software (3.5.4) counts without a website too.
+        if no_web_presence and t.get("source") != "smtp_banner":
+            continue
+        if t.get("eol_status") in ("eol", "undetermined"):
+            tech_name = t.get("tech", "?")
+            ver       = t.get("version") or ""
+            label = f"EOL tech: {tech_name} {ver}".rstrip()
+            pts.append((label, t["eol_status"]))
 
     return pts
 
@@ -7392,6 +7493,8 @@ def _category_for_label(label):
     """Report category for a check label."""
     if label.startswith(_REDIRECT_PREFIX):
         label = label[len(_REDIRECT_PREFIX):]
+    if label.startswith("EOL tech: exim "):
+        return "Email"
     if label.startswith("EOL "):
         return "Website"
     for cat, labels in (RUBRIC.get("categories") or {}).items():

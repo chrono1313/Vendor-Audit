@@ -162,6 +162,66 @@ def test_exchange():
     check(sh.get("exchange_version") == "14.3.513.0", f"check_server_header reads the build: {sh.get('exchange_version')}")
 
 
+def test_jenkins_atlassian_exim():
+    """3.5.4: Jenkins (X-Jenkins), Confluence and Jira (page markup), and
+    Exim (the mail server greeting on deep scans)."""
+    j = lambda v: tech("", jenkins_version=v).get("jenkins")
+    check(j("2.555.3") and j("2.555.3")["eol_status"] == "eol", f"an old LTS is end of life: {j('2.555.3')}")
+    check(j("2.568.3") and j("2.568.3")["eol_status"] == "ok", "the current LTS is supported")
+    check(j("2.300") and j("2.300")["eol_status"] == "eol", "a weekly older than an end-of-life LTS line")
+    check(j("2.592") and j("2.592")["eol_status"] == "ok", "a weekly newer than every LTS line")
+    check(j("2.560") is None, "a weekly between LTS lines is not judged")
+    check("2" not in ac.TECH_EOL["jenkins"]["releases"], "the weekly cycle that would match every 2.x is skipped")
+
+    conf = ('<meta name="ajs-version-number" content="7.13.7"><meta name="ajs-build-number" content="8703">'
+            '<meta name="confluence-request-time" content="1">')
+    jira8 = '<meta name="application-name" content="JIRA" data-name="jira" data-version="8.20.10">'
+    jira9 = '<meta name="ajs-version-number" content="9.12.2"><body id="jira" data-name="jira">'
+    cloud = '<meta name="ajs-version-number" content="1000.0.0"><meta name="ajs-is-confluence-admin" content="false">'
+    check(ac._atlassian_version(conf) == {"atlassian_product": "confluence", "atlassian_version": "7.13.7"},
+          f"Confluence: {ac._atlassian_version(conf)}")
+    check(ac._atlassian_version(jira8) == {"atlassian_product": "jira", "atlassian_version": "8.20.10"},
+          f"Jira 8: {ac._atlassian_version(jira8)}")
+    check(ac._atlassian_version(jira9)["atlassian_version"] == "9.12.2", "Jira 9")
+    check(ac._atlassian_version('<meta name="ajs-version-number" content="8.9.0">')["atlassian_product"] is None,
+          "a version with no product markers is not reported")
+    a = lambda body: tech("", **ac._atlassian_version(body))
+    check(a(conf).get("confluence", {}).get("eol_status") == "eol", "Confluence 7.13 is end of life")
+    check(a(jira8).get("jira", {}).get("eol_status") == "eol", "Jira 8.20 is end of life")
+    check(a(cloud).get("confluence", {}).get("eol_status") == "ok", "Atlassian Cloud is never flagged")
+
+    mx = {"results": {"mx1.example.com": {"banner": "220 mx1.example.com ESMTP Exim 4.94.2 Wed, 18 Nov 2026"},
+                      "mx2.example.com": {"banner": "220 mx2.example.com ESMTP Exim 4.94.2 Wed, 18 Nov 2026"},
+                      "mx3.example.com": {"banner": "220 mx3.example.com ESMTP Exim 4.98 #2"},
+                      "mx4.example.com": {"banner": "220 mx4.example.com ESMTP Postfix"}}}
+    r = ac.check_tech_eol({"error": "site unreachable"}, {}, today=T, starttls_mx=mx)
+    ex = [t for t in r["techs"] if t["tech"] == "exim"]
+    check(len(ex) == 1 and ex[0]["version"] == "4.94.2" and ex[0]["eol_status"] == "eol"
+          and ex[0]["detail"] == "mx1.example.com, mx2.example.com" and ex[0]["source"] == "smtp_banner",
+          f"Exim 4.94 is flagged, once, naming both servers, without a website: {r}")
+    check(r["any_eol"], "and counts as end of life")
+    check(ac._category_for_label("EOL tech: exim 4.94.2") == "Email", "Exim findings are Email findings")
+
+    class FakeSMTP:
+        def __init__(self, host="", port=0, timeout=None):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def connect(self, host, port):
+            return 220, b"mx1.example.com ESMTP Exim 4.94.2 Wed, 18 Nov 2026"
+        def ehlo(self):
+            pass
+        def has_extn(self, name):
+            return False
+    from unittest import mock
+    with mock.patch.object(ac.smtplib, "SMTP", FakeSMTP):
+        probe = ac.check_starttls_mx([{"priority": 10, "host": "mx1.example.com"}])
+    got = probe["results"]["mx1.example.com"]
+    check(got["banner"] == "mx1.example.com ESMTP Exim 4.94.2 Wed, 18 Nov 2026", f"greeting kept: {got}")
+
+
 def test_distro_backports_not_flagged():
     # Upstream-EOL versions that a supported distro still patches.
     check("nginx" not in tech("nginx/1.18.0 (Ubuntu)"), "nginx 1.18 (Ubuntu 22.04) must not be flagged")
@@ -231,7 +291,7 @@ def test_libraries():
 
 def run():
     for fn in (test_schema, test_staleness, test_dates_flip_on_schedule,
-               test_server_software, test_exchange, test_distro_backports_not_flagged,
+               test_server_software, test_exchange, test_jenkins_atlassian_exim, test_distro_backports_not_flagged,
                test_os_inference, test_centos_stream_is_not_centos, test_libraries):
         before = len(_failures)
         fn()
