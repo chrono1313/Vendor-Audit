@@ -1,5 +1,5 @@
 {
-  "rubric_version": "3.5.8",
+  "rubric_version": "3.5.9",
   "compatible_with": "vendor_audit 2.x",
   "_comment": "Severity rubric. There are no points and nothing is added up. 'findings' maps each check label to its possible outcomes, and each outcome to [severity, text]. Severities: critical = broken or unsupported today; high = an important protection is missing or weak; medium = an expected practice is missing; low = a refinement; info = optional, or could not be determined (listed, never counted); pass = the practice is met. audit_checks.assess_results() decides WHICH outcome applies; this file decides how serious it is and how it reads. An outcome that is not listed produces no finding. One cause, one finding: HSTS, DNSSEC and clickjacking protection are each a single check. End-of-life findings carry a dynamic label ('EOL OS: ubuntu 18.04') and take their severity from 'eol_severity'.",
   "severities": [

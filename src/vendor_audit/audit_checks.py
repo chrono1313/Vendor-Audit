@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.8"
+__version__ = "3.5.9"
 
 import os
 import re
@@ -1825,6 +1825,7 @@ def check_ns_health(domain, *, ns_list=None, timeout=2.5):
 
     lame:        list[str]                 = []
     open_recur:  list[str]                 = []
+    versions:    dict[str, str]            = {}
     unprobed:    list[tuple[str, str]]     = []
     results_lock = threading.Lock()
 
@@ -1890,6 +1891,25 @@ def check_ns_health(domain, *, ns_list=None, timeout=2.5):
             # lame check (which succeeded above).
             pass
 
+        # Step 4 (3.5.9): version.bind, CHAOS class. BIND gives its version
+        # unless told not to; most providers refuse or give a placeholder.
+        # One small query, only to a public address.
+        if _is_public_ip(ns_ip):
+            try:
+                q3 = dns.message.make_query("version.bind", "TXT", "CH")
+                q3.flags &= ~dns.flags.RD
+                r3 = dns.query.udp(q3, ns_ip, timeout=min(timeout, 2.0))
+                for rrset in r3.answer:
+                    for rd in rrset:
+                        text = b"".join(getattr(rd, "strings", ())).decode("ascii", "replace")[:120]
+                        if text:
+                            with results_lock:
+                                versions[ns_host] = text
+                        break
+                    break
+            except (dns.exception.DNSException, OSError, ValueError):
+                pass
+
     threads = []
     for ns in ns_list:
         t = threading.Thread(target=_probe_one, args=(ns,), daemon=True)
@@ -1930,6 +1950,7 @@ def check_ns_health(domain, *, ns_list=None, timeout=2.5):
         "probed":           probed,
         "unprobed":         unprobed,
         "ns_list":          ns_list,
+        "versions":         dict(sorted(versions.items())),
         "error":            None,
     }
 
@@ -4111,6 +4132,14 @@ def check_server_header(domain, _cached_response=None):
             # X-Jenkins header; Confluence and Jira in their page markup.
             "jenkins_version":     (h.get("X-Jenkins") or "").strip() or None,
             **_atlassian_version(body),
+            # 3.5.9: proxies name themselves in Via ("1.1 varnish
+            # (Varnish/6.0)", "1.1 proxy (squid/4.10)"); Kibana sends its
+            # version on every response; Grafana and Roundcube put theirs in
+            # the page's startup data.
+            "via":                 h.get("Via"),
+            "kibana_version":      (h.get("kbn-version") or "").strip() or None,
+            "grafana_version":     _grafana_version(body),
+            "roundcube_version":   _roundcube_version(body),
             "final_url":           resp.url,
             # HTTP status of the page the header checks read, and whether
             # a bot defence answered instead of the site (see
@@ -5247,6 +5276,9 @@ _TECH_VERSION_PATTERNS = [
     ("python",  re.compile(r"\bC?Python/(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
     ("ruby",    re.compile(r"\bRuby/(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
     ("perl",    re.compile(r"\bPerl/v?(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
+    # 3.5.9: in the Server or Via header.
+    ("varnish", re.compile(r"\bVarnish/(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
+    ("squid",   re.compile(r"\bsquid/(\d+\.\d+(?:\.\d+)?)", re.IGNORECASE)),
 ]
 _ASPNET_VERSION_RE = re.compile(r"^\s*(\d+\.\d+(?:\.\d+)*)")
 
@@ -5397,6 +5429,63 @@ def _atlassian_version(body):
     return {"atlassian_product": product, "atlassian_version": version}
 
 
+# Grafana's sign-in page carries its startup data, with the version unless
+# the admin set hide_version: window.grafanaBootData = {... "buildInfo":
+# {"hideVersion":false, ... "version":"10.4.1", ...}}.
+_GRAFANA_BUILD_RE = re.compile(r'"buildInfo"\s*:\s*\{[^{}]*?"version"\s*:\s*"(\d+\.\d+\.\d+)', re.IGNORECASE)
+# Roundcube's page sets rcmail's environment, with the version as one
+# number: "rcversion":10604 is 1.6.4 (major*10000 + minor*100 + patch).
+_ROUNDCUBE_RE = re.compile(r'"rcversion"\s*:\s*(\d{5,6})\b')
+
+
+def _grafana_version(body):
+    body = body or ""
+    if "grafanaBootData" not in body:
+        return None
+    m = _GRAFANA_BUILD_RE.search(body)
+    return m.group(1) if m else None
+
+
+def _roundcube_version(body):
+    m = _ROUNDCUBE_RE.search(body or "")
+    if not m:
+        return None
+    n = int(m.group(1))
+    return f"{n // 10000}.{n // 100 % 100}.{n % 100}"
+
+
+# BIND answers a CHAOS-class TXT query for version.bind with its version
+# unless the operator set "version" to something else ("9.18.28-0ubuntu0.
+# 22.04.1-Ubuntu", "9.11.4-P2-RedHat-9.11.4-26.P2.el7"). Anything else
+# (a custom string, other DNS software, a refusal) is not reported.
+_BIND_VERSION_RE = re.compile(r"^(9\.\d+\.\d+)(?:[-.+~_ ]|$)")
+
+
+def _is_public_ip(addr):
+    """Whether a nameserver address is public (the web service's rule,
+    from netguard); the version.bind query is sent only to public ones."""
+    from .netguard import is_public_address
+    return is_public_address(addr)
+
+
+def _nameserver_techs(ns_health, today=None):
+    """End-of-life judgements for BIND versions the domain's nameservers
+    gave for version.bind (3.5.9). One entry per version, naming the
+    nameservers that gave it."""
+    hosts_by_version = {}
+    for host, raw in sorted(((ns_health or {}).get("versions") or {}).items()):
+        m = _BIND_VERSION_RE.match((raw or "").strip())
+        if m:
+            hosts_by_version.setdefault(m.group(1), []).append(host)
+    techs = []
+    for version, hosts in sorted(hosts_by_version.items()):
+        t = _annotate_tech_eol("bind", version, today)
+        t["source"] = "version_bind"
+        t["detail"] = ", ".join(hosts)
+        techs.append(t)
+    return techs
+
+
 # Exim names its version in the SMTP greeting by default
 # ("220 mx.example.com ESMTP Exim 4.96 Thu, 26 Nov 2026 ...").
 _EXIM_BANNER_RE = re.compile(r"\bExim\s+(\d+\.\d+(?:\.\d+)*)\b")
@@ -5524,7 +5613,7 @@ def _annotate_tech_eol(tech: str, version: str, today=None, ignore_gate=False) -
 
 
 def check_tech_eol(server_header_result: dict, error_page_result: dict | None = None,
-                   today=None, starttls_mx: dict | None = None) -> dict:
+                   today=None, starttls_mx: dict | None = None, ns_health: dict | None = None) -> dict:
     """Detect end-of-life server software from already-captured responses.
 
     Inputs are the dicts returned by check_server_header and (optionally)
@@ -5548,7 +5637,7 @@ def check_tech_eol(server_header_result: dict, error_page_result: dict | None = 
     """
     sh = server_header_result or {}
     ep = error_page_result or {}
-    mail = [t for t in _mail_server_techs(starttls_mx, today)
+    mail = [t for t in _mail_server_techs(starttls_mx, today) + _nameserver_techs(ns_health, today)
             if t.get("eol_status") in ("eol", "ok", "undetermined")]
     if sh.get("error") and not ep.get("banner"):
         return {"techs": mail, "any_eol": any(t.get("eol_status") == "eol" for t in mail)}
@@ -5558,7 +5647,8 @@ def check_tech_eol(server_header_result: dict, error_page_result: dict | None = 
     banner = ep.get("banner") or ""
     # Priority order: the live response headers first, the error-page footer
     # last. First source to disclose a given product wins.
-    sources = [("server_header", srv), ("x_powered_by", xpb), ("error_page", banner)]
+    sources = [("server_header", srv), ("x_powered_by", xpb), ("error_page", banner),
+               ("via_header", sh.get("via") or "")]
 
     found: dict[str, tuple[str, str, str]] = {}   # tech → (version, source, text)
     for tech, pattern in _TECH_VERSION_PATTERNS:
@@ -5660,6 +5750,14 @@ def check_tech_eol(server_header_result: dict, error_page_result: dict | None = 
         t = _annotate_tech_eol(sh["atlassian_product"], sh["atlassian_version"], today)
         t["source"] = "atlassian_page"
         techs.append(t)
+    # 3.5.9: Kibana (kbn-version header), Grafana and Roundcube (page data).
+    for tech, key, source in (("kibana", "kibana_version", "kibana_header"),
+                              ("grafana", "grafana_version", "grafana_page"),
+                              ("roundcube", "roundcube_version", "roundcube_page")):
+        if sh.get(key):
+            t = _annotate_tech_eol(tech, sh[key], today)
+            t["source"] = source
+            techs.append(t)
 
     techs += mail
 
@@ -7588,8 +7686,9 @@ def _collect_outcomes(results):
     # software; see _category_for_label).
     tech_eol = results.get("tech_eol") or {}
     for t in tech_eol.get("techs") or []:
-        # Mail server software (3.5.4) counts without a website too.
-        if no_web_presence and t.get("source") != "smtp_banner":
+        # Mail server (3.5.4) and nameserver (3.5.9) software counts
+        # without a website too.
+        if no_web_presence and t.get("source") not in ("smtp_banner", "version_bind"):
             continue
         if t.get("eol_status") in ("eol", "undetermined"):
             tech_name = t.get("tech", "?")
@@ -7670,6 +7769,8 @@ def _category_for_label(label):
         label = label[len(_REDIRECT_PREFIX):]
     if label.startswith("EOL tech: exim "):
         return "Email"
+    if label.startswith("EOL tech: bind "):
+        return "DNS"
     if label.startswith("EOL "):
         return "Website"
     for cat, labels in (RUBRIC.get("categories") or {}).items():

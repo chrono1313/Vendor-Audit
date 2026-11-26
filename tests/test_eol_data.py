@@ -222,6 +222,73 @@ def test_jenkins_atlassian_exim():
     check(got["banner"] == "mx1.example.com ESMTP Exim 4.94.2 Wed, 18 Nov 2026", f"greeting kept: {got}")
 
 
+def test_proxies_dashboards_webmail_bind():
+    """3.5.9: Varnish and Squid (Via / Server), Kibana (kbn-version),
+    Grafana and Roundcube (page data), BIND (version.bind)."""
+    check(tech("", via="1.1 varnish (Varnish/5.2)").get("varnish", {}).get("eol_status") == "eol",
+          "Varnish 5 in Via is end of life")
+    check("varnish" not in tech("", via="1.1 varnish (Varnish/6.0)"), "Varnish 6.0 is distro-maintained, not judged")
+    check("varnish" not in tech("", via="1.1 varnish"), "no version, nothing judged (Fastly)")
+    check(tech("squid/3.5.27").get("squid", {}).get("eol_status") == "eol", "Squid 3.5 in Server")
+    check(tech("", via="1.1 proxy.example (squid/3.1.23)").get("squid", {}).get("source") == "via_header",
+          "Squid in Via")
+    check(tech("", kibana_version="7.10.2").get("kibana", {}).get("eol_status") == "eol", "Kibana 7.10")
+    check(tech("", kibana_version="8.19.3").get("kibana", {}).get("eol_status") == "ok", "Kibana 8.19 supported")
+
+    boot = 'window.grafanaBootData = {"settings":{"buildInfo":{"hideVersion":false,"version":"8.5.2","commit":"x"}}};'
+    check(ac._grafana_version(boot) == "8.5.2", "Grafana version from its startup data")
+    check(ac._grafana_version('"buildInfo":{"version":"8.5.2"}') is None, "only on a Grafana page")
+    check(tech("", grafana_version="8.5.2").get("grafana", {}).get("eol_status") == "eol", "Grafana 8.5 is end of life")
+    rc = 'rcmail.set_env({"task":"login","x_frame_options":"sameorigin","rcversion":10411,"cookie_domain":""});'
+    check(ac._roundcube_version(rc) == "1.4.11", f"rcversion 10411 is 1.4.11: {ac._roundcube_version(rc)}")
+    check(tech("", roundcube_version="1.4.11").get("roundcube", {}).get("eol_status") == "eol", "Roundcube 1.4")
+    check("roundcube" not in tech("", roundcube_version="1.5.2"), "Roundcube 1.5 is distro-maintained")
+
+    ns = {"versions": {"ns1.example.com": "9.9.4-RedHat-9.9.4-74.el7_6.1", "ns2.example.com": "9.9.4-RedHat-9.9.4-74.el7_6.1",
+                       "ns3.example.net": "9.18.28-0ubuntu0.22.04.1-Ubuntu", "ns4.example.org": "none of your business"}}
+    r = ac.check_tech_eol({"error": "site unreachable"}, {}, today=T, ns_health=ns)
+    b = [t for t in r["techs"] if t["tech"] == "bind"]
+    check(len(b) == 1 and b[0]["version"] == "9.9.4" and b[0]["eol_status"] == "eol"
+          and b[0]["detail"] == "ns1.example.com, ns2.example.com",
+          f"BIND 9.9 flagged once for both nameservers; 9.18 and a custom string are not: {b}")
+    check(ac._category_for_label("EOL tech: bind 9.9.4") == "DNS", "BIND findings are DNS findings")
+
+    import dns.message
+    import dns.rrset
+    from unittest import mock
+
+    def fake_udp(q, where, timeout=None):
+        r = dns.message.make_response(q)
+        name, rdtype = q.question[0].name.to_text(), q.question[0].rdtype
+        if name == "version.bind." and dns.rdataclass.to_text(q.question[0].rdclass) == "CH":
+            r.answer.append(dns.rrset.from_text("version.bind.", 0, "CH", "TXT", '"9.9.4-RedHat-9.9.4-74.el7_6.1"'))
+        elif name == "example.com.":
+            r.flags |= dns.flags.AA
+        return r
+    import dns.rdataclass
+    import dns.flags
+    with mock.patch.object(ac, "resolve", side_effect=lambda n, t, lifetime=None: ["192.0.2.53"] if t == "A" else []), \
+         mock.patch.object(ac.dns.query, "udp", side_effect=fake_udp), \
+         mock.patch.object(ac, "_is_public_ip", return_value=True):
+        h = ac.check_ns_health("example.com", ns_list=["ns1.example.com"])
+    check(h.get("versions") == {"ns1.example.com": "9.9.4-RedHat-9.9.4-74.el7_6.1"}, f"version.bind read: {h}")
+    with mock.patch.object(ac, "resolve", side_effect=lambda n, t, lifetime=None: ["10.0.0.53"] if t == "A" else []), \
+         mock.patch.object(ac.dns.query, "udp", side_effect=fake_udp):
+        h = ac.check_ns_health("example.com", ns_list=["ns1.example.com"])
+    check(not h.get("versions"), "no version.bind query to a private address")
+
+    import httpx
+    resp = httpx.Response(200, headers={"Via": "1.1 varnish (Varnish/5.2)", "kbn-version": "7.10.2",
+                                        "Content-Type": "text/html"},
+                          text="<html>" + boot + rc + "</html>",
+                          request=httpx.Request("GET", "https://app.example.com/"))
+    sh = ac.check_server_header("app.example.com", _cached_response=resp)
+    check((sh.get("via"), sh.get("kibana_version"), sh.get("grafana_version"), sh.get("roundcube_version"))
+          == ("1.1 varnish (Varnish/5.2)", "7.10.2", "8.5.2", "1.4.11"),
+          f"check_server_header keeps all four: {sh.get('via')}, {sh.get('kibana_version')}, "
+          f"{sh.get('grafana_version')}, {sh.get('roundcube_version')}")
+
+
 def test_distro_backports_not_flagged():
     # Upstream-EOL versions that a supported distro still patches.
     check("nginx" not in tech("nginx/1.18.0 (Ubuntu)"), "nginx 1.18 (Ubuntu 22.04) must not be flagged")
@@ -291,7 +358,8 @@ def test_libraries():
 
 def run():
     for fn in (test_schema, test_staleness, test_dates_flip_on_schedule,
-               test_server_software, test_exchange, test_jenkins_atlassian_exim, test_distro_backports_not_flagged,
+               test_server_software, test_exchange, test_jenkins_atlassian_exim, test_proxies_dashboards_webmail_bind,
+               test_distro_backports_not_flagged,
                test_os_inference, test_centos_stream_is_not_centos, test_libraries):
         before = len(_failures)
         fn()

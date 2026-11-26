@@ -1,0 +1,96 @@
+# Refreshes the end-of-life data from endoflife.date once a week and opens a
+# pull request when anything changed (new releases, moved dates). Nothing
+# reaches main without someone merging that pull request.
+#
+#   When:   Mondays 15:17 UTC (07:17 Pacific), and by hand: Actions →
+#           eol-data → Run workflow.
+#   What:   tools/update_eol_data.py rewrites the "releases" of every entry
+#           with an "endoflife" block in tech_eol.json, os_eol.json and
+#           library_eol.json; hand-curated entries are left alone.
+#   Checks: the full test suite runs on the refreshed data before the pull
+#           request is opened, and again on the pull request (tests.yml).
+#   Result: one pull request from a branch eol-data/<date>. An older refresh
+#           pull request still open is closed in favour of the new one, so
+#           there is only ever one to review.
+#
+# One-time setting: Settings → Actions → General → Workflow permissions →
+# "Allow GitHub Actions to create and approve pull requests". Without it the
+# job refreshes and tests the data, then fails at the last step.
+#
+# Actions are pinned to full commit hashes, as in tests.yml.
+
+name: eol-data
+
+on:
+  schedule:
+    - cron: "17 15 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: eol-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install -e '.[web,dev]' pyyaml
+
+      - name: Refresh the data
+        id: refresh
+        run: |
+          python tools/update_eol_data.py | tee refresh.log
+          if git diff --quiet -- src/vendor_audit/*_eol.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changes upstream."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tests on the refreshed data
+        if: steps.refresh.outputs.changed == 'true'
+        run: python -m pytest -q
+
+      - name: Open the pull request
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          day=$(date -u +%Y-%m-%d)
+          branch="eol-data/$day"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add src/vendor_audit/*_eol.json
+          git commit -m "End-of-life data refresh from endoflife.date ($day)"
+          git push origin "$branch"
+          {
+            echo "Weekly refresh of the end-of-life data from endoflife.date."
+            echo "The test suite passed on the refreshed data."
+            echo
+            echo "Changes:"
+            echo
+            echo '```'
+            grep -E '^  |entries' refresh.log || true
+            echo '```'
+            echo
+            echo "After merging: git pull on the dev box, then the usual VM update."
+          } > body.md
+          old=$(gh pr list --state open --search "head:eol-data/" --json number --jq '.[].number')
+          gh pr create --base main --head "$branch" \
+            --title "End-of-life data refresh ($day)" --body-file body.md
+          for n in $old; do
+            gh pr close "$n" --delete-branch --comment "Superseded by the refresh of $day."
+          done

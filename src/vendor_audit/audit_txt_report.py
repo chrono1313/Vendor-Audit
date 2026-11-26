@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.8"
+__version__ = "3.5.9"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -829,6 +829,16 @@ EXPLANATIONS = {
             "The fix has two halves. First, upgrade to a supported release. Second, stop advertising versions: ServerTokens Prod and ServerSignature Off for Apache, server_tokens off for nginx, expose_php = Off for PHP, and remove X-AspNet-Version / X-AspNetMvc-Version in web.config. Hiding the version patches nothing, so do it after the upgrade, not instead of it.",
         ],
     },
+    # 3.5.9: DNS server software named in a version.bind answer.
+    "eol_dns": {
+        "what": "End-of-life DNS server software, named by the domain's own nameservers when asked for version.bind, no longer receives security patches.",
+        "why":  "A nameserver answers anyone on the internet, and an unpatched one can be crashed (taking the domain offline) or, with some flaws, made to serve forged answers.",
+        "fix":  "Upgrade BIND to a supported release, or to the version your distribution still patches, then set version \"none\"; (or any text) in named.conf options so it stops giving its version.",
+        "details": [
+            "BIND answers a query for version.bind in the CHAOS class with its version unless told otherwise. Vendor Audit sends that one query to each nameserver, alongside the lame-delegation and open-resolver checks; most DNS providers refuse it or answer with a placeholder, and only a real BIND version string is judged.",
+            "Linux distributions keep patching the BIND they ship (9.11 on RHEL 8, 9.16 on RHEL 9, 9.18 on Debian 12 and Ubuntu 22.04 and 24.04), so only versions older than any of those (below 9.11) are flagged.",
+        ],
+    },
     # 3.5.4: mail server software named in the SMTP greeting (deep scans).
     "eol_mail": {
         "what": "End-of-life mail server software, named in the greeting the domain's mail servers send to every connecting server, no longer receives security patches.",
@@ -1448,7 +1458,8 @@ class _ReportData:
             # eol_message already includes the tech name + version; use it
             # directly for the parenthetical detail but lead with a clear
             # "End-of-life runtime:" framing.
-            kind = "mail server software" if t.get("source") == "smtp_banner" else "server software"
+            kind = {"smtp_banner": "mail server software",
+                    "version_bind": "DNS server software"}.get(t.get("source"), "server software")
             out[key] = f"End-of-life {kind}: {disp} {ver} ({msg})"
         return out
 
@@ -2338,6 +2349,12 @@ def _render_dns_section(data):
         if not any(i.get("chain") for i in named.values()):
             parts.append(_status("pass", "No CNAMEs on the domain or its www form", check="Dangling CNAME"))
 
+    # 3.5.9: end-of-life BIND named in a version.bind answer.
+    tech_eol = r.get("tech_eol") or {}
+    parts.extend(_eol_tech_block(
+        [t for t in (tech_eol.get("techs") or []) if t.get("source") == "version_bind"],
+        "End-of-life DNS server software", "DNS server software support", key="eol_dns"))
+
     return "\n".join(parts)
 
 
@@ -3064,7 +3081,7 @@ def _render_server_disclosure_section(data):
     # "and that version is end-of-life" dimension.
     tech_eol = r.get("tech_eol") or {}
     parts.extend(_eol_tech_block(
-        [t for t in (tech_eol.get("techs") or []) if t.get("source") != "smtp_banner"],
+        [t for t in (tech_eol.get("techs") or []) if t.get("source") not in ("smtp_banner", "version_bind")],
         "End-of-life server software", "Server software support"))
 
     # Technology stack
@@ -3857,6 +3874,11 @@ def _eol_tech_block(techs, eol_title, neutral_title, key="eol_tech"):
                      "jenkins_header": "disclosed in the X-Jenkins header",
                      "atlassian_page": "named in the page's ajs-version-number tag",
                      "smtp_banner": f"named in the mail server greeting from {t.get('detail')}",
+                     "version_bind": f"given for version.bind by {t.get('detail')}",
+                     "via_header": "disclosed in the Via header",
+                     "kibana_header": "disclosed in the kbn-version header",
+                     "grafana_page": "named in the Grafana sign-in page's startup data",
+                     "roundcube_page": "named in the Roundcube page's rcversion setting",
                      }.get(t.get("source") or "")
         check = f"EOL tech: {t.get('tech', '?')} {t.get('version') or ''}".rstrip()
         notes = [src_label[0].upper() + src_label[1:]] if src_label else None

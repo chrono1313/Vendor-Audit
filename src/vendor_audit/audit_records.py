@@ -118,6 +118,7 @@ TOPIC_TITLES = {
     "cookies": "Cookies", "security_txt": "security.txt",
     "eol_os": "End-of-life operating systems", "eol_libraries": "End-of-life libraries",
     "eol_tech": "End-of-life server software", "eol_mail": "End-of-life mail server software",
+    "eol_dns": "End-of-life DNS server software",
     "error_page": "Default error pages",
     "cors": "CORS", "rpki": "RPKI", "routing": "Routing", "ipv6": "IPv6",
     "page_analysis": "Page analysis",
@@ -490,6 +491,8 @@ def topic_for(label):
         return "eol_libraries"
     if base.startswith("EOL tech: exim "):
         return "eol_mail"
+    if base.startswith("EOL tech: bind "):
+        return "eol_dns"
     if base.startswith("EOL "):
         return "eol_tech"
     return _TOPIC.get(base)
@@ -1173,13 +1176,19 @@ def _ev_eol(label, results):
                "owa_header": "X-OWA-Version header",
                "jenkins_header": "X-Jenkins header",
                "atlassian_page": "the page's ajs-version-number tag",
-               "smtp_banner": "the mail server greeting"}
+               "smtp_banner": "the mail server greeting",
+               "version_bind": "the nameserver's version.bind answer",
+               "via_header": "the Via header",
+               "kibana_header": "the kbn-version header",
+               "grafana_page": "the Grafana sign-in page",
+               "roundcube_page": "the Roundcube sign-in page"}
     for tech in ((results.get("tech_eol") or {}).get("techs") or []):
         if label.endswith(f'{tech.get("tech")} {tech.get("version")}'):
             src = tech.get("source") or ""
             return rows(tech, f'{tech.get("name") or tech.get("tech")} {tech.get("version")}',
                         (("Build", tech.get("detail") if tech.get("tech") == "exchange" else None),
                          ("Mail servers", tech.get("detail") if src == "smtp_banner" else None),
+                         ("Nameservers", tech.get("detail") if src == "version_bind" else None),
                          ("Seen in", seen_in.get(src, src.replace("_", " ")))))
     return []
 

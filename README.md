@@ -381,7 +381,7 @@ has to remember to bump a version floor.
 | File | Covers | Read from |
 | --- | --- | --- |
 | `os_eol.json` | CentOS, CentOS Stream, RHEL, AlmaLinux, Rocky, Oracle Linux, Scientific Linux, Ubuntu, Debian / Raspbian, FreeBSD, IIS → Windows Server | `Server` header, PHP package suffix, default error page |
-| `tech_eol.json` | Apache httpd, nginx, OpenSSL, PHP, Tomcat, Jetty, Python, Ruby, Perl, ASP.NET, ASP.NET MVC, SharePoint Server, Exchange Server, Jenkins, Confluence, Jira, Exim | `Server`, `X-Powered-By`, `X-AspNet*`, `MicrosoftSharePointTeamServices`, `X-OWA-Version`, `X-Jenkins`, the Outlook Web App sign-in page, the Confluence / Jira version tag, default error page, the mail server's SMTP greeting (deep scans) |
+| `tech_eol.json` | Apache httpd, nginx, OpenSSL, PHP, Tomcat, Jetty, Python, Ruby, Perl, ASP.NET, ASP.NET MVC, SharePoint Server, Exchange Server, Jenkins, Confluence, Jira, Grafana, Kibana, Roundcube, Varnish, Squid, Exim, BIND | `Server`, `Via`, `X-Powered-By`, `X-AspNet*`, `MicrosoftSharePointTeamServices`, `X-OWA-Version`, `X-Jenkins`, `kbn-version`, the Outlook Web App / Grafana / Roundcube pages, the Confluence / Jira version tag, default error page, the nameservers' `version.bind` answer, the mail server's SMTP greeting (deep scans) |
 | `library_eol.json` | ~50 of the ~185 client-side libraries and CMSes the detector recognises | page HTML |
 
 Most dates come from [endoflife.date](https://endoflife.date). Nothing is
@@ -392,9 +392,15 @@ python3 tools/update_eol_data.py --check   # show what would change
 python3 tools/update_eol_data.py           # rewrite the three files
 ```
 
+The refresh runs on its own every Monday (`.github/workflows/eol-data.yml`):
+GitHub Actions runs the script and the tests, and opens a pull request when
+anything changed, so updated data arrives as one pull request to review and
+merge. It needs "Allow GitHub Actions to create and approve pull requests"
+turned on once, under Settings → Actions → General.
+
 Releases already in the files expire on schedule without a refresh. The
-refresh is what teaches the audit about releases published since, so run it
-every few months (`tests/test_eol_data.py` fails once the data is a year old).
+refresh is what teaches the audit about releases published since
+(`tests/test_eol_data.py` fails once the data is a year old).
 Entries without an `endoflife` block are curated by hand and cite a `source`:
 projects with no published policy, and projects whose own maintainers have
 declared them discontinued (Moment.js, CryptoJS, oidc-client-js and others).
