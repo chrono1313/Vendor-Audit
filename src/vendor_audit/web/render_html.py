@@ -693,7 +693,8 @@ def _render_categories_html(data):
 
 def _render_checks_table_html(data, records):
     """One row per check. Without the script every row is listed. The script
-    shows the filter bar and opens on issues only."""
+    shows the filter bar and opens on Findings: the issues, then the
+    informational rows under a divider."""
     counts = data.counts
     cats = [r["category"] for r in data.category_rows]
     out = ['<section class="block" id="checks" aria-label="All checks">']
@@ -724,8 +725,16 @@ def _render_checks_table_html(data, records):
                '<th scope="col" class="col-cat">Category</th>'
                '<th scope="col" class="col-std">Standard</th></tr></thead>')
     out.append('    <tbody>')
+    divided = False
     for rec in records:
         sev = rec["severity"]
+        if sev == "info" and not divided:
+            # 3.5.6: Findings lists the informational rows too, after Low,
+            # under this divider. They are still not counted.
+            divided = True
+            out.append('      <tr class="sev-divider" id="info-divider"><th colspan="4" scope="rowgroup">'
+                       'Informational <span>optional practices and checks that could not run; '
+                       'not counted</span></th></tr>')
         out.append(
             f'      <tr data-sev="{sev}" data-cat="{_h(rec["category"])}" data-id="{rec["id"]}">'
             f'<td>{_badge(sev)}</td>'
@@ -961,7 +970,8 @@ _RESULT_JS = """\
 
   var ISSUE = { critical: 1, high: 1, medium: 1, low: 1 };
   var SEV_WORD = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Informational' };
-  var rows = [].slice.call(doc.querySelectorAll('.checks-table tbody tr'));
+  var rows = [].slice.call(doc.querySelectorAll('.checks-table tbody tr[data-id]'));
+  var infoDivider = doc.getElementById('info-divider');
   var chips = [].slice.call(doc.querySelectorAll('.filter-chip'));
   var filters = doc.getElementById('filters');
   var cats = filters && filters.getAttribute('data-cats') ? filters.getAttribute('data-cats').split('|') : [];
@@ -972,7 +982,8 @@ _RESULT_JS = """\
   var noMatch = doc.getElementById('no-match');
   var section = doc.getElementById('checks');
   var hasIssues = rows.some(function (tr) { return ISSUE[tr.getAttribute('data-sev')]; });
-  // sev: the button pressed (issues / all / pass). only and cat come from
+  // sev: the button pressed (issues / all / pass); issues (Findings) shows
+  // the informational rows too, after the counted ones. only and cat come from
   // the category cards, side-nav links and severity tiles, and show as a tag.
   var state = { sev: hasIssues ? 'issues' : 'all', only: '', cat: '' };
 
@@ -981,7 +992,8 @@ _RESULT_JS = """\
     var sev = tr.getAttribute('data-sev');
     if (state.only) {
       if (sev !== state.only) { return false; }
-    } else if (state.sev === 'issues' ? !ISSUE[sev] : (state.sev !== 'all' && sev !== state.sev)) {
+    } else if (state.sev === 'issues' ? !(ISSUE[sev] || sev === 'info')
+               : (state.sev !== 'all' && sev !== state.sev)) {
       return false;
     }
     if (state.cat && tr.getAttribute('data-cat') !== state.cat) { return false; }
@@ -989,12 +1001,19 @@ _RESULT_JS = """\
   }
 
   function apply() {
-    var shown = 0;
+    var shown = 0, shownIssue = false, shownInfo = false;
     rows.forEach(function (tr) {
       var ok = matches(tr);
       tr.hidden = !ok;
-      if (ok) { shown++; }
+      if (ok) {
+        shown++;
+        if (ISSUE[tr.getAttribute('data-sev')]) { shownIssue = true; }
+        if (tr.getAttribute('data-sev') === 'info') { shownInfo = true; }
+      }
     });
+    // The divider separates the counted findings from the informational
+    // rows, so it shows only when both are on screen.
+    if (infoDivider) { infoDivider.hidden = !(shownIssue && shownInfo); }
     chips.forEach(function (b) {
       b.setAttribute('aria-pressed', !state.only && b.getAttribute('data-sev') === state.sev ? 'true' : 'false');
     });
@@ -1489,6 +1508,13 @@ html.js .filters { display: flex; flex-wrap: wrap; align-items: center; justify-
 .checks-table tbody tr:first-child td { border-top: none; }
 .checks-table tbody tr { position: relative; }
 .checks-table tbody tr:hover { background: var(--surface-hover); }
+.checks-table tr.sev-divider:hover { background: none; }
+.checks-table tr.sev-divider th {
+  width: auto; padding: 1.1rem 1rem 0.5rem; border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft); color: var(--fg);
+}
+.checks-table tr.sev-divider th span { margin-left: 0.6rem; letter-spacing: 0.04em; text-transform: none; color: var(--muted); }
+.checks-table tr.sev-divider + tr td { border-top: none; }
 .checks-table td:first-child, .checks-table th:first-child { width: 7.6rem; }
 .col-cat { width: 6rem; white-space: nowrap; color: var(--muted); }
 .col-std { width: 11rem; font: 0.8rem var(--mono); color: var(--muted); }

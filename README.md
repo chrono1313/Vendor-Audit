@@ -22,7 +22,8 @@ command-line tool. The report is one page:
 - a summary with the share of checks passed and the findings by severity
 - the categories, each with its findings and passed checks; choosing one
   filters the checks to it
-- a table of every check, showing the findings, all checks or the passes
+- a table of every check, showing the findings (with the informational items
+  after them), all checks or the passes
 - a detail panel for each check: what was found, what the practice is, why
   it matters and how to fix it
 

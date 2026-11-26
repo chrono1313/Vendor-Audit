@@ -1131,6 +1131,31 @@ def test_spf_fix_line_break():
           "A domain that sends no mail needs \"v=spf1 -all\".\n" in md, "the text report gives it its own line")
 
 
+def test_findings_view_lists_informational():
+    """3.5.6: the Findings view lists the informational rows after Low,
+    under a divider, without counting them."""
+    from vendor_audit.web import render_html
+    d = sample()
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    body = page[page.index("<tbody>"):page.index("</tbody>")]
+    sevs = re.findall(r'<tr (?:class="sev-divider" id="info-divider"|data-sev="(\w+)")', body)
+    i = sevs.index("")
+    check(sevs.count("") == 1 and sevs[i + 1] == "info" and "info" not in sevs[:i]
+          and all(s in ("critical", "high", "medium", "low") for s in sevs[:i]),
+          f"one divider, right before the first informational row: {sevs}")
+    n_issues = sum(1 for s in sevs if s in ("critical", "high", "medium", "low"))
+    check(f'data-sev="issues" aria-pressed="false">Findings <span>{n_issues}</span>' in page,
+          "the Findings count is still only the counted issues")
+    check("!(ISSUE[sev] || sev === 'info')" in render_html._RESULT_JS, "the script shows info rows under Findings")
+    d["dane"] = {"status": "present"}
+    d.pop("bimi", None)
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    if 'data-sev="info"' not in page:
+        check('id="info-divider"' not in page, "no informational rows, no divider")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -1141,6 +1166,7 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_report_polish, test_spf_no_mail_guidance, test_bare_name_certificate_mismatch,
          test_dkim_rotation_pair, test_results_page_layout, test_spf_on_subdomain_covered_by_dmarc,
          test_email_card_names_every_spf_break, test_email_card_opens_worst_finding, test_spf_fix_line_break,
+         test_findings_view_lists_informational,
          test_every_new_check_end_to_end]
 
 
