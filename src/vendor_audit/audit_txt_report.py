@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.4"
+__version__ = "3.5.5"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -408,55 +408,66 @@ _CERT_ISSUER_EXPANSIONS = {
 #
 # Lower number = higher priority. Spread out so future inserts have room.
 _CRITICALITY_RANK_TABLE = {
+    # Every finding label in rubric.json has a rank here, and nothing else
+    # (3.5.5; tests/test_reports.py checks both). Raw checks that are
+    # merged into one finding (HSTS present → HSTS) are ranked under the
+    # finding's label. Ranks need not be unique: equal ranks keep the
+    # order the checks run in.
+
     # ── Tier 1: domain takeover / direct compromise ─────────────────────
     # EOL OS is handled separately (rank 5) by the prefix check in
     # _criticality_rank, since the label embeds the OS name.
     "SPF policy":                   10,   # +all = anyone can spoof
+    "SPF single record":            11,   # two records = SPF ignored (permerror)
+    "Dangling CNAME":               12,   # subdomain takeover
     "DMARC policy":                 13,   # p=none = no enforcement
+    "DMARC single record":          14,   # two records = DMARC ignored
     "TLS connection":               15,   # TLS broken = users can't reach site safely
     "Certificate name match":       16,
-    "DNSSEC AD flag":               18,   # validation chain broken
 
     # ── Tier 2: enables phishing / MITM / takeover ──────────────────────
+    "Legacy TLS disabled":          20,   # TLS 1.0 / 1.1 still accepted
     "DMARC pct":                    25,
     "DMARC sp":                     26,
     "DMARC rua reporting":          27,
+    "DMARC external reports":       27,
     "SPF lookup count":             28,
-    "SPF redirect":                 29,
-    "HSTS present":                 30,
+    "SPF mechanisms":               28,
     "HSTS":                         30,
     "HSTS preload":                 34,
-    "HSTS includeSubDomains":       32,
-    "HSTS max-age strength":        33,
-    "HSTS preloaded":               34,
     "MTA-STS":                      36,
+    "MTA-STS policy MX match":      36,
+    "MTA-STS max_age":              37,
     "TLS-RPT":                      37,
     "DANE TLSA on MX":              38,
     "STARTTLS-MX":                  39,
+    "Forward secrecy":              40,
     "CAA records":                  42,   # any CA can issue for the domain
     "DNSSEC TLD signed":            43,
-    "DNSSEC DNSKEY":                44,
     "DNSSEC":                       44,
+    "DNSSEC algorithm":             44,
     "Cert chain completeness":      45,
+    "Certificate key strength":     45,
     "Cert covers www variant":      46,
     "Certificate lifetime":         47,
     "Certificate renewal":          47,   # about to lapse — same tier as lifetime
     "DKIM key strength":            48,
+    "DKIM (common selectors)":      48,
     "Authoritative delegation":     49,   # lame NS = some users get NODATA/SERVFAIL
     "NS not open resolver":         50,   # DDoS-amp risk; not a takeover but real
     "MX target hygiene":            51,   # RFC 2181 violation; sending MTAs vary
+    "MX hosts resolve":             51,
+    "MX reverse DNS":               52,
+    "Null MX on no-mail domain":    53,
 
     # ── Tier 3: defence-in-depth / hardening ────────────────────────────
+    "SSL Labs grade":               54,
     "TLS 1.3":                      55,
     "HTTP→HTTPS redirect":          56,
     "www and apex unified":         57,
-    "CSP":                          58,
     "CSP script-src safety":        59,
     "CSP object-src":               60,
     "CSP base-uri":                 61,
-    "CSP frame-ancestors":          62,
-    "CSP enforcement mode":         63,
-    "X-Frame-Options":              65,
     "Clickjacking protection":      62,
     "X-Content-Type-Options":       66,
     "Subresource Integrity":        67,
@@ -471,28 +482,42 @@ _CRITICALITY_RANK_TABLE = {
     "Cookie SameSite":              77,
     "Cookie name prefixes":         78,
 
-    # ── Tier 4: best-practice / informational signals ───────────────────
-    "Referrer-Policy":              85,
-    "Permissions-Policy":           86,
-    "Cross-Origin-Opener-Policy":   87,
-    "Cross-Origin-Resource-Policy": 88,
-    "X-XSS-Protection deprecated":  89,
-    "security.txt":                 92,
+    # ── Tier 4: routing / availability ──────────────────────────────────
+    # 3.5.5: above the optional headers (was the last tier), so a missing
+    # IPv6 or a single nameserver comes before Referrer-Policy.
+    "IPv4 RPKI":                    80,
+    "IPv6 RPKI":                    81,
+    "Nameserver RPKI":              81,
+    "Mail server RPKI":             81,
+    "IPv4 IRR/RIS":                 82,
+    "IPv6 IRR/RIS":                 83,
+    "IPv6":                         84,
+    "Nameservers on IPv6":          85,
+    "Mail servers on IPv6":         85,
+    "Nameserver count":             86,
+    "Nameserver networks":          86,
+    "SOA timers":                   88,
+    "HTTP version":                 89,
+    "Redirect first-hop hygiene":   90,
 
-    # ── Tier 5: routing / availability — important but rarely a vendor's
-    # most pressing issue when other things are also wrong ──────────────
-    "IPv4 RPKI":                    95,
-    "IPv6 RPKI":                    96,
-    "IPv4 IRR/RIS":                 97,
-    "IPv6 IRR/RIS":                 98,
-    "IPv6":                        100,
-    "Nameserver count":            102,
-    "MX records":                  103,
-    "HTTP version":                105,
-    "Redirect first-hop hygiene":  106,
+    # ── Tier 5: optional headers and best-practice signals ──────────────
+    "Referrer-Policy":             100,
+    "Permissions-Policy":          101,
+    "Cross-Origin-Opener-Policy":  102,
+    "Cross-Origin-Resource-Policy": 103,
+    "X-XSS-Protection deprecated": 104,
+    "Deprecated security headers": 104,
+    "security.txt":                106,
+    "security.txt location":       106,
+    "security.txt Canonical":      106,
+    "HTTPS DNS record":            108,
+    "BIMI":                        109,
+    "Page language declared":      110,
 }
 
-# Default rank for any label not in the table — sorts after everything named.
+# Default rank for a label not in the table — sorts after everything named.
+# Every rubric label has a rank (tests/test_reports.py), so this only
+# applies to a label added without one.
 _CRITICALITY_DEFAULT_RANK = 500
 
 
@@ -512,6 +537,9 @@ def _criticality_rank(label):
     """
     if not label:
         return _CRITICALITY_DEFAULT_RANK
+    # 3.5.5: a redirect target's email checks rank like the domain's own.
+    if label.startswith("redirect target: "):
+        label = label[len("redirect target: "):]
     if label.startswith("EOL OS:"):
         return 5
     if label.startswith("EOL tech:"):

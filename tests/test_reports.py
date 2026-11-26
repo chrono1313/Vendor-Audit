@@ -278,11 +278,31 @@ def test_spf_lookup_limit_note():
           "the page's check text says the same")
 
 
+def test_every_finding_is_ranked():
+    """3.5.5: every finding has a place in the within-severity order, and
+    routing / availability come before the optional headers."""
+    import json
+    rubric = json.load(open(os.path.join(os.path.dirname(atr.__file__), "rubric.json")))
+    labels = {l for l in rubric["findings"] if not l.startswith("_")}
+    table = atr._CRITICALITY_RANK_TABLE
+    check(not sorted(labels - set(table)), f"findings with no rank: {sorted(labels - set(table))}")
+    check(not sorted(set(table) - labels), f"ranks for labels that no longer exist: {sorted(set(table) - labels)}")
+    r = atr._criticality_rank
+    check(r("Legacy TLS disabled") < r("Nameserver count"), "TLS 1.0 accepted comes before a single nameserver")
+    check(r("Dangling CNAME") < r("CAA records"), "subdomain takeover is tier 1")
+    check(max(r(l) for l in ("IPv6", "Nameserver count", "IPv4 RPKI", "HTTP version"))
+          < min(r(l) for l in ("Referrer-Policy", "Permissions-Policy", "security.txt")),
+          "routing and availability come before the optional headers")
+    check(r("redirect target: SPF policy") == r("SPF policy"), "a redirect target's checks rank like the domain's")
+    check(r("EOL OS: Windows Server 2012") < r("SPF policy"), "end-of-life software still leads")
+
+
 def run():
     for fn in (test_no_tags_leak, test_check_labels_exist, test_words_follow_findings,
                test_redirect_target_lines, test_redirect_target_mta_sts,
                test_redirect_target_tls_rpt, test_eol_heading,
-               test_terminal_shows_txt_lines, test_markdown_report, test_spf_lookup_limit_note):
+               test_terminal_shows_txt_lines, test_markdown_report, test_spf_lookup_limit_note,
+               test_every_finding_is_ranked):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")
