@@ -66,13 +66,21 @@ from .validate import ValidationError, validate_domain_input
 
 log = logging.getLogger("vendor_audit.web")
 
+# The audit log: one line per audit a visitor asks for, with the visitor's
+# address. The front page promises these are kept for 30 days; the service
+# logs to its own journal namespace that deletes them after that (see
+# deploy/journald@vendor-audit.conf), and deploy/vendor-audit-log reads
+# them back. Both formats are parsed by that tool, so change them together.
+AUDIT_LOG_REQUEST = "audit request: original=%r normalized=%r addresses=%s ip=%s%s%s"
+AUDIT_LOG_CACHE_HIT = "audit cache hit (%s): domain=%r ip=%s%s"
+
 # Configure our logger to actually emit. Uvicorn configures its own
 # loggers (the "INFO: ..." lines you see at startup) but doesn't set up
 # anything that captures application-level loggers like ours. Without
 # this block our log.info() / log.warning() calls would be silently
 # discarded — bad for operational visibility.
 #
-# stderr → captured by systemd → visible in `journalctl -u vendor-audit`.
+# stderr → captured by systemd → visible in `journalctl --namespace=vendor-audit -u vendor-audit`.
 # We set propagate=False so that if a future operator calls
 # logging.basicConfig() elsewhere, we don't get duplicate lines.
 if not log.handlers:
@@ -919,7 +927,7 @@ async def _run_audit_and_render(request: Request, domain: str, *,
                 cache_hit_kind = "deep-fallback"
         if cached is not None:
             cached_html, _, _, cached_audit_ts = cached
-            log.info("audit cache hit (%s): domain=%r ip=%s%s",
+            log.info(AUDIT_LOG_CACHE_HIT,
                      cache_hit_kind, shape_only.domain, _client_ip(request),
                      " deep=1" if deep else "")
             return HTMLResponse(content=_inject_age(cached_html, cached_audit_ts))
@@ -944,7 +952,7 @@ async def _run_audit_and_render(request: Request, domain: str, *,
         )
 
     log.info(
-        "audit request: original=%r normalized=%r addresses=%s ip=%s%s%s",
+        AUDIT_LOG_REQUEST,
         validated.original, validated.domain,
         ",".join(validated.addresses), _client_ip(request),
         " fresh=1" if fresh else "",
@@ -1047,6 +1055,14 @@ async def _cached_or_audit(request: Request, domain: str, deep: bool):
     except ValidationError as exc:
         return None, (status.HTTP_400_BAD_REQUEST, str(exc), exc.code)
 
+    # 3.5.3: a download that runs an audit is logged like a page request.
+    log.info(
+        AUDIT_LOG_REQUEST,
+        validated.original, validated.domain,
+        ",".join(validated.addresses), _client_ip(request),
+        " via=download",
+        " deep=1" if deep else "",
+    )
     envelope = await _run_audit_shared(
         request.app.state.pool, validated.domain, deep=deep)
     if not envelope["ok"]:

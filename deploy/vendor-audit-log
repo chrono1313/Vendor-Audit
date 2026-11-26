@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""vendor-audit-log — who audited what, from the service's 30-day log.
+
+The service logs each audit a visitor asks for, with their IP address, to
+its own journal namespace (LogNamespace=vendor-audit), which deletes
+entries after 30 days (journald@vendor-audit.conf). This prints those
+lines as a table.
+
+    sudo vendor-audit-log                         # the last 24 hours
+    sudo vendor-audit-log --since "7 days ago"
+    sudo vendor-audit-log --ip 203.0.113.7        # one visitor, all 30 days
+    sudo vendor-audit-log --domain example.com    # one domain, all 30 days
+    sudo vendor-audit-log --top                   # busiest visitors and domains
+    sudo vendor-audit-log -f                      # follow as audits come in
+    sudo vendor-audit-log --tz America/Los_Angeles
+
+Install:  sudo install -m 755 deploy/vendor-audit-log /usr/local/bin/
+Needs root, or membership of the systemd-journal group, to read the journal.
+Standard library only.
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from collections import Counter
+from datetime import datetime, timezone
+
+NAMESPACE = "vendor-audit"
+UNIT = "vendor-audit"
+
+# The two formats in vendor_audit/web/app.py (AUDIT_LOG_REQUEST and
+# AUDIT_LOG_CACHE_HIT), after the logger's "INFO vendor_audit.web: " prefix.
+# A domain or input is printed with %r, so it is in single quotes, or in
+# double quotes if it contains a single quote.
+_QUOTED = r"""(?:'[^']*'|"[^"]*")"""
+_REQUEST = re.compile(
+    rf"audit request: original=(?P<original>{_QUOTED}) normalized=(?P<domain>{_QUOTED}) "
+    rf"addresses=(?P<addresses>\S*) ip=(?P<ip>\S+)(?P<flags>.*)$")
+_CACHE_HIT = re.compile(
+    rf"audit cache hit \((?P<kind>[^)]*)\): domain=(?P<domain>{_QUOTED}) ip=(?P<ip>\S+)(?P<flags>.*)$")
+
+
+def _unquote(s):
+    return s[1:-1] if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"" else s
+
+
+def parse_message(message):
+    """One audit-log row {ip, domain, what} from a log message, or None for
+    any other line."""
+    m = _REQUEST.search(message)
+    if m:
+        flags = m.group("flags")
+        what = "download" if "via=download" in flags else "audit"
+        extra = [w for w, f in (("deep", "deep=1"), ("fresh", "fresh=1")) if f in flags]
+        if extra:
+            what += f" ({', '.join(extra)})"
+        return {"ip": m.group("ip"), "domain": _unquote(m.group("domain")), "what": what}
+    m = _CACHE_HIT.search(message)
+    if m:
+        what = "cached" + (" (deep)" if "deep=1" in m.group("flags") else "")
+        return {"ip": m.group("ip"), "domain": _unquote(m.group("domain")), "what": what}
+    return None
+
+
+def parse_entry(line, tz=None):
+    """One row (with its time) from a line of `journalctl -o json`, or None."""
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return None
+    message = entry.get("MESSAGE")
+    if isinstance(message, list):                 # non-UTF-8 message: list of bytes
+        message = bytes(message).decode("utf-8", "replace")
+    row = parse_message(message or "")
+    if row is None:
+        return None
+    try:
+        when = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1e6, tz=timezone.utc)
+    except (KeyError, ValueError):
+        return None
+    row["time"] = when.astimezone(tz)              # tz None: this machine's zone
+    return row
+
+
+def _journal(args):
+    cmd = ["journalctl", f"--namespace={args.namespace}", "-u", UNIT,
+           "-o", "json", "--no-pager"]
+    if args.since:
+        cmd += ["--since", args.since]
+    if args.until:
+        cmd += ["--until", args.until]
+    if args.follow:
+        cmd += ["-f", "-n", "0"]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        sys.exit("vendor-audit-log: journalctl not found")
+    return proc
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description="Show who audited what, from the vendor-audit service's 30-day log.")
+    ap.add_argument("--since", help='start time, as journalctl takes it ("7 days ago", "2026-11-20"). '
+                    "Default: 24 hours ago, or all 30 days with --ip, --domain or --top.")
+    ap.add_argument("--until", help="end time, as journalctl takes it")
+    ap.add_argument("--ip", help="only this visitor address")
+    ap.add_argument("--domain", help="only this audited domain")
+    ap.add_argument("--top", action="store_true", help="count requests per visitor and per domain")
+    ap.add_argument("-f", "--follow", action="store_true", help="keep printing new audits as they come in")
+    ap.add_argument("--tz", help="show times in this time zone (e.g. America/Los_Angeles); default: this machine's")
+    ap.add_argument("--namespace", default=NAMESPACE, help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+
+    tz = None
+    if args.tz:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(args.tz)
+    if args.since is None and not args.follow:
+        args.since = "30 days ago" if (args.ip or args.domain or args.top) else "24 hours ago"
+
+    proc = _journal(args)
+    ips, domains, shown = Counter(), Counter(), 0
+    if not args.top:
+        print(f"{'Time':19}  {'Visitor':39}  {'What':16}  Domain", flush=True)
+    try:
+        for line in proc.stdout:
+            row = parse_entry(line, tz)
+            if row is None:
+                continue
+            if args.ip and row["ip"] != args.ip:
+                continue
+            if args.domain and row["domain"].lower() != args.domain.lower().rstrip("."):
+                continue
+            shown += 1
+            if args.top:
+                ips[row["ip"]] += 1
+                domains[row["domain"]] += 1
+                continue
+            print(f"{row['time']:%Y-%m-%d %H:%M:%S}  {row['ip']:39}  {row['what']:16}  {row['domain']}",
+                  flush=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        proc.terminate()
+    if proc.wait() not in (0, -15) and not shown:
+        sys.exit("vendor-audit-log: journalctl failed (run with sudo, or check --namespace)")
+
+    if args.top:
+        for title, counts in (("Visitors", ips), ("Domains", domains)):
+            print(f"{title} ({len(counts)}):")
+            for name, n in counts.most_common(15):
+                print(f"  {n:6}  {name}")
+            print()
+    print(f"{shown} audit request{'s' if shown != 1 else ''}"
+          + (f" since {args.since}" if args.since else ""), file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

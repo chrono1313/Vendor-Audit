@@ -133,6 +133,11 @@ declaration includes both paths.
 sudo install -m 0644 /opt/vendor-audit/deploy/vendor-audit.service \
     /etc/systemd/system/vendor-audit.service
 
+# The service's own journal, which keeps the audit log for 30 days
+# (see "The audit log" below), and the tool that reads it.
+sudo install -m 0644 /opt/vendor-audit/deploy/journald@vendor-audit.conf /etc/systemd/
+sudo install -m 0755 /opt/vendor-audit/deploy/vendor-audit-log /usr/local/bin/
+
 sudo systemctl daemon-reload
 ```
 
@@ -147,8 +152,12 @@ Expect to see `active (running)` and recent log lines. If it failed,
 the journal will tell you why:
 
 ```bash
-sudo journalctl -u vendor-audit --since "5 minutes ago" --no-pager
+sudo journalctl --namespace=vendor-audit -u vendor-audit --since "5 minutes ago" --no-pager
 ```
+
+The service logs to its own journal namespace, so `--namespace=vendor-audit`
+is needed to see its output; systemd's own start and stop messages stay in
+the system journal (`sudo journalctl -u vendor-audit`).
 
 Smoke test the endpoints from the VM itself:
 
@@ -216,6 +225,32 @@ If you changed `requirements.txt` or `pyproject.toml`:
 ```bash
 sudo /opt/vendor-audit/.venv/bin/pip install -e '/opt/vendor-audit[web]' --upgrade
 sudo systemctl restart vendor-audit
+```
+
+## The audit log
+
+Each audit a visitor asks for is logged with their IP address and the
+domain: a new audit, a cached result, or a download that ran an audit.
+The front page says these are kept for 30 days, and the service's journal
+namespace enforces it: `/etc/systemd/journald@vendor-audit.conf` deletes
+entries older than 30 days (files rotate daily, so within a day of that),
+caps the namespace at 1 GB, and keeps it out of `/var/log/syslog`.
+
+```bash
+sudo vendor-audit-log                          # the last 24 hours
+sudo vendor-audit-log --since "7 days ago"
+sudo vendor-audit-log --ip 203.0.113.7         # one visitor, all 30 days
+sudo vendor-audit-log --domain example.com     # one domain, all 30 days
+sudo vendor-audit-log --top                    # busiest visitors and domains
+sudo vendor-audit-log -f                       # follow live
+sudo vendor-audit-log --tz America/Los_Angeles # times in your zone
+```
+
+To check the retention is in force:
+
+```bash
+systemd-analyze cat-config systemd/journald@vendor-audit.conf | grep -E 'MaxRetentionSec|MaxFileSec|Storage'
+sudo journalctl --namespace=vendor-audit --header | grep -E 'Head timestamp|File path' | head
 ```
 
 ## Troubleshooting
@@ -292,6 +327,7 @@ match), or change cloudflared to point at a different local port.
 ```bash
 sudo systemctl disable --now vendor-audit
 sudo rm /etc/systemd/system/vendor-audit.service
+sudo rm /etc/systemd/journald@vendor-audit.conf /usr/local/bin/vendor-audit-log
 sudo systemctl daemon-reload
 
 sudo rm -rf /etc/vendor-audit

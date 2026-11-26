@@ -86,13 +86,23 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=vendor-audit
 
+# Log to the service's own journal namespace, which keeps entries for 30
+# days and then deletes them (deploy/journald@vendor-audit.conf). The log
+# holds visitor IP addresses, and the front page promises 30 days.
+# Read it with `sudo vendor-audit-log`, or with journalctl's
+# --namespace=vendor-audit (plain `journalctl -u vendor-audit` no longer
+# shows the service's own output; systemd's start/stop lines still go to
+# the system journal).
+LogNamespace=vendor-audit
+
 # ─────────────────────────────────────────────────────────────────────────
 # Hardening — filesystem
 # ─────────────────────────────────────────────────────────────────────────
 
 # Make / and /usr read-only. The service has zero need to write outside
 # its own private temp dir. ReadWritePaths is empty because the service
-# is stateless — no logs to disk (journald handles that), no cache, no DB.
+# is stateless — no logs to disk (journald handles that, in the service's
+# own 30-day namespace), no cache, no DB.
 ProtectSystem=strict
 
 # Make /home, /root, /run/user inaccessible. The service user has no home
