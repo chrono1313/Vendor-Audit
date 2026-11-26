@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.7"
+__version__ = "3.5.8"
 
 import os
 import re
@@ -670,7 +670,7 @@ def _spf_void(name, rtypes):
 def _spf_stats(record, domain=None, visited=None):
     """Walk an SPF record and the records it includes.
 
-    Returns {"lookups", "void", "ptr", "missing_includes"}:
+    Returns {"lookups", "void", "ptr", "missing_includes", "tree"}:
       lookups           DNS-querying terms (a, mx, include, exists, ptr,
                         redirect), counted toward the RFC 7208 limit of 10
       void              lookups that returned no records (NXDOMAIN or no
@@ -681,6 +681,11 @@ def _spf_stats(record, domain=None, visited=None):
                         RFC 7208 §5.5 says SHOULD NOT be used
       missing_includes  include: targets that publish no SPF record. Each
                         one makes evaluation a permanent error.
+      tree              (3.5.8) the lookups term by term, in record order:
+                        [{"term", "lookups", "note", "children"}], where
+                        lookups includes the term's own and every nested
+                        one, and children is an include's or redirect's own
+                        tree. Shows which term uses up the limit.
 
     exists: and macro (%{...}) targets are counted as lookups but not
     resolved, since their names depend on the message being checked.
@@ -688,40 +693,57 @@ def _spf_stats(record, domain=None, visited=None):
     """
     if visited is None:
         visited = set()
-    stats = {"lookups": 0, "void": 0, "ptr": False, "missing_includes": []}
+    stats = {"lookups": 0, "void": 0, "ptr": False, "missing_includes": [], "tree": []}
 
-    include_targets = []
-    redirect_target = None
-    direct = []                       # (name, rtypes) for a / mx terms
+    def _node(raw):
+        node = {"term": raw, "lookups": 1, "note": None, "children": []}
+        stats["tree"].append(node)
+        return node
+
+    include_targets = []              # (target, node)
+    redirect_target = None            # (target, node)
+    direct = []                       # (name, rtypes, node) for a / mx terms
     for raw in record.split():
         term = raw.lstrip("+~-?").lower()
         mech = term.split(":")[0].split("=")[0].split("/")[0]
         if mech in _SPF_DNS_MECHANISMS:
             stats["lookups"] += 1
+            node = _node(raw)
             target = term.split(":", 1)[1].split("/")[0] if ":" in term else None
-            if mech == "ptr":
+            if target and "%" in target:
+                node["note"] = "not followed: the name depends on the message"
+            elif mech == "ptr":
                 stats["ptr"] = True
+                node["note"] = "ptr: RFC 7208 says not to use it"
+            elif mech == "exists":
+                node["note"] = "not followed: the answer depends on the message"
             elif mech == "include":
                 if target and target not in visited:
                     visited.add(target)
-                    include_targets.append(target)
+                    include_targets.append((target, node))
+                elif target:
+                    node["note"] = "included again; its lookups are counted once"
             elif mech in ("a", "mx"):
                 name = target or domain
-                if name and "%" not in name:
-                    direct.append((name, ("A", "AAAA") if mech == "a" else ("MX",)))
+                if name:
+                    direct.append((name, ("A", "AAAA") if mech == "a" else ("MX",), node))
         elif mech == "redirect":
             stats["lookups"] += 1
+            node = _node(raw)
             target = term.split("=", 1)[1] if "=" in term else None
-            if target and target not in visited:
+            if target and "%" in target:
+                node["note"] = "not followed: the name depends on the message"
+            elif target and target not in visited:
                 visited.add(target)
-                redirect_target = target
+                redirect_target = (target, node)
 
     def _sub(target):
         """Stats for an include:/redirect= target, or None when it publishes
         no SPF record. A snapshot of `visited` keeps siblings from racing."""
         sub = resolve(target, "TXT")
         if resolve_error(sub):
-            return {"lookups": 0, "void": 0, "ptr": False, "missing_includes": []}
+            return {"lookups": 0, "void": 0, "ptr": False, "missing_includes": [], "tree": [],
+                    "error": resolve_error(sub)}
         for r in sub:
             if r.lower().startswith("v=spf1"):
                 key = (r, target)
@@ -735,28 +757,36 @@ def _spf_stats(record, domain=None, visited=None):
                 return computed
         return None
 
-    jobs = [("include", t) for t in include_targets]
+    jobs = [("include", t, node) for t, node in include_targets]
     if redirect_target:
-        jobs.append(("redirect", redirect_target))
+        jobs.append(("redirect", *redirect_target))
     if not jobs and not direct:
         return stats
 
     # Cap the pool at 10 to avoid spawning dozens of threads for pathological records.
     with ThreadPoolExecutor(max_workers=min(len(jobs) + len(direct), 10)) as ex:
-        sub_futs = [(kind, t, ex.submit(_sub, t)) for kind, t in jobs]
-        void_futs = [ex.submit(_spf_void, name, rtypes) for name, rtypes in direct]
-    for kind, target, fut in sub_futs:
+        sub_futs = [(kind, t, node, ex.submit(_sub, t)) for kind, t, node in jobs]
+        void_futs = [(node, ex.submit(_spf_void, name, rtypes)) for name, rtypes, node in direct]
+    for kind, target, node, fut in sub_futs:
         sub = fut.result()
         if sub is None:
             stats["void"] += 1
+            node["note"] = "no SPF record at this name"
             if kind == "include":
                 stats["missing_includes"].append(target)
             continue
+        if sub.get("error"):
+            node["note"] = f"lookup failed: {sub['error']}"
         stats["lookups"] += sub["lookups"]
         stats["void"] += sub["void"]
         stats["ptr"] = stats["ptr"] or sub["ptr"]
         stats["missing_includes"] += sub["missing_includes"]
-    stats["void"] += sum(1 for f in void_futs if f.result())
+        node["lookups"] += sub["lookups"]
+        node["children"] = sub.get("tree") or []
+    for node, fut in void_futs:
+        if fut.result():
+            stats["void"] += 1
+            node["note"] = "no records at this name (a void lookup)"
     return stats
 
 
@@ -794,6 +824,7 @@ def _parse_spf_record(record, domain=None):
     result["void_lookups"] = stats["void"]
     result["uses_ptr"] = stats["ptr"]
     result["missing_includes"] = sorted(set(stats["missing_includes"]))
+    result["lookup_tree"] = stats["tree"]
     return result
 
 
@@ -816,7 +847,8 @@ def check_spf(domain):
     def _stats(parsed):
         return {"void_lookups": parsed.get("void_lookups", 0),
                 "uses_ptr": parsed.get("uses_ptr", False),
-                "missing_includes": parsed.get("missing_includes", [])}
+                "missing_includes": parsed.get("missing_includes", []),
+                "lookup_tree": parsed.get("lookup_tree", [])}
 
     for record in spf_records:
         parsed = _parse_spf_record(record, domain)
@@ -836,10 +868,19 @@ def check_spf(domain):
                     status = sub_parsed["status"]
                     if status == "no_all_mechanism":
                         status = "redirect_no_all"
-                    total = 1 + sub_parsed["lookup_count"]
+                    # 3.5.8: the domain's own walk, which counts every term
+                    # of its record: the redirect= and the target's lookups,
+                    # and any a / mx / include: before it, which receivers
+                    # evaluate first (RFC 7208 §6.1). For a record that is
+                    # only "v=spf1 redirect=..." this is 1 + the target's, as
+                    # before.
+                    total = parsed["lookup_count"]
                     merged = _stats(sub_parsed)
                     merged["void_lookups"] += parsed.get("void_lookups", 0)
                     merged["uses_ptr"] = merged["uses_ptr"] or parsed.get("uses_ptr", False)
+                    # 3.5.8: the tree starts at the domain's own record, whose
+                    # redirect= term carries the target's tree as children.
+                    merged["lookup_tree"] = parsed.get("lookup_tree", [])
                     return {
                         "status":          status,
                         "record":          record,
@@ -3208,6 +3249,32 @@ def _has_a_or_aaaa(host, *, lifetime=2.0):
     return bool(a or aaaa) and not (a_err and aaaa_err)
 
 
+_CANONICAL_LINK_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
+_CANONICAL_REL_RE = re.compile(r"""\brel\s*=\s*["']?\s*canonical\s*["'\s>]""", re.IGNORECASE)
+_HREF_RE = re.compile(r"""\bhref\s*=\s*["']?([^"'\s>]+)""", re.IGNORECASE)
+
+
+def _canonical_host(url, *, timeout=2.0):
+    """The host a page names in <link rel="canonical" href=...>, after
+    redirects; None when it names none or can't be read. Reads at most
+    _BODY_SNIFF_BYTES: the link belongs in <head>."""
+    try:
+        with _http_stream(url, follow_redirects=True,
+                          timeout=httpx.Timeout(timeout, connect=_http_connect_timeout)) as resp:
+            body, _ = _read_capped(resp, _BODY_SNIFF_BYTES, budget_s=4.0)
+            base = str(resp.url)
+    except Exception:                        # noqa: BLE001 — no answer, no canonical
+        return None
+    text = body.decode("utf-8", "replace")
+    for tag in _CANONICAL_LINK_RE.findall(text):
+        if _CANONICAL_REL_RE.search(tag + ">"):
+            m = _HREF_RE.search(tag)
+            if m:
+                host = urlparse(urllib.parse.urljoin(base, m.group(1))).hostname
+                return (host or "").lower().rstrip(".") or None
+    return None
+
+
 def _probe_final_host(url, *, timeout=2.0):
     """Send one HTTPS GET and return the final hostname after redirects.
 
@@ -3240,17 +3307,22 @@ def _probe_final_host(url, *, timeout=2.0):
 def check_www_apex_unification(domain):
     """Check whether the apex and www forms resolve to one canonical entry.
 
-    Mozilla's web-deployment guidance is that a domain should pick one
-    canonical hostname (apex OR www) and unify the other via redirect, so
-    a user typing either form lands at the same place. This check doesn't
-    care which form is canonical — both are fine — only that the OTHER
-    form isn't a dead end or a split-brain second site.
+    MDN ("Choosing between www and non-www URLs") says a domain should
+    pick one canonical hostname (apex OR www): either redirect the other
+    form to it with a 301, or serve both and name the canonical one with
+    <link rel="canonical"> on the pages. This check doesn't care which
+    form is canonical — both are fine — only that the OTHER form isn't a
+    dead end or a split-brain second site.
 
     Outcomes:
       - "unified":      both forms resolve and the final hosts (after
                         redirect-following) agree, OR one form has no A/AAAA
                         and the other redirects there from a higher-level
                         unification we can't see (rare).
+      - "canonical":    (3.5.8) both forms serve content and stay at
+                        themselves, and both pages name the same one of the
+                        two as canonical with <link rel="canonical"> — MDN's
+                        second accepted way. Carries `canonical_host`.
       - "split":        both forms resolve and serve content, but each
                         stays at itself — two separate sites.
       - "half_missing": only one form has A/AAAA records. A user who types
@@ -3282,6 +3354,7 @@ def check_www_apex_unification(domain):
         "apex_error":    None,
         "www_error":     None,
         "missing_side":  None,
+        "canonical_host": None,
         "outcome":       None,
     }
 
@@ -3328,6 +3401,25 @@ def check_www_apex_unification(domain):
     if apex_resolves is True and www_resolves is True:
         if apex_final and www_final:
             result["outcome"] = "unified" if apex_final == www_final else "split"
+            if result["outcome"] == "split":
+                # 3.5.8: MDN also accepts serving both forms with
+                # rel=canonical naming one. Read both pages, but only here,
+                # so audits of redirecting sites pay nothing extra.
+                canon = {}
+
+                def _do_canon(key, host):
+                    canon[key] = _canonical_host(f"https://{host}")
+                ts = [threading.Thread(target=_do_canon, args=(k, h), daemon=True)
+                      for k, h in (("apex", apex_host), ("www", www_host))]
+                for t in ts:
+                    t.start()
+                for t in ts:
+                    t.join(timeout=4.0)
+                c_apex, c_www = canon.get("apex"), canon.get("www")
+                result["apex_canonical"], result["www_canonical"] = c_apex, c_www
+                if c_apex and c_apex == c_www and c_apex in (apex_host, www_host):
+                    result["outcome"] = "canonical"
+                    result["canonical_host"] = c_apex
         elif apex_final or www_final:
             # One form answered HTTPS and the other didn't. If the one that
             # answered ends up at the other's hostname, that's unification
@@ -7409,7 +7501,7 @@ def _collect_outcomes(results):
     # end (NXDOMAIN) or a second, separate site. See check_www_apex_unification.
     wau = results.get("www_apex_unified", {})
     wau_outcome = wau.get("outcome")
-    if wau_outcome in ("unified", "split", "half_missing") and not no_web_presence:
+    if wau_outcome in ("unified", "canonical", "split", "half_missing") and not no_web_presence:
         if wau_outcome == "half_missing" and wau.get("missing_side") in ("apex", "www"):
             wau_outcome = f"half_missing_{wau['missing_side']}"
         _p("www and apex unified", wau_outcome)
@@ -7513,8 +7605,8 @@ def _merge_outcomes(raw):
     are folded into a single check here:
 
       HSTS present / includeSubDomains / max-age / preloaded → HSTS (+ an
-          info-only "HSTS preload" row when the header is good but the
-          domain is not on the preload list)
+          "HSTS preload" row when the domain is not on the preload list:
+          Low once the header qualifies, Info until then)
       DNSSEC DNSKEY + AD flag → DNSSEC
       X-Frame-Options + CSP frame-ancestors → Clickjacking protection
     """
@@ -7539,7 +7631,11 @@ def _merge_outcomes(raw):
             else:
                 outcome = "ok_preloaded" if pre == "preloaded" else "ok"
             extra.append(("HSTS", outcome, "HSTS present"))
-            if pre in ("pending", "preload_directive", "not_preloaded"):
+            # 3.5.8: not being preloaded is Low, but only once the header
+            # itself qualifies; until then the HSTS finding says what to fix.
+            if pre in ("preload_directive", "not_preloaded") and outcome != "ok":
+                pre = "not_ready"
+            if pre in ("pending", "preload_directive", "not_preloaded", "not_ready"):
                 extra.append(("HSTS preload", pre, "HSTS present"))
 
     if "DNSSEC DNSKEY" in by:

@@ -182,10 +182,19 @@ def test_one_cause_one_finding():
     d = sample(); d["hsts"] = {"present": True, "includes_subdomains": False, "preloaded": False, "max_age": 3600}
     f = by_label(d)
     check(f["HSTS"]["outcome"] == "weak_both" and f["HSTS"]["severity"] == "low", "weak HSTS is one low finding")
+    check(f.get("HSTS preload", {}).get("outcome") == "not_ready" and f["HSTS preload"]["severity"] == "info",
+          "3.5.8: until the header qualifies, the preload row is info (the HSTS finding says what to fix)")
     d["hsts"] = {"present": True, "includes_subdomains": True, "preloaded": False, "max_age": 63072000}
     f = by_label(d)
-    check(f["HSTS"]["severity"] == "pass" and f.get("HSTS preload", {}).get("severity") == "info",
-          "good HSTS passes; not being preloaded is info only")
+    check(f["HSTS"]["severity"] == "pass" and f.get("HSTS preload", {}).get("severity") == "low",
+          "3.5.8: good HSTS passes; not being preloaded is low")
+    d["hsts"]["preload_status"] = "pending"
+    d["hsts"]["preloaded"] = False
+    md = atr.render_markdown(atr._ReportData("example.com", "example.com", sample() | {"hsts": {
+        "present": True, "includes_subdomains": True, "preloaded": False, "max_age": 63072000}},
+        "2026-11-20T00:00:00Z", "3.5.8"))
+    check("- **LOW** Not in HSTS preload list\n    - Before submitting at hstspreload.org" in md,
+          "the text report lists the steps to take before submitting")
 
     d = sample(); d["server_header"]["x_frame_options"] = "DENY"
     check(sev(d, "Clickjacking protection") == "pass", "X-Frame-Options alone is enough")

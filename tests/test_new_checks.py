@@ -1023,7 +1023,7 @@ def test_dkim_rotation_pair():
 
 def test_results_page_layout():
     # 3.4.8: categories come straight after the overview, "Fix these first"
-    # is gone, and the table has Findings / All / Passed plus a filter tag
+    # is gone, and the table has Findings / Passed / All (3.5.8) plus a filter tag
     # instead of severity buttons, a category dropdown and a search box.
     from vendor_audit.web import render_html
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
@@ -1031,7 +1031,7 @@ def test_results_page_layout():
     check('id="fix-first"' not in page and "Fix these first" not in page, "no Fix these first section")
     check(page.index('id="categories"') < page.index('id="checks"'), "categories above the checks table")
     chips = re.findall(r'class="filter-chip" data-sev="(\w+)"', page)
-    check(chips == ["issues", "all", "pass"], f"buttons are Findings, All, Passed: {chips}")
+    check(chips == ["issues", "pass", "all"], f"3.5.8: buttons are Findings, Passed, All: {chips}")
     check('id="filter-cat"' not in page and 'id="filter-q"' not in page, "no dropdown or search box")
     check('id="filter-tag"' in page and 'data-cats="Email|' in page, "filter tag and category list present")
     check('href="#checks-issues">Findings' in page, "side nav links to Findings")
@@ -1157,6 +1157,96 @@ def test_findings_view_lists_informational():
         check('id="info-divider"' not in page, "no informational rows, no divider")
 
 
+def test_spf_lookup_tree():
+    """3.5.8: the SPF lookup count comes with a breakdown by term, nested
+    includes indented, so a record over the limit shows what to trim."""
+    z = {("example.com", "TXT"): ["v=spf1 a mx include:_spf.google.com include:servers.mcsv.net "
+                                  "include:old.example.com exists:%{i}.spf.example.net -all"],
+         ("example.com", "A"): ["192.0.2.1"], ("example.com", "MX"): ["10 mx.example.com"],
+         ("_spf.google.com", "TXT"): ["v=spf1 include:_netblocks.google.com include:_netblocks2.google.com "
+                                      "include:_netblocks3.google.com ~all"],
+         ("_netblocks.google.com", "TXT"): ["v=spf1 ip4:35.190.247.0/24 ~all"],
+         ("_netblocks2.google.com", "TXT"): ["v=spf1 ip6:2001:4860:4000::/36 ~all"],
+         ("_netblocks3.google.com", "TXT"): ["v=spf1 ip4:172.217.0.0/19 ~all"],
+         ("servers.mcsv.net", "TXT"): ["v=spf1 ip4:205.201.128.0/20 -all"]}
+    with zone(z), mock.patch.object(ac, "_spf_void", return_value=False):
+        spf = ac.check_spf("example.com")
+    check(spf["lookup_count"] == 9, f"9 lookups: {spf['lookup_count']}")
+    lines = atr.spf_lookup_lines(spf["lookup_tree"])
+    want = [("a", 1, None), ("mx", 1, None), ("include:_spf.google.com", 4, None),
+            ("  include:_netblocks.google.com", 1, None), ("include:servers.mcsv.net", 1, None),
+            ("include:old.example.com", 1, "no SPF record"), ("exists:%{i}.spf.example.net", 1, "not followed")]
+    for term, n, note in want:
+        check(any(ln.startswith(term + " ") and f" {n}" in ln and (note is None or note in ln) for ln in lines),
+              f"tree line for {term}: {lines}")
+    check(sum(1 for ln in lines if not ln.startswith(" ")) == 6, "six top-level terms")
+
+    d = sample()
+    d["spf"] = spf
+    md = atr.render_markdown(atr._ReportData("example.com", "example.com", d, "2026-11-20T00:00:00Z", "3.5.8"))
+    check("Lookups by term (9 of 10 allowed):\n\n```\na " in md, "the text report shows the breakdown as a code block")
+    from vendor_audit import audit_records as ar
+    ev = [e for e in ar._ev_spf(lambda k: d.get(k) or {}) if e[0] == "code" and e[1] == "DNS lookups by term"]
+    check(ev and "include:_spf.google.com" in ev[0][2], "and the page's evidence for the check")
+
+    z[("example.com", "TXT")] = ["v=spf1 a redirect=_spf.example.com"]
+    z[("_spf.example.com", "TXT")] = ["v=spf1 include:_spf.google.com -all"]
+    with zone(z), mock.patch.object(ac, "_spf_void", return_value=False):
+        spf = ac.check_spf("example.com")
+    check(spf["lookup_count"] == 6, f"a redirect counts the terms before it too (a 1 + redirect 1 + include 4; was 5): {spf['lookup_count']}")
+    lines = atr.spf_lookup_lines(spf["lookup_tree"])
+    check(lines[1].startswith("redirect=_spf.example.com") and lines[2].startswith("  include:_spf.google.com"),
+          f"the redirect's tree is nested under it: {lines}")
+
+
+def test_www_apex_mdn():
+    """3.5.8: cite MDN, and accept what MDN accepts: both forms serving the
+    site with rel=canonical naming the same one."""
+    import httpx
+    from vendor_audit import audit_records as ar
+    check(ar._STANDARD["www and apex unified"] == "MDN", "cited to MDN")
+    pages = {"example.com": '<link rel="canonical" href="https://www.example.com/">',
+             "www.example.com": "<head><link href='/' rel=canonical></head>"}
+
+    def run(pages):
+        def h(req):
+            return httpx.Response(200, text=pages.get(req.url.host, ""))
+        client = httpx.Client(transport=httpx.MockTransport(h))
+        with mock.patch.object(ac, "_has_a_or_aaaa", return_value=True), \
+             mock.patch.object(ac, "_get_client", return_value=client):
+            return ac.check_www_apex_unification("example.com")
+    r = run(pages)
+    check(r["outcome"] == "canonical" and r["canonical_host"] == "www.example.com",
+          f"both pages name www as canonical: {r['outcome']}, {r.get('canonical_host')}")
+    d = sample()
+    d["www_apex_unified"] = r
+    check(findings(d).get("www and apex unified") == "pass", "and that passes")
+    check(line(detail(d), "PASS", "both pages name www.example.com as canonical"), "the report says why")
+
+    r = run({"example.com": '<link rel="canonical" href="https://example.com/">',
+             "www.example.com": '<link rel="canonical" href="https://www.example.com/">'})
+    check(r["outcome"] == "split", f"each naming itself is still split: {r['outcome']}")
+    d["www_apex_unified"] = r
+    check(findings(d).get("www and apex unified") == "low", "split stays low")
+    check("both pages must name the same one" in " ".join(detail(d).split()), "the report shows what each names")
+    r = run({})
+    check(r["outcome"] == "split" and r.get("apex_canonical") is None, "no canonical links: split")
+
+
+def test_null_mx_subdomain_wording():
+    """3.5.8: a subdomain with no MX is pointed at the wildcard null MX too."""
+    d = sample()
+    d["mx"] = {"entries": [], "null_mx": False}
+    txt = " ".join(atr.strip_tags(atr.render_detail_sections(
+        atr._ReportData("m.example.com", "m.example.com", d, "2026-11-20T00:00:00Z", "3.5.8"))).split())
+    check("*.example.com MX 0 . to cover every subdomain of example.com" in txt, "subdomain: wildcard option offered")
+    txt = " ".join(detail(d).split())
+    check("Publish MX 0 . (RFC 7505) if the domain receives no mail" in txt and "*.example.com" not in txt,
+          "registered domain: the plain advice")
+    from vendor_audit import audit_records as ar
+    check("M3AAWG" in ar._STANDARD["Null MX on no-mail domain"], "M3AAWG cited")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -1167,7 +1257,8 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_report_polish, test_spf_no_mail_guidance, test_bare_name_certificate_mismatch,
          test_dkim_rotation_pair, test_results_page_layout, test_spf_on_subdomain_covered_by_dmarc,
          test_email_card_names_every_spf_break, test_email_card_opens_worst_finding, test_spf_fix_line_break,
-         test_findings_view_lists_informational,
+         test_findings_view_lists_informational, test_spf_lookup_tree,
+         test_www_apex_mdn, test_null_mx_subdomain_wording,
          test_every_new_check_end_to_end]
 
 

@@ -93,8 +93,28 @@ def test_tool_parses_app_lines():
     check(tool.parse_entry("not json") is None, "junk lines are skipped")
 
 
+def test_reaudit_follow_up_folded():
+    """3.5.8: a re-audit's follow-up cache hit is folded into its line."""
+    from datetime import datetime, timedelta
+    tool = _tool()
+    t0 = datetime(2026, 11, 26, 17, 58, 30, tzinfo=timezone.utc)
+    row = lambda s, what, ip="198.100.143.113", domain="vendoraudit.org": {
+        "time": t0 + timedelta(seconds=s), "ip": ip, "domain": domain, "what": what}
+    f = tool.Folder()
+    kept = [f.keep(r) for r in (row(0, "audit (deep, fresh)"), row(2, "cached (deep)"),
+                                row(30, "cached (deep)"))]
+    check(kept == [True, False, True], f"the follow-up is folded, a later visit is not: {kept}")
+    f = tool.Folder()
+    kept = [f.keep(r) for r in (row(0, "audit (fresh)"), row(2, "cached", ip="203.0.113.9"),
+                                row(3, "cached", domain="other.example"), row(20, "cached"))]
+    check(kept == [True, True, True, True], f"other visitors, other domains and late hits stay: {kept}")
+    f = tool.Folder()
+    check([f.keep(r) for r in (row(0, "audit"), row(1, "cached"))] == [True, True],
+          "a regular audit has no follow-up to fold")
+
+
 def run():
-    for fn in (test_retention_config, test_tool_parses_app_lines):
+    for fn in (test_retention_config, test_tool_parses_app_lines, test_reaudit_follow_up_folded):
         fn()
     print(f"{len(_failures)} failure(s)")
     return not _failures

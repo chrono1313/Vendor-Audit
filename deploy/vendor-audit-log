@@ -12,6 +12,7 @@ lines as a table.
     sudo vendor-audit-log --domain example.com    # one domain, all 30 days
     sudo vendor-audit-log --top                   # busiest visitors and domains
     sudo vendor-audit-log -f                      # follow as audits come in
+    sudo vendor-audit-log --all                   # include re-audits' follow-up cache hits
     sudo vendor-audit-log --tz America/Los_Angeles
 
 Install:  sudo install -m 755 deploy/vendor-audit-log /usr/local/bin/
@@ -84,6 +85,33 @@ def parse_entry(line, tz=None):
     return row
 
 
+# A re-audit ("Audit again", fresh=1) ends with a redirect to the plain
+# result address, which the browser then loads from the cache: two lines for
+# one audit. Within this many seconds, the same visitor's cache hit for the
+# same domain is folded into the audit line. The result page uses the same
+# cutoff to call a result "just now".
+FOLD_SECONDS = 10
+
+
+class Folder:
+    """Decides, row by row, whether a cache hit is a re-audit's own
+    follow-up (folded away) or a visit of its own (kept)."""
+
+    def __init__(self):
+        self._fresh = {}                  # (ip, domain) -> time of the last fresh audit
+
+    def keep(self, row):
+        key = (row["ip"], row["domain"].lower())
+        if row["what"].startswith("audit") and "fresh" in row["what"]:
+            self._fresh[key] = row["time"]
+            return True
+        if row["what"].startswith("cached"):
+            t = self._fresh.pop(key, None)
+            if t is not None and 0 <= (row["time"] - t).total_seconds() <= FOLD_SECONDS:
+                return False
+        return True
+
+
 def _journal(args):
     cmd = ["journalctl", f"--namespace={args.namespace}", "-u", UNIT,
            "-o", "json", "--no-pager"]
@@ -110,6 +138,8 @@ def main(argv=None):
     ap.add_argument("--domain", help="only this audited domain")
     ap.add_argument("--top", action="store_true", help="count requests per visitor and per domain")
     ap.add_argument("-f", "--follow", action="store_true", help="keep printing new audits as they come in")
+    ap.add_argument("--all", action="store_true",
+                    help="also show the cache hit that follows every re-audit (folded into the audit line by default)")
     ap.add_argument("--tz", help="show times in this time zone (e.g. America/Los_Angeles); default: this machine's")
     ap.add_argument("--namespace", default=NAMESPACE, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
@@ -123,12 +153,15 @@ def main(argv=None):
 
     proc = _journal(args)
     ips, domains, shown = Counter(), Counter(), 0
+    folder = Folder()
     if not args.top:
         print(f"{'Time':19}  {'Visitor':39}  {'What':16}  Domain", flush=True)
     try:
         for line in proc.stdout:
             row = parse_entry(line, tz)
             if row is None:
+                continue
+            if not args.all and not folder.keep(row):
                 continue
             if args.ip and row["ip"] != args.ip:
                 continue

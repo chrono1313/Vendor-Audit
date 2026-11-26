@@ -149,7 +149,7 @@ _STANDARD = {
     "Cert chain completeness": "RFC 8446 §4.4.2", "SSL Labs grade": "SSL Labs",
     "HSTS": "RFC 6797", "HSTS preload": "hstspreload.org",
     "HTTP version": "RFC 9113, 9114", "HTTP→HTTPS redirect": "RFC 6797 §7.2",
-    "Redirect first-hop hygiene": "RFC 6797", "www and apex unified": "Common practice",
+    "Redirect first-hop hygiene": "RFC 6797", "www and apex unified": "MDN",
     "Server header": "RFC 9110 §10.2.4", "X-Powered-By absent": "OWASP Secure Headers",
     "Server clock accuracy": "RFC 9110 §6.6.1",
     "Clickjacking protection": "CSP Level 3", "X-Content-Type-Options": "WHATWG Fetch",
@@ -169,7 +169,7 @@ _STANDARD = {
     "DMARC external reports": "RFC 7489 §7.1",
     "MX hosts resolve": "RFC 5321 §5.1",
     "MX reverse DNS": "M3AAWG; RFC 1912 §2.1",
-    "Null MX on no-mail domain": "RFC 7505",
+    "Null MX on no-mail domain": "RFC 7505; M3AAWG",
     "MTA-STS policy MX match": "RFC 8461 §4.1",
     "MTA-STS max_age": "RFC 8461 §3.2",
     "Dangling CNAME": "RFC 1034; OWASP WSTG-CONF-10",
@@ -254,10 +254,15 @@ _CHECK_TEXT = {
         "The first redirect from http:// should go to https:// on the same host.",
         "A first hop to a different host skips this host's HSTS policy.",
         "Redirect http://<domain> to https://<domain> first, then on to the final address."),
+    # 3.5.8: Low, with what has to be true before submitting.
+    "HSTS preload": (
+        "The HSTS preload list is built into Chrome, Firefox, Safari and Edge: a domain on it is HTTPS-only from a browser's very first visit.",
+        "Without it, the first visit, and any visit after the HSTS header has expired, can be intercepted before the header is ever seen.",
+        "First make sure every subdomain, including internal and legacy names, works over HTTPS. Then send Strict-Transport-Security: max-age=31536000 or more; includeSubDomains; preload, redirect http:// to https:// on the same host, and submit at hstspreload.org. Leaving the list takes months, so don't submit while any subdomain still needs plain HTTP."),
     "www and apex unified": (
-        "The bare domain and its www form should both resolve and end at the same site.",
-        "When one form is missing or serves something else, some visitors get an error or a different site.",
-        "Publish DNS records for both forms and redirect one to the other."),
+        "The bare domain and its www form should both resolve and end at the same site: MDN's guidance is to pick one as canonical.",
+        "When one form is missing or serves something else, some visitors get an error or a different site, and search engines see two copies.",
+        "Publish DNS records for both forms and redirect one to the other with a 301, or serve both with <link rel=\"canonical\"> naming the same one on each (MDN, Choosing between www and non-www URLs)."),
     "Server clock accuracy": (
         "The Date header shows the server's clock.",
         "A clock that is far off breaks certificate validation, signed tokens and the matching of logs between systems.",
@@ -325,7 +330,7 @@ _CHECK_TEXT = {
     "Null MX on no-mail domain": (
         "A domain that receives no mail should publish a null MX record (0 .) to say so.",
         "Without any MX, senders fall back to the domain's A or AAAA address and queue mail for it, and spammers forging the domain get no clear signal that its mail is never legitimate.",
-        "Publish MX 0 . together with v=spf1 -all and a DMARC record with p=reject."),
+        "Publish MX 0 . together with v=spf1 -all and a DMARC record with p=reject. A subdomain that only serves a website needs its own MX 0 ., or the parent can publish *.example.com MX 0 . to cover every subdomain without an MX of its own (M3AAWG, Protecting Parked Domains)."),
     "MTA-STS policy MX match": (
         "Every MX host must match an mx: line in the MTA-STS policy.",
         "In enforce mode, sending servers refuse to deliver to an MX host the policy does not name, so mail routed there fails.",
@@ -555,7 +560,9 @@ def _ev_spf(G):
                 ("Lookup error", spf.get("error")),
                 ("Mail", no_mail),
                 ("Spoofing covered by", covered_by))
-            + _code("SPF record published", spf.get("record")))
+            + _code("SPF record published", spf.get("record"))
+            # 3.5.8: each term with the lookups it costs, nested ones indented.
+            + _code("DNS lookups by term", "\n".join(_t.spf_lookup_lines(spf.get("lookup_tree")))))
 
 
 def _ev_dmarc(G):
@@ -836,7 +843,12 @@ def _ev_www_apex(G):
             return f'does not resolve ({err})' if err else "does not resolve"
         return f"ends at {final}" if final else "resolves"
     return _kv((w.get("apex_host") or "apex", side(w.get("apex_resolves"), w.get("apex_final"), w.get("apex_error"))),
-               (w.get("www_host") or "www", side(w.get("www_resolves"), w.get("www_final"), w.get("www_error"))))
+               (w.get("www_host") or "www", side(w.get("www_resolves"), w.get("www_final"), w.get("www_error"))),
+               # 3.5.8: read only when both forms serve the site.
+               ("Canonical on " + (w.get("apex_host") or "apex"), w.get("apex_canonical")),
+               ("Canonical on " + (w.get("www_host") or "www"), w.get("www_canonical")),
+               ("Source", "https://developer.mozilla.org/en-US/docs/Web/URI/Guides/Choosing_between_www_and_non-www_URLs"
+                if w.get("outcome") in ("split", "canonical", "half_missing") else None))
 
 
 def _header(name, key, absent="not sent"):

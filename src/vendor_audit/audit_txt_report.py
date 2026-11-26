@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.7"
+__version__ = "3.5.8"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -1618,6 +1618,12 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
             else:
                 out.append(_status("pass",
                     f"SPF lookup count: {lc}", check=chk + "SPF lookup count"))
+            # 3.5.8: which term costs what, so a record over the limit
+            # points at the include: to trim.
+            tree_lines = spf_lookup_lines(spf.get("lookup_tree"))
+            if tree_lines:
+                out.append("")
+                out.append(_code_list(f"Lookups by term ({lc} of 10 allowed):", tree_lines))
 
         # 3.4: one record only, and no lookups that fail or are deprecated.
         n_spf = spf.get("record_count")
@@ -1760,9 +1766,17 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
             ipr = results.get("ip_routing") or {}
             has_address = bool((ipr.get("v4") or {}).get("address") or (ipr.get("v6") or {}).get("address"))
             if not prefix and has_address:
+                # 3.5.8: a subdomain gets the parent-wide option too (M3AAWG).
+                from .audit_checks import _org_domain
+                org = _org_domain(domain_label)
+                fix = ["Publish MX 0 . (RFC 7505) if the domain receives no mail"]
+                if org and org != domain_label.lower().rstrip("."):
+                    fix = [f"Publish MX 0 . (RFC 7505) on {domain_label} if it receives no mail, or "
+                           f"*.{org} MX 0 . to cover every subdomain of {org} without an MX of its own "
+                           f"(M3AAWG, Protecting Parked Domains)"]
                 out.append(_status("fail",
                     "No MX records and no null MX — senders fall back to the domain's web address",
-                    sub_lines=["Publish MX 0 . (RFC 7505) if the domain receives no mail"],
+                    sub_lines=fix,
                     check=chk + "Null MX on no-mail domain"))
             else:
                 out.append(_para("No MX records — domain does not receive email.", 4))
@@ -2741,12 +2755,24 @@ def _render_http_section(data):
         where = f"both land on {final}" if final else f"{apex_h} \u2194 {www_h}"
         parts.append(_status("pass",
             f"Apex and www unified ({where})", check="www and apex unified"))
+    elif wau_outcome == "canonical":
+        apex_h = wau.get("apex_host", "")
+        www_h  = wau.get("www_host", "")
+        parts.append(_status("pass",
+            f"Apex and www both serve the site; both pages name {wau.get('canonical_host')} as canonical",
+            note_lines=["MDN accepts this as well as a redirect: <link rel=\"canonical\"> on "
+                        f"{apex_h} and {www_h} points at the same address"],
+            check="www and apex unified"))
     elif wau_outcome == "split":
         apex_h = wau.get("apex_host", "")
         www_h  = wau.get("www_host", "")
+        canon = [f"{h} names {c}" for h, c in ((apex_h, wau.get("apex_canonical")),
+                                                (www_h, wau.get("www_canonical"))) if c]
         parts.append(_status("fail",
             f"Apex and www serve separate pages \u2014 neither {apex_h} nor {www_h} "
-            f"redirects to the other", check="www and apex unified"))
+            f"redirects to the other", check="www and apex unified",
+            note_lines=[("rel=canonical: " + "; ".join(canon) + " (both pages must name the same one)")
+                        if canon else "Neither page names a canonical address (rel=canonical)"]))
     elif wau_outcome == "half_missing":
         missing = wau.get("missing_side")
         if missing == "apex":
@@ -2889,12 +2915,21 @@ def _render_hsts_section(data):
         parts.append(_status("warn",
             "HSTS preload submission pending \u2014 accepted by hstspreload.org, "
             "waiting for the next Chrome release rollup (typically 2\u20133 months)", check="HSTS preload"))
+    elif hsts.get("present") and hsts.get("preload_directive") and not _hsts_preload_ready(hsts):
+        parts.append(_status("info",
+            "preload directive present, but the header does not qualify for the preload list yet",
+            note_lines=["hstspreload.org needs max-age of at least 31536000 (one year) and includeSubDomains"],
+            check="HSTS preload"))
+    elif hsts.get("present") and hsts.get("preloaded") is False and not _hsts_preload_ready(hsts):
+        parts.append(_status("info", "Not in HSTS preload list (fix the HSTS header first)",
+                             check="HSTS preload"))
     elif hsts.get("present") and hsts.get("preload_directive"):
         parts.append(_status("warn",
             "preload directive present in header but domain not submitted to "
-            "hstspreload.org", check="HSTS preload"))
+            "hstspreload.org", check="HSTS preload", note_lines=_HSTS_PRELOAD_STEPS))
     elif hsts.get("present") and hsts.get("preloaded") is False:
-        parts.append(_status("warn", "Not in HSTS preload list", check="HSTS preload"))
+        parts.append(_status("warn", "Not in HSTS preload list", check="HSTS preload",
+                             note_lines=_HSTS_PRELOAD_STEPS))
 
     if hsts.get("present") and hsts.get("raw"):
         parts.append("")
@@ -3748,6 +3783,51 @@ def _render_page_analysis_section(data):
 
 
 # ── Detailed sections: STARTTLS-MX probe (--deep) ───────────────────────────
+
+# 3.5.8: what hstspreload.org requires, and why to check before submitting.
+_HSTS_PRELOAD_STEPS = [
+    "Before submitting at hstspreload.org: serve every subdomain over HTTPS, "
+    "including internal and legacy names, because preloading applies to all of them",
+    "Send max-age of at least 31536000 (one year) with includeSubDomains and preload, "
+    "and redirect http:// to https:// on the same host first",
+    "Leaving the list takes months to reach every browser, so be sure no subdomain needs plain HTTP",
+]
+
+
+def _hsts_preload_ready(hsts):
+    """Whether the HSTS header itself is good enough that not being on the
+    preload list is rated (Low): includeSubDomains and a max-age at least
+    the scoring minimum. Mirrors audit_checks._merge_outcomes."""
+    try:
+        ma = int(hsts.get("max_age") or 0)
+    except (TypeError, ValueError):
+        ma = 0
+    return bool(hsts.get("includes_subdomains")) and ma >= 15552000
+
+
+def spf_lookup_lines(tree):
+    """The SPF lookup tree (audit_checks._spf_stats) as aligned lines: each
+    term, indented under the include: or redirect= it came from, with the
+    lookups it costs (its own and every nested one) and any note.
+
+        include:_spf.google.com              4
+          include:_netblocks.google.com      1
+          include:_netblocks2.google.com     1
+          include:_netblocks3.google.com     1
+        include:old.example.com              1  no SPF record at this name
+    """
+    rows = []
+
+    def walk(nodes, depth):
+        for n in nodes:
+            rows.append(("  " * depth + str(n.get("term", "")), n.get("lookups", 0), n.get("note")))
+            walk(n.get("children") or [], depth + 1)
+    walk(tree or [], 0)
+    if not rows:
+        return []
+    width = max(len(t) for t, _, _ in rows)
+    return [f"{t.ljust(width)}  {c:>2}" + (f"  {note}" if note else "") for t, c, note in rows]
+
 
 def _eol_tech_block(techs, eol_title, neutral_title, key="eol_tech"):
     """The end-of-life lines for some of tech_eol's software, under their

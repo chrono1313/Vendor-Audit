@@ -710,8 +710,9 @@ def _render_checks_table_html(data, records):
     # filter they set shows as a tag with a clear button.
     out.append(f'  <div class="filters" id="filters" data-cats="{_h("|".join(cats))}">')
     out.append('    <div class="filter-chips" role="group" aria-label="Show checks">')
-    chips = [("issues", "Findings", data.issue_count), ("all", "All", len(records)),
-             ("pass", "Passed", counts["pass"])]
+    # 3.5.8: Findings, Passed, All.
+    chips = [("issues", "Findings", data.issue_count), ("pass", "Passed", counts["pass"]),
+             ("all", "All", len(records))]
     for key, word, n in chips:
         out.append(f'      <button type="button" class="filter-chip" data-sev="{key}" '
                    f'aria-pressed="false">{word} <span>{n}</span></button>')

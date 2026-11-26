@@ -243,6 +243,7 @@ sudo vendor-audit-log --ip 203.0.113.7         # one visitor, all 30 days
 sudo vendor-audit-log --domain example.com     # one domain, all 30 days
 sudo vendor-audit-log --top                    # busiest visitors and domains
 sudo vendor-audit-log -f                       # follow live
+sudo vendor-audit-log --all                    # include re-audits' follow-up cache hits
 sudo vendor-audit-log --tz America/Los_Angeles # times in your zone
 ```
 
