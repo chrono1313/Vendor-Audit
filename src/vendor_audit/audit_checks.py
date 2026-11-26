@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.9"
+__version__ = "3.5.10"
 
 import os
 import re
@@ -6590,15 +6590,23 @@ def _forward_secrecy_outcome(legacy):
 
 
 def _cert_key_outcome(tls):
-    kind, bits, sig = tls.get("cert_key_type"), tls.get("cert_key_bits"), tls.get("cert_sig_alg") or ""
+    """The leaf certificate's key size: "strong", "weak_key", or None when
+    the key wasn't read."""
+    kind, bits = tls.get("cert_key_type"), tls.get("cert_key_bits")
     if not kind:
         return None
-    low = sig.lower()
-    if "sha1" in low or "md5" in low:
-        return "weak_signature"
     if (kind == "RSA" and bits is not None and bits < 2048) or (kind == "EC" and bits is not None and bits < 256):
         return "weak_key"
     return "strong"
+
+
+def _cert_sig_outcome(tls):
+    """The hash the leaf certificate is signed with: "strong",
+    "weak_signature" (SHA-1 or MD5), or None when it wasn't read."""
+    sig = (tls.get("cert_sig_alg") or "").lower()
+    if not sig or not tls.get("cert_key_type"):
+        return None
+    return "weak_signature" if ("sha1" in sig or "md5" in sig) else "strong"
 
 
 # DNSKEY algorithms fit for signing (RFC 8624, RFC 9905): RSASHA256,
@@ -6800,20 +6808,12 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
                    "authorized" if all(e["authorized"] for e in ext) else "unauthorized")
 
     if not mx.get("error") and mx.get("entries"):
-        # MX target hygiene (1.2). Two RFC 2181 §10.3 / RFC 5321 §5.1
-        # violations: MX targets that are IP literals, and MX targets that
-        # are CNAMEs. Either is a finding; both is a worst-of outcome with
-        # its own label. Only scored when MX entries exist (no_mx is 0/0).
-        has_cname = bool(mx.get("mx_targets_cname"))
-        has_ip    = bool(mx.get("mx_targets_ip"))
-        if has_cname and has_ip:
-            _p("MX target hygiene", "cname_and_ip")
-        elif has_cname:
-            _p("MX target hygiene", "cname_target")
-        elif has_ip:
-            _p("MX target hygiene", "ip_literal")
-        else:
-            _p("MX target hygiene", "clean")
+        # MX targets (1.2; two checks since 3.5.10). An MX target that is
+        # a CNAME breaks RFC 2181 §10.3, and one that is an IP address
+        # breaks RFC 5321 §5.1. Each has its own fix, so each is its own
+        # check. Only scored when MX entries exist.
+        _p("MX targets not CNAMEs", "cname_target" if mx.get("mx_targets_cname") else "clean")
+        _p("MX targets are hostnames", "ip_literal" if mx.get("mx_targets_ip") else "clean")
 
         # 3.4: every MX host must have an address, and mail servers
         # should have reverse DNS that maps back to them.
@@ -6822,11 +6822,18 @@ def _score_email(spf, dmarc, mx, pts, prefix=""):
         if known:
             _p("MX hosts resolve",
                "all" if all(h["resolves"] for h in known) else "some_missing")
+        # 3.5.10: two checks. An address with no PTR record is fixed by
+        # adding one; a PTR name that doesn't resolve back to the address is
+        # fixed by correcting the name or its A/AAAA record. An address
+        # with no PTR is not rated again under "matches".
         ptrs = [p for h in hosts.values() for p in (h.get("ptr") or [])
                 if p.get("confirmed") is not None]
         if ptrs:
-            _p("MX reverse DNS", "all_confirmed" if all(p["confirmed"] for p in ptrs)
-               else "missing_or_mismatch")
+            _p("MX reverse DNS", "missing" if any(not p.get("name") for p in ptrs) else "all_present")
+            named = [p for p in ptrs if p.get("name")]
+            if named:
+                _p("MX reverse DNS matches", "all_confirmed" if all(p["confirmed"] for p in named)
+                   else "mismatch")
 
 
 def _collect_outcomes(results):
@@ -7011,10 +7018,14 @@ def _collect_outcomes(results):
             if outcome:
                 _p("Forward secrecy", outcome)
 
-        # 3.4: the leaf certificate's key and signature.
+        # 3.4: the leaf certificate's key and signature (two checks since
+        # 3.5.10: a new key and a new CA are different fixes).
         outcome = _cert_key_outcome(tls)
         if outcome:
-            _p("Certificate key strength", outcome)
+            _p("Certificate key size", outcome)
+        outcome = _cert_sig_outcome(tls)
+        if outcome:
+            _p("Certificate signature", outcome)
 
         lifetime = tls.get("cert_lifetime_days")
         if lifetime is not None:
@@ -7558,13 +7569,10 @@ def _collect_outcomes(results):
         # 3.4: HPKP can lock visitors out if its pinned keys are lost, and
         # browsers dropped it; Expect-CT does nothing now. Only rated when
         # the response was captured with these fields (3.4 and later).
+        # Two checks since 3.5.10, so a response with both shows both.
         if "public_key_pins" in srv:
-            if srv.get("public_key_pins"):
-                _p("Deprecated security headers", "hpkp")
-            elif srv.get("expect_ct"):
-                _p("Deprecated security headers", "expect_ct")
-            else:
-                _p("Deprecated security headers", "none")
+            _p("HPKP absent", "hpkp" if srv.get("public_key_pins") else "none")
+            _p("Expect-CT absent", "expect_ct" if srv.get("expect_ct") else "none")
 
     # ── Cookie name prefixes ──────────────────────────────────────────────────
     if not srv.get("error") and not no_web_presence:
@@ -7597,12 +7605,18 @@ def _collect_outcomes(results):
     # entry, and the other variant should redirect there. We don't care
     # which variant is canonical — only that the OTHER form isn't a dead
     # end (NXDOMAIN) or a second, separate site. See check_www_apex_unification.
+    # 3.5.10: two checks. "resolve" is whether both forms have DNS records;
+    # "unified" is whether they lead to one site, and is only rated when
+    # both exist (with one form missing there is nothing to unify).
     wau = results.get("www_apex_unified", {})
     wau_outcome = wau.get("outcome")
     if wau_outcome in ("unified", "canonical", "split", "half_missing") and not no_web_presence:
-        if wau_outcome == "half_missing" and wau.get("missing_side") in ("apex", "www"):
-            wau_outcome = f"half_missing_{wau['missing_side']}"
-        _p("www and apex unified", wau_outcome)
+        if wau_outcome == "half_missing":
+            side = wau.get("missing_side")
+            _p("www and apex resolve", f"half_missing_{side}" if side in ("apex", "www") else "half_missing")
+        else:
+            _p("www and apex resolve", "both")
+            _p("www and apex unified", wau_outcome)
     # "not_scored" (or absent) → 0/0, no rubric row emitted.
 
     # ── Cert covers redirect variant ──────────────────────────────────────────
@@ -7703,9 +7717,11 @@ def _merge_outcomes(raw):
     """One cause, one finding. Several raw checks describe the same thing and
     are folded into a single check here:
 
-      HSTS present / includeSubDomains / max-age / preloaded → HSTS (+ an
-          "HSTS preload" row when the domain is not on the preload list:
-          Low once the header qualifies, Info until then)
+      HSTS present / includeSubDomains / max-age / preloaded → HSTS, and
+          when the header is set, "HSTS max-age" and "HSTS includeSubDomains"
+          (3.5.10; a missing header is one finding), plus an "HSTS preload"
+          row when the domain is not on the preload list: Low once the
+          header qualifies, Info until then
       DNSSEC DNSKEY + AD flag → DNSSEC
       X-Frame-Options + CSP frame-ancestors → Clickjacking protection
     """
@@ -7721,18 +7737,14 @@ def _merge_outcomes(raw):
             short = by.get("HSTS max-age strength") in ("less_than_six", "missing")
             nosub = by.get("HSTS includeSubDomains") == "unset"
             pre   = by.get("HSTS preloaded")
-            if short and nosub:
-                outcome = "weak_both"
-            elif short:
-                outcome = "weak_max_age"
-            elif nosub:
-                outcome = "weak_subdomains"
-            else:
-                outcome = "ok_preloaded" if pre == "preloaded" else "ok"
-            extra.append(("HSTS", outcome, "HSTS present"))
+            extra.append(("HSTS", "ok_preloaded" if pre == "preloaded" else "ok", "HSTS present"))
+            if "HSTS max-age strength" in by:
+                extra.append(("HSTS max-age", "short" if short else "long", "HSTS present"))
+            extra.append(("HSTS includeSubDomains", "unset" if nosub else "set", "HSTS present"))
             # 3.5.8: not being preloaded is Low, but only once the header
-            # itself qualifies; until then the HSTS finding says what to fix.
-            if pre in ("preload_directive", "not_preloaded") and outcome != "ok":
+            # itself qualifies; until then the max-age or includeSubDomains
+            # finding says what to fix.
+            if pre in ("preload_directive", "not_preloaded") and (short or nosub):
                 pre = "not_ready"
             if pre in ("pending", "preload_directive", "not_preloaded", "not_ready"):
                 extra.append(("HSTS preload", pre, "HSTS present"))
@@ -7888,7 +7900,7 @@ def assess_results(results):
 # response, so a bot challenge stands in for the site there too. The rest
 # of the HTTP and TLS checks come from the connection itself (TLS, ALPN,
 # the port-80 redirect) and stay rated.
-_CHALLENGE_AFFECTED = {"HSTS"}
+_CHALLENGE_AFFECTED = {"HSTS", "HSTS max-age", "HSTS includeSubDomains"}
 
 
 def severity_counts(findings):

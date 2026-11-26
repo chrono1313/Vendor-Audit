@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.9"
+__version__ = "3.5.10"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -434,6 +434,8 @@ _CRITICALITY_RANK_TABLE = {
     "SPF lookup count":             28,
     "SPF mechanisms":               28,
     "HSTS":                         30,
+    "HSTS includeSubDomains":       31,
+    "HSTS max-age":                 32,
     "HSTS preload":                 34,
     "MTA-STS":                      36,
     "MTA-STS policy MX match":      36,
@@ -447,7 +449,8 @@ _CRITICALITY_RANK_TABLE = {
     "DNSSEC":                       44,
     "DNSSEC algorithm":             44,
     "Cert chain completeness":      45,
-    "Certificate key strength":     45,
+    "Certificate key size":         45,
+    "Certificate signature":        45,
     "Cert covers www variant":      46,
     "Certificate lifetime":         47,
     "Certificate renewal":          47,   # about to lapse — same tier as lifetime
@@ -455,15 +458,18 @@ _CRITICALITY_RANK_TABLE = {
     "DKIM (common selectors)":      48,
     "Authoritative delegation":     49,   # lame NS = some users get NODATA/SERVFAIL
     "NS not open resolver":         50,   # DDoS-amp risk; not a takeover but real
-    "MX target hygiene":            51,   # RFC 2181 violation; sending MTAs vary
+    "MX targets not CNAMEs":        51,   # RFC 2181 violation; sending MTAs vary
+    "MX targets are hostnames":     51,   # RFC 5321 violation
     "MX hosts resolve":             51,
     "MX reverse DNS":               52,
+    "MX reverse DNS matches":       52,
     "Null MX on no-mail domain":    53,
 
     # ── Tier 3: defence-in-depth / hardening ────────────────────────────
     "SSL Labs grade":               54,
     "TLS 1.3":                      55,
     "HTTP→HTTPS redirect":          56,
+    "www and apex resolve":         57,
     "www and apex unified":         57,
     "CSP script-src safety":        59,
     "CSP object-src":               60,
@@ -506,7 +512,8 @@ _CRITICALITY_RANK_TABLE = {
     "Cross-Origin-Opener-Policy":  102,
     "Cross-Origin-Resource-Policy": 103,
     "X-XSS-Protection deprecated": 104,
-    "Deprecated security headers": 104,
+    "HPKP absent":                 104,
+    "Expect-CT absent":            104,
     "security.txt":                106,
     "security.txt location":       106,
     "security.txt Canonical":      106,
@@ -1769,7 +1776,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
     if mx:
         if mx.get("error"):
             out.append(_status("info",
-                f"DNS query failed: {mx['error']}", check=chk + "MX target hygiene"))
+                f"DNS query failed: {mx['error']}", check=chk + "MX targets not CNAMEs"))
         elif mx.get("null_mx"):
             out.append(_status("pass",
                 "Null MX (RFC 7505) — domain explicitly does not send or receive mail", check=chk + "Null MX on no-mail domain"))
@@ -1817,11 +1824,11 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
             for tgt in mx_targets_ip:
                 out.append(_status("fail",
                     f"MX target is an IP literal: {tgt} \u2014 violates RFC 5321 \u00a75.1; "
-                    f"sending MTAs may refuse or skip hostname-keyed checks", check=chk + "MX target hygiene"))
+                    f"sending MTAs may refuse or skip hostname-keyed checks", check=chk + "MX targets are hostnames"))
             for tgt in mx_targets_cname:
                 out.append(_status("fail",
                     f"MX target is a CNAME: {tgt} \u2014 violates RFC 2181 \u00a710.3; "
-                    f"some receivers may bounce", check=chk + "MX target hygiene"))
+                    f"some receivers may bounce", check=chk + "MX targets not CNAMEs"))
 
             # 3.4: every MX host has an address, with reverse DNS that maps back.
             hosts = mx.get("mx_hosts") or {}
@@ -1834,21 +1841,26 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                         check=chk + "MX hosts resolve"))
                 if not missing and all(i.get("resolves") for i in hosts.values()):
                     out.append(_status("pass", "Every MX host has an address", check=chk + "MX hosts resolve"))
-                bad, good = [], 0
+                # 3.5.10: no PTR and a PTR that doesn't map back are two checks.
+                no_ptr, no_match, good = [], [], 0
                 for h, i in hosts.items():
                     for p in i.get("ptr") or []:
                         if p.get("confirmed") is True:
                             good += 1
+                        elif p.get("confirmed") is False and p.get("name"):
+                            no_match.append(f"{p['address']} ({h}): reverse name {p['name']} does not resolve back")
                         elif p.get("confirmed") is False:
-                            bad.append(f"{p['address']} ({h}): " + (
-                                f"reverse name {p['name']} does not resolve back" if p.get("name") else "no reverse DNS"))
-                if bad:
-                    out.append(_status("warn", "Mail server reverse DNS missing or not matching",
-                                       sub_lines=bad, check=chk + "MX reverse DNS"))
-                elif good:
+                            no_ptr.append(f"{p['address']} ({h})")
+                if no_ptr:
+                    out.append(_status("warn", "Mail server address with no reverse DNS",
+                                       sub_lines=no_ptr, check=chk + "MX reverse DNS"))
+                if no_match:
+                    out.append(_status("warn", "Mail server reverse DNS does not map back",
+                                       sub_lines=no_match, check=chk + "MX reverse DNS matches"))
+                if good and not no_ptr and not no_match:
                     out.append(_status("pass",
                         f"Reverse DNS confirmed for {good} mail server address{'es' if good > 1 else ''}",
-                        check=chk + "MX reverse DNS"))
+                        check=chk + "MX reverse DNS matches"))
     else:
         out.append(_para("No MX data collected.", 4))
 
@@ -2593,7 +2605,8 @@ def _render_tls_section(data):
                 f"Negotiated {ver} — upgrade required", check="TLS 1.3"))
 
         # 3.4: what else the server accepts when asked for it.
-        from .audit_checks import _legacy_tls_outcome, _forward_secrecy_outcome, _cert_key_outcome
+        from .audit_checks import (_legacy_tls_outcome, _forward_secrecy_outcome, _cert_key_outcome,
+                                   _cert_sig_outcome)
         legacy = r.get("tls_legacy") or {}
         lo = _legacy_tls_outcome(legacy) if legacy else None
         if lo in ("tls1_0_accepted", "tls1_1_accepted"):
@@ -2622,19 +2635,19 @@ def _render_tls_section(data):
             parts.append(_status("info", "Key exchange not tested — this system's OpenSSL cannot offer it",
                                  check="Forward secrecy"))
 
-        ko = _cert_key_outcome(tls)
-        if ko:
-            kind, bits, sig = tls.get("cert_key_type"), tls.get("cert_key_bits"), tls.get("cert_sig_alg") or "?"
-            key = f"{kind} {bits}-bit" if bits else str(kind)
-            if ko == "weak_signature":
-                parts.append(_status("fail", f"Certificate signed with {sig} — SHA-1/MD5 signatures are broken",
-                                     check="Certificate key strength"))
-            elif ko == "weak_key":
-                parts.append(_status("fail", f"Certificate key {key} — below 2048-bit RSA / 256-bit EC",
-                                     check="Certificate key strength"))
-            else:
-                parts.append(_status("pass", f"Certificate key {key}, signed with {sig}",
-                                     check="Certificate key strength"))
+        ko, so = _cert_key_outcome(tls), _cert_sig_outcome(tls)
+        kind, bits, sig = tls.get("cert_key_type"), tls.get("cert_key_bits"), tls.get("cert_sig_alg") or "?"
+        key = f"{kind} {bits}-bit" if bits else str(kind)
+        if ko == "weak_key":
+            parts.append(_status("fail", f"Certificate key {key} — below 2048-bit RSA / 256-bit EC",
+                                 check="Certificate key size"))
+        elif ko:
+            parts.append(_status("pass", f"Certificate key {key}", check="Certificate key size"))
+        if so == "weak_signature":
+            parts.append(_status("fail", f"Certificate signed with {sig} — SHA-1/MD5 signatures are broken",
+                                 check="Certificate signature"))
+        elif so:
+            parts.append(_status("pass", f"Certificate signed with {sig}", check="Certificate signature"))
 
         names_match = tls.get("cert_names_match")
         san_names   = tls.get("cert_san_names", []) or []
@@ -2765,6 +2778,11 @@ def _render_http_section(data):
     # ── www and apex unified (1.1) ───────────────────────────────────────────
     wau = r.get("www_apex_unified", {}) or {}
     wau_outcome = wau.get("outcome")
+    if wau_outcome in ("unified", "canonical", "split"):
+        # 3.5.10: its own check; "unified" below is only rated when this passes.
+        parts.append(_status("pass",
+            f"{wau.get('apex_host') or 'Apex'} and {wau.get('www_host') or 'www'} both have DNS records",
+            check="www and apex resolve"))
     if wau_outcome == "unified":
         apex_h = wau.get("apex_host", "")
         www_h  = wau.get("www_host", "")
@@ -2797,13 +2815,13 @@ def _render_http_section(data):
             www_h  = wau.get("www_host", "")
             parts.append(_status("fail",
                 f"Apex {apex_h} has no A/AAAA records \u2014 users typing the bare "
-                f"domain get a DNS error (web/TLS audited at {www_h} via fallback)", check="www and apex unified"))
+                f"domain get a DNS error (web/TLS audited at {www_h} via fallback)", check="www and apex resolve"))
         else:  # "www"
             apex_h = wau.get("apex_host", "")
             www_h  = wau.get("www_host", "")
             parts.append(_status("fail",
                 f"www variant {www_h} has no A/AAAA records \u2014 users typing the "
-                f"www form get a DNS error", check="www and apex unified"))
+                f"www form get a DNS error", check="www and apex resolve"))
     # wau_outcome == "not_scored" or missing: no row emitted
 
     http3       = server.get("http3_advertised")
@@ -2905,21 +2923,21 @@ def _render_hsts_section(data):
         min_age = 15552000  # 180 days — OWASP/Qualys minimum
         if ma is None:
             parts.append(_status("warn",
-                "max-age missing — header has no expiry directive", check="HSTS"))
+                "max-age missing — header has no expiry directive", check="HSTS max-age"))
         elif ma >= min_age:
             days = ma // 86400
             parts.append(_status("pass",
-                f"max-age={int(ma):,} ({days} days)", check="HSTS"))
+                f"max-age={int(ma):,} ({days} days)", check="HSTS max-age"))
         else:
             days = ma // 86400
             min_days = min_age // 86400
             parts.append(_status("warn",
-                f"max-age={int(ma):,} ({days} days) — below the {min_days}-day minimum (OWASP/Qualys)", check="HSTS"))
+                f"max-age={int(ma):,} ({days} days) — below the {min_days}-day minimum (OWASP/Qualys)", check="HSTS max-age"))
 
         if hsts.get("includes_subdomains"):
-            parts.append(_status("pass", "includeSubDomains set", check="HSTS"))
+            parts.append(_status("pass", "includeSubDomains set", check="HSTS includeSubDomains"))
         else:
-            parts.append(_status("warn", "includeSubDomains not set", check="HSTS"))
+            parts.append(_status("warn", "includeSubDomains not set", check="HSTS includeSubDomains"))
 
     if hsts.get("preload_error") and hsts.get("preloaded") is None:
         parts.append(_status("info",
@@ -3353,13 +3371,13 @@ def _render_browser_security_headers_section(data):
             parts.append(_status("warn",
                 "Public-Key-Pins (HPKP) set — browsers dropped it, and lost pinned keys lock visitors out",
                 sub_lines=[f"Public-Key-Pins: {srv['public_key_pins'][:120]}"],
-                check="Deprecated security headers"))
+                check="HPKP absent"))
         if srv.get("expect_ct"):
             parts.append(_status("info", f"Expect-CT: {srv['expect_ct'][:80]} — deprecated, has no effect; remove it",
-                                 check="Deprecated security headers"))
+                                 check="Expect-CT absent"))
         if not srv.get("public_key_pins") and not srv.get("expect_ct"):
             parts.append(_status("pass", "No deprecated HPKP or Expect-CT headers",
-                                 check="Deprecated security headers"))
+                                 check="HPKP absent"))
 
     # Raw CSP value(s)
     if csp_header:

@@ -153,7 +153,8 @@ def test_mx_hosts_and_reverse_dns():
     check(f.get("MX reverse DNS") == "low", "missing reverse DNS → low")
     txt = detail(d)
     check(line(txt, "HIGH", "MX host gone.example.com has no A or AAAA record"), "missing host line reads HIGH")
-    check(line(txt, "LOW", "Mail server reverse DNS missing"), "reverse DNS line reads LOW")
+    check(line(txt, "LOW", "Mail server address with no reverse DNS"), "reverse DNS line reads LOW")
+    check("MX reverse DNS matches" not in f, "3.5.10: an address with no PTR is not rated again under matches")
 
 
 def test_null_mx():
@@ -404,10 +405,17 @@ def test_cert_key_parser():
             der = ssl.PEM_cert_to_DER_cert(open(made[1]).read())
             got = ac._cert_key_info(der)
             check((got["cert_key_type"], got["cert_key_bits"], got["cert_sig_alg"]) == want, f"{name}: {got}")
-    for tls, want in (({"cert_key_type": "RSA", "cert_key_bits": 1024, "cert_sig_alg": "sha256WithRSAEncryption"}, "weak_key"),
-                      ({"cert_key_type": "RSA", "cert_key_bits": 2048, "cert_sig_alg": "sha1WithRSAEncryption"}, "weak_signature"),
-                      ({"cert_key_type": "EC", "cert_key_bits": 256, "cert_sig_alg": "ecdsa-with-SHA256"}, "strong")):
-        check(ac._cert_key_outcome(tls) == want, f"{tls} → {want}")
+    # 3.5.10: key size and signature are two checks.
+    for tls, key, sig in (({"cert_key_type": "RSA", "cert_key_bits": 1024, "cert_sig_alg": "sha256WithRSAEncryption"},
+                           "weak_key", "strong"),
+                          ({"cert_key_type": "RSA", "cert_key_bits": 2048, "cert_sig_alg": "sha1WithRSAEncryption"},
+                           "strong", "weak_signature"),
+                          ({"cert_key_type": "RSA", "cert_key_bits": 1024, "cert_sig_alg": "md5WithRSAEncryption"},
+                           "weak_key", "weak_signature"),
+                          ({"cert_key_type": "EC", "cert_key_bits": 256, "cert_sig_alg": "ecdsa-with-SHA256"},
+                           "strong", "strong")):
+        check(ac._cert_key_outcome(tls) == key, f"{tls}: key → {key}")
+        check(ac._cert_sig_outcome(tls) == sig, f"{tls}: signature → {sig}")
 
 
 def _expired_cert(tmp):
@@ -573,15 +581,20 @@ def test_security_txt_subchecks():
 def test_deprecated_headers_and_lang():
     d = sample()
     d["server_header"] = dict(d["server_header"], public_key_pins='pin-sha256="x"; max-age=5184000', expect_ct="max-age=0")
-    check(findings(d).get("Deprecated security headers") == "low", "HPKP → low")
+    f = findings(d)
+    check(f.get("HPKP absent") == "low" and f.get("Expect-CT absent") == "info",
+          f"3.5.10: both headers sent → both findings: {f.get('HPKP absent')}, {f.get('Expect-CT absent')}")
     check(line(detail(d), "LOW", "Public-Key-Pins (HPKP) set"), "HPKP line reads LOW")
     d["server_header"] = dict(d["server_header"], public_key_pins=None, expect_ct="max-age=86400")
-    check(findings(d).get("Deprecated security headers") == "info", "Expect-CT → info")
+    f = findings(d)
+    check(f.get("HPKP absent") == "pass" and f.get("Expect-CT absent") == "info", "Expect-CT only → info")
     d["server_header"] = dict(d["server_header"], public_key_pins=None, expect_ct=None)
-    check(findings(d).get("Deprecated security headers") == "pass", "neither → pass")
+    f = findings(d)
+    check(f.get("HPKP absent") == "pass" and f.get("Expect-CT absent") == "pass", "neither → pass")
     old = sample()
     old["server_header"].pop("public_key_pins", None)
-    check("Deprecated security headers" not in findings(old), "scans saved before 3.4 are not rated")
+    f = findings(old)
+    check("HPKP absent" not in f and "Expect-CT absent" not in f, "scans saved before 3.4 are not rated")
 
     d["page_signals"] = {"parsed": True, "sri_outcome": "none_needed", "mixed_outcome": "none",
                          "a11y": {"html_lang_set": False, "html_lang": None, "images_total": 0,
@@ -781,9 +794,9 @@ NEW_LABELS = [
     "MX hosts resolve", "MX reverse DNS", "MTA-STS policy MX match", "MTA-STS max_age",
     "Dangling CNAME", "DNSSEC algorithm", "SOA timers", "Nameservers on IPv6", "Nameserver networks",
     "Nameserver RPKI", "Mail servers on IPv6", "Mail server RPKI", "HTTPS DNS record",
-    "Legacy TLS disabled", "Forward secrecy", "Certificate key strength",
+    "Legacy TLS disabled", "Forward secrecy", "Certificate key size",
     "CSP object-src", "CSP base-uri", "security.txt location", "security.txt Canonical",
-    "Deprecated security headers", "Page language declared",
+    "HPKP absent", "Page language declared",
 ]
 
 
@@ -836,8 +849,22 @@ def everything():
 
 
 def test_every_new_check_end_to_end():
-    from vendor_audit import audit_records as ar
+    _end_to_end(everything(), NEW_LABELS)
+
+    from vendor_audit.web import render_html
     d = everything()
+    page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                      "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
+    card = page[page.index("Email authentication"):][:600]
+    check("Broken" in card and "ignored (more than one record)" in card,
+          "the email card should not say Enforced when receivers discard the records")
+
+
+def _end_to_end(d, labels):
+    """Each label: rated from d, in rubric.json and one category, with a
+    topic, standard, explanation, evidence, a .txt status line and a drawer
+    on the page."""
+    from vendor_audit import audit_records as ar
     f = findings(d)
     data = atr._ReportData("example.com", "example.com", d, "2026-11-20T00:00:00Z", "3.4.0")
     by_label = {}
@@ -857,7 +884,7 @@ def test_every_new_check_end_to_end():
     finally:
         atr._status_word = real
     known = set(ac.RUBRIC["findings"])
-    for label in NEW_LABELS:
+    for label in labels:
         check(label in known, f"{label}: not in rubric.json")
         check(label in f, f"{label}: no finding from the sample data")
         check(ar.topic_for(label) in ar.TOPIC_TITLES, f"{label}: topic {ar.topic_for(label)!r} has no title")
@@ -873,10 +900,7 @@ def test_every_new_check_end_to_end():
     from vendor_audit.web import render_html
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": d, "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
-    card = page[page.index("Email authentication"):][:600]
-    check("Broken" in card and "ignored (more than one record)" in card,
-          "the email card should not say Enforced when receivers discard the records")
-    for label in NEW_LABELS:
+    for label in labels:
         check(f'id="check-{ar.slug(label)}"' in page or ar.slug(label) in page, f"{label}: no drawer on the page")
 
 
@@ -1247,6 +1271,74 @@ def test_null_mx_subdomain_wording():
     check("M3AAWG" in ar._STANDARD["Null MX on no-mail domain"], "M3AAWG cited")
 
 
+SPLIT_LABELS = ["MX targets not CNAMEs", "MX targets are hostnames", "MX reverse DNS", "MX reverse DNS matches",
+                "Certificate key size", "Certificate signature", "HSTS", "HSTS max-age",
+                "HSTS includeSubDomains", "www and apex resolve", "www and apex unified",
+                "HPKP absent", "Expect-CT absent"]
+
+
+def test_composite_checks_split():
+    """3.5.10: six checks that could hold two problems in one result are
+    split, so each problem is its own finding with its own fix."""
+    d = everything()
+    d["mx"]["mx_targets_cname"] = ["mx1.example.com"]
+    d["mx"]["mx_targets_ip"] = ["192.0.2.25"]
+    d["mx"]["mx_hosts"]["mx1.example.com"]["ptr"].append(
+        {"address": "192.0.2.11", "name": "host.other.example", "confirmed": False})
+    d["tls"] = dict(d["tls"], cert_key_type="RSA", cert_key_bits=1024, cert_sig_alg="sha1WithRSAEncryption")
+    d["hsts"] = {"present": True, "includes_subdomains": False, "preloaded": False, "max_age": 3600,
+                 "preload_directive": False}
+    d["server_header"] = dict(d["server_header"], public_key_pins='pin-sha256="x"; max-age=1', expect_ct="max-age=0")
+    d["www_apex_unified"] = {"outcome": "split", "apex_host": "example.com", "www_host": "www.example.com",
+                             "apex_resolves": True, "www_resolves": True}
+    f = findings(d)
+    want = {"MX targets not CNAMEs": "medium", "MX targets are hostnames": "medium",
+            "MX reverse DNS": "low", "MX reverse DNS matches": "low",
+            "Certificate key size": "high", "Certificate signature": "high",
+            "HSTS": "pass", "HSTS max-age": "low", "HSTS includeSubDomains": "low", "HSTS preload": "info",
+            "HPKP absent": "low", "Expect-CT absent": "info",
+            "www and apex resolve": "pass", "www and apex unified": "low"}
+    for label, sev in want.items():
+        check(f.get(label) == sev, f"{label}: {f.get(label)}, want {sev}")
+    for gone in ("MX target hygiene", "Certificate key strength", "Deprecated security headers"):
+        check(gone not in f and gone not in ac.RUBRIC["findings"], f"{gone} is gone")
+    _end_to_end(d, SPLIT_LABELS)
+    txt = detail(d)
+    check(line(txt, "HIGH", "Certificate key RSA 1024-bit") and line(txt, "HIGH", "Certificate signed with sha1"),
+          "a short key and a SHA-1 signature are two HIGH lines")
+    check(line(txt, "LOW", "max-age=3,600") and line(txt, "LOW", "includeSubDomains not set"), "two LOW HSTS lines")
+    check(line(txt, "LOW", "Mail server address with no reverse DNS")
+          and line(txt, "LOW", "Mail server reverse DNS does not map back"), "two LOW reverse DNS lines")
+
+    # A missing HSTS header is one finding; its parts are not rated.
+    d["hsts"] = {"present": False, "preloaded": False}
+    f = findings(d)
+    check(f.get("HSTS") == "high" and "HSTS max-age" not in f and "HSTS includeSubDomains" not in f,
+          "missing HSTS: one high finding")
+    d["hsts"] = {"present": True, "includes_subdomains": True, "preloaded": True, "max_age": 63072000}
+    f = findings(d)
+    check((f.get("HSTS"), f.get("HSTS max-age"), f.get("HSTS includeSubDomains")) == ("pass", "pass", "pass")
+          and "HSTS preload" not in f, "good, preloaded HSTS: three passes, no preload row")
+
+    # One form missing: only "resolve" is rated, there's nothing to unify.
+    d["www_apex_unified"] = {"outcome": "half_missing", "missing_side": "www", "apex_host": "example.com",
+                             "www_host": "www.example.com", "apex_resolves": True, "www_resolves": False}
+    f = findings(d)
+    check(f.get("www and apex resolve") == "medium" and "www and apex unified" not in f,
+          "half missing: one medium finding")
+
+    # Only a CNAME, only a short key: one finding each, the other passes.
+    d["mx"]["mx_targets_ip"] = []
+    d["tls"] = dict(d["tls"], cert_sig_alg="sha256WithRSAEncryption")
+    f = findings(d)
+    check(f.get("MX targets not CNAMEs") == "medium" and f.get("MX targets are hostnames") == "pass", "CNAME only")
+    check(f.get("Certificate key size") == "high" and f.get("Certificate signature") == "pass", "short key only")
+
+    counts = ac.check_counts()
+    check(counts["total"] == 93 and counts["standard"] == 87,
+          f"93 checks, 87 on every scan: {counts['total']}, {counts['standard']}")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -1259,7 +1351,7 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_email_card_names_every_spf_break, test_email_card_opens_worst_finding, test_spf_fix_line_break,
          test_findings_view_lists_informational, test_spf_lookup_tree,
          test_www_apex_mdn, test_null_mx_subdomain_wording,
-         test_every_new_check_end_to_end]
+         test_every_new_check_end_to_end, test_composite_checks_split]
 
 
 def run():

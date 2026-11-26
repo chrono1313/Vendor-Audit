@@ -84,7 +84,7 @@ def sev(results, label):
 
 # Outcomes the code emits on purpose with no rubric entry: nothing to report.
 _NO_FINDING = {
-    ("MX target hygiene", "no_mx"), ("Cert covers www variant", "no_redirect"),
+    ("Cert covers www variant", "no_redirect"),
     ("Cert chain completeness", "unsupported"), ("Cookie name prefixes", "no_prefixed"),
     ("Redirect first-hop hygiene", "no_redirect"), ("www and apex unified", "not_scored"),
     ("Server clock accuracy", "no_date"), ("DKIM key strength", "not_found"),
@@ -172,6 +172,7 @@ def test_spf_everywhere():
 def test_one_cause_one_finding():
     f = by_label(sample())
     check("HSTS" in f and f["HSTS"]["severity"] == "high", "missing HSTS is one high finding")
+    check("HSTS max-age" not in f and "HSTS includeSubDomains" not in f, "its parts are not rated")
     for gone in ("HSTS present", "HSTS includeSubDomains", "HSTS preloaded", "HSTS max-age strength",
                  "HSTS preload", "DNSSEC DNSKEY", "DNSSEC AD flag", "X-Frame-Options",
                  "CSP frame-ancestors", "SPF redirect", "MX records"):
@@ -181,9 +182,11 @@ def test_one_cause_one_finding():
 
     d = sample(); d["hsts"] = {"present": True, "includes_subdomains": False, "preloaded": False, "max_age": 3600}
     f = by_label(d)
-    check(f["HSTS"]["outcome"] == "weak_both" and f["HSTS"]["severity"] == "low", "weak HSTS is one low finding")
+    check(f["HSTS"]["severity"] == "pass" and f["HSTS max-age"]["severity"] == "low"
+          and f["HSTS includeSubDomains"]["severity"] == "low",
+          "3.5.10: weak HSTS is a low finding for each weak part")
     check(f.get("HSTS preload", {}).get("outcome") == "not_ready" and f["HSTS preload"]["severity"] == "info",
-          "3.5.8: until the header qualifies, the preload row is info (the HSTS finding says what to fix)")
+          "3.5.8: until the header qualifies, the preload row is info (the HSTS findings say what to fix)")
     d["hsts"] = {"present": True, "includes_subdomains": True, "preloaded": False, "max_age": 63072000}
     f = by_label(d)
     check(f["HSTS"]["severity"] == "pass" and f.get("HSTS preload", {}).get("severity") == "low",

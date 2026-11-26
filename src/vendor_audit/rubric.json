@@ -1,7 +1,7 @@
 {
-  "rubric_version": "3.5.9",
+  "rubric_version": "3.5.10",
   "compatible_with": "vendor_audit 2.x",
-  "_comment": "Severity rubric. There are no points and nothing is added up. 'findings' maps each check label to its possible outcomes, and each outcome to [severity, text]. Severities: critical = broken or unsupported today; high = an important protection is missing or weak; medium = an expected practice is missing; low = a refinement; info = optional, or could not be determined (listed, never counted); pass = the practice is met. audit_checks.assess_results() decides WHICH outcome applies; this file decides how serious it is and how it reads. An outcome that is not listed produces no finding. One cause, one finding: HSTS, DNSSEC and clickjacking protection are each a single check. End-of-life findings carry a dynamic label ('EOL OS: ubuntu 18.04') and take their severity from 'eol_severity'.",
+  "_comment": "Severity rubric. There are no points and nothing is added up. 'findings' maps each check label to its possible outcomes, and each outcome to [severity, text]. Severities: critical = broken or unsupported today; high = an important protection is missing or weak; medium = an expected practice is missing; low = a refinement; info = optional, or could not be determined (listed, never counted); pass = the practice is met. audit_checks.assess_results() decides WHICH outcome applies; this file decides how serious it is and how it reads. An outcome that is not listed produces no finding. One cause, one finding: DNSSEC and clickjacking protection are each a single check, and HSTS max-age and includeSubDomains are rated only when the header is set (a missing header is one finding). End-of-life findings carry a dynamic label ('EOL OS: ubuntu 18.04') and take their severity from 'eol_severity'.",
   "severities": [
     "critical",
     "high",
@@ -99,9 +99,11 @@
       "DMARC rua reporting",
       "DMARC single record",
       "DMARC external reports",
-      "MX target hygiene",
+      "MX targets not CNAMEs",
+      "MX targets are hostnames",
       "MX hosts resolve",
       "MX reverse DNS",
+      "MX reverse DNS matches",
       "Null MX on no-mail domain",
       "MTA-STS",
       "MTA-STS policy MX match",
@@ -146,8 +148,11 @@
       "Certificate name match",
       "Cert covers www variant",
       "Cert chain completeness",
-      "Certificate key strength",
+      "Certificate key size",
+      "Certificate signature",
       "HSTS",
+      "HSTS max-age",
+      "HSTS includeSubDomains",
       "HSTS preload",
       "SSL Labs grade"
     ],
@@ -156,6 +161,7 @@
       "HTTPS DNS record",
       "HTTP→HTTPS redirect",
       "Redirect first-hop hygiene",
+      "www and apex resolve",
       "www and apex unified"
     ],
     "Website": [
@@ -171,7 +177,8 @@
       "Cross-Origin-Opener-Policy",
       "Cross-Origin-Resource-Policy",
       "X-XSS-Protection deprecated",
-      "Deprecated security headers",
+      "HPKP absent",
+      "Expect-CT absent",
       "Cookie Secure",
       "Cookie HttpOnly",
       "Cookie SameSite",
@@ -293,22 +300,24 @@
         "DMARC rua= aggregate reporting not configured"
       ]
     },
-    "MX target hygiene": {
+    "MX targets not CNAMEs": {
       "clean": [
         "pass",
-        "MX targets are hostnames (not IP literals) and resolve directly to A/AAAA (no CNAME) (RFC 2181 §10.3)"
+        "No MX target is a CNAME"
       ],
       "cname_target": [
         "medium",
         "At least one MX target is a CNAME (RFC 2181 §10.3 violation — some receivers may bounce)"
+      ]
+    },
+    "MX targets are hostnames": {
+      "clean": [
+        "pass",
+        "MX targets are hostnames, not IP addresses"
       ],
       "ip_literal": [
         "medium",
         "At least one MX target is an IP literal (RFC 5321 §5.1 violation — MX RDATA must be a hostname)"
-      ],
-      "cname_and_ip": [
-        "medium",
-        "MX targets include both an IP literal and a CNAME target (RFC 2181 §10.3 / RFC 5321 §5.1 violations)"
       ]
     },
     "MTA-STS": {
@@ -680,27 +689,35 @@
     "HSTS": {
       "ok_preloaded": [
         "pass",
-        "HSTS set with a long max-age and includeSubDomains; domain is preloaded"
+        "HSTS set; domain is preloaded"
       ],
       "ok": [
         "pass",
-        "HSTS set with a long max-age and includeSubDomains"
-      ],
-      "weak_max_age": [
-        "low",
-        "HSTS max-age is under 180 days"
-      ],
-      "weak_subdomains": [
-        "low",
-        "HSTS is missing the includeSubDomains directive"
-      ],
-      "weak_both": [
-        "low",
-        "HSTS max-age is under 180 days and includeSubDomains is missing"
+        "HSTS set"
       ],
       "missing": [
         "high",
         "HTTP Strict Transport Security (HSTS) not set"
+      ]
+    },
+    "HSTS max-age": {
+      "long": [
+        "pass",
+        "HSTS max-age is 180 days or longer"
+      ],
+      "short": [
+        "low",
+        "HSTS max-age is under 180 days"
+      ]
+    },
+    "HSTS includeSubDomains": {
+      "set": [
+        "pass",
+        "HSTS includeSubDomains set"
+      ],
+      "unset": [
+        "low",
+        "HSTS is missing the includeSubDomains directive"
       ]
     },
     "HSTS preload": {
@@ -801,18 +818,10 @@
         "First redirect hop goes to a different host before HTTPS"
       ]
     },
-    "www and apex unified": {
-      "unified": [
+    "www and apex resolve": {
+      "both": [
         "pass",
-        "Apex and www variants unified (one redirects to the other)"
-      ],
-      "canonical": [
-        "pass",
-        "Apex and www both serve the site, and both pages name the same one as canonical (rel=canonical)"
-      ],
-      "split": [
-        "low",
-        "Apex and www both serve content but neither redirects to the other (split-brain site)"
+        "Apex and www both have DNS records"
       ],
       "half_missing": [
         "medium",
@@ -825,6 +834,20 @@
       "half_missing_www": [
         "medium",
         "www variant has no A/AAAA records — users typing www get a DNS error"
+      ]
+    },
+    "www and apex unified": {
+      "unified": [
+        "pass",
+        "Apex and www variants unified (one redirects to the other)"
+      ],
+      "canonical": [
+        "pass",
+        "Apex and www both serve the site, and both pages name the same one as canonical (rel=canonical)"
+      ],
+      "split": [
+        "low",
+        "Apex and www both serve content but neither redirects to the other (split-brain site)"
       ]
     },
     "Server header": {
@@ -1186,13 +1209,23 @@
       ]
     },
     "MX reverse DNS": {
+      "all_present": [
+        "pass",
+        "Every mail server address has reverse DNS"
+      ],
+      "missing": [
+        "low",
+        "A mail server address has no reverse DNS"
+      ]
+    },
+    "MX reverse DNS matches": {
       "all_confirmed": [
         "pass",
-        "Mail server addresses have reverse DNS that maps back to them"
+        "Mail server reverse DNS names map back to their addresses"
       ],
-      "missing_or_mismatch": [
+      "mismatch": [
         "low",
-        "A mail server address has no reverse DNS, or it does not map back"
+        "A mail server's reverse DNS name does not map back to its address"
       ]
     },
     "Null MX on no-mail domain": {
@@ -1379,14 +1412,20 @@
         "Key exchange could not be tested from this system"
       ]
     },
-    "Certificate key strength": {
+    "Certificate key size": {
       "strong": [
         "pass",
-        "Certificate key and signature are strong"
+        "Certificate key is at least 2048-bit RSA or 256-bit EC"
       ],
       "weak_key": [
         "high",
         "Certificate key is too short (under 2048-bit RSA or 256-bit EC)"
+      ]
+    },
+    "Certificate signature": {
+      "strong": [
+        "pass",
+        "Certificate signature uses a current hash (not SHA-1 or MD5)"
       ],
       "weak_signature": [
         "high",
@@ -1437,18 +1476,24 @@
         "security.txt Canonical does not list where the file was found"
       ]
     },
-    "Deprecated security headers": {
+    "HPKP absent": {
       "none": [
         "pass",
-        "No deprecated HPKP or Expect-CT headers"
-      ],
-      "expect_ct": [
-        "info",
-        "Expect-CT is set — deprecated and has no effect"
+        "No Public-Key-Pins (HPKP) header"
       ],
       "hpkp": [
         "low",
         "Public-Key-Pins (HPKP) is set — deprecated and risky"
+      ]
+    },
+    "Expect-CT absent": {
+      "none": [
+        "pass",
+        "No Expect-CT header"
+      ],
+      "expect_ct": [
+        "info",
+        "Expect-CT is set — deprecated and has no effect"
       ]
     },
     "Page language declared": {
