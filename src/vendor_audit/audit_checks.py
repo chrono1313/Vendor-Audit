@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.1"
+__version__ = "3.5.2"
 
 import os
 import re
@@ -3958,6 +3958,10 @@ def check_server_header(domain, _cached_response=None):
             "x_aspnet_version":    h.get("X-AspNet-Version"),
             "x_aspnetmvc_version": h.get("X-AspNetMvc-Version"),
             "sharepoint_version":  h.get("MicrosoftSharePointTeamServices"),
+            # 3.5.2: Exchange's build, from the X-OWA-Version header or the
+            # Outlook Web App sign-in page, whose files sit under
+            # /owa/<build>/ (2007, 2010) or /owa/auth/<build>/ (2013 on).
+            **_exchange_build(h, body),
             "final_url":           resp.url,
             # HTTP status of the page the header checks read, and whether
             # a bot defence answered instead of the site (see
@@ -5191,6 +5195,70 @@ def _os_release_judgement(os_key: str, release: str, today=None) -> dict:
     return _eol_judge(OS_EOL.get(os_key), release, today)
 
 
+_OWA_BUILD_RE = re.compile(r"/owa/(?:auth/)?(\d{1,2}\.\d+\.\d+(?:\.\d+)?)/", re.IGNORECASE)
+
+
+def _exchange_build(headers, body):
+    """{"exchange_version", "exchange_version_source"} for one response.
+
+    The X-OWA-Version header wins; otherwise the first build in an OWA
+    resource path on the page. Both None when neither is there."""
+    hdr = (headers.get("X-OWA-Version") or "").strip()
+    if re.match(r"^\d{1,2}\.\d+\.\d+", hdr):
+        return {"exchange_version": hdr, "exchange_version_source": "owa_header"}
+    m = _OWA_BUILD_RE.search(body or "")
+    if m:
+        return {"exchange_version": m.group(1), "exchange_version_source": "owa_page"}
+    return {"exchange_version": None, "exchange_version_source": None}
+
+
+def _exchange_release(build: str):
+    """Map an Exchange build to its release (Microsoft's build numbers).
+
+    Major 8 = 2007, 14 = 2010, 15.0 = 2013, 15.1 = 2016. 15.2 is shared:
+    Subscription Edition starts at build 15.2.2562, and every 2019 build
+    is below it. Anything else returns None (not judged)."""
+    m = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)", build or "")
+    if not m:
+        return None
+    major, minor, b = (int(x) for x in m.groups())
+    if major == 8:
+        return "2007"
+    if major == 14:
+        return "2010"
+    if major == 15:
+        if minor == 0:
+            return "2013"
+        if minor == 1:
+            return "2016"
+        if minor == 2:
+            return "subscription" if b >= 2562 else "2019"
+    return None
+
+
+def _product_release_judgement(key, release, source, detail, today=None):
+    """One judged entry for a product identified by its release year
+    (SharePoint, Exchange), or None when tech_eol.json has no such row."""
+    entry = TECH_EOL.get(key) or {}
+    row = (entry.get("releases") or {}).get(release)
+    if row is None:
+        return None
+    shown = {"subscription": "Subscription Edition"}.get(release, release)
+    t = {"tech": key, "version": shown, "name": entry.get("name") or key,
+         "source": source, "detail": detail}
+    if _row_is_eol(row, today or _eol_today()):
+        t["eol_status"] = "eol"
+        date = row["eol"] if isinstance(row.get("eol"), str) else None
+        t["eol_message"] = (f"end of life since {date}" if date else "end of life")
+        if date:
+            t["eol_last_release"] = date
+        if entry.get("source"):
+            t["eol_source"] = entry["source"]
+    else:
+        t["eol_status"] = "ok"
+    return t
+
+
 def _sharepoint_release(header_value: str):
     """Map a MicrosoftSharePointTeamServices value to a product year.
 
@@ -5357,22 +5425,17 @@ def check_tech_eol(server_header_result: dict, error_page_result: dict | None = 
     sp_raw = sh.get("sharepoint_version") or ""
     sp_rel = _sharepoint_release(sp_raw)
     if sp_rel:
-        entry = TECH_EOL.get("sharepoint") or {}
-        row = (entry.get("releases") or {}).get(sp_rel)
-        if row is not None:
-            t = {"tech": "sharepoint", "version": sp_rel,
-                 "name": entry.get("name") or "SharePoint Server",
-                 "source": "sharepoint_header", "detail": sp_raw.strip()}
-            if _row_is_eol(row, today or _eol_today()):
-                t["eol_status"] = "eol"
-                date = row["eol"] if isinstance(row.get("eol"), str) else None
-                t["eol_message"] = (f"end of life since {date}" if date else "end of life")
-                if date:
-                    t["eol_last_release"] = date
-                if entry.get("source"):
-                    t["eol_source"] = entry["source"]
-            else:
-                t["eol_status"] = "ok"
+        t = _product_release_judgement("sharepoint", sp_rel, "sharepoint_header", sp_raw.strip(), today)
+        if t:
+            techs.append(t)
+
+    # 3.5.2: Exchange, from Outlook Web App (see _exchange_build).
+    ex_raw = sh.get("exchange_version") or ""
+    ex_rel = _exchange_release(ex_raw)
+    if ex_rel:
+        t = _product_release_judgement("exchange", ex_rel, sh.get("exchange_version_source") or "owa_page",
+                                       ex_raw.strip(), today)
+        if t:
             techs.append(t)
 
     # Only surface software we could judge, or could name as undecidable.

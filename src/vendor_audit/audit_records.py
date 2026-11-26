@@ -847,7 +847,8 @@ def _ev_powered_by(G):
     return _kv(("X-Powered-By header", s.get("x_powered_by") or "not sent"),
                ("X-AspNet-Version header", s.get("x_aspnet_version")),
                ("X-AspNetMvc-Version header", s.get("x_aspnetmvc_version")),
-               ("SharePoint version header", s.get("sharepoint_version")))
+               ("SharePoint version header", s.get("sharepoint_version")),
+               ("Exchange build", s.get("exchange_version")))
 
 
 def _ev_clickjacking(G):
@@ -1150,10 +1151,14 @@ def _ev_eol(label, results):
         if label == f'EOL library: {lib.get("library")} {lib.get("version")}':
             return rows(lib, f'{lib.get("name") or lib.get("library")} {lib.get("version")}',
                         (("Last release in this line", lib.get("eol_last_version")),))
+    seen_in = {"owa_page": "the Outlook Web App sign-in page",
+               "owa_header": "X-OWA-Version header"}
     for tech in ((results.get("tech_eol") or {}).get("techs") or []):
         if label.endswith(f'{tech.get("tech")} {tech.get("version")}'):
+            src = tech.get("source") or ""
             return rows(tech, f'{tech.get("name") or tech.get("tech")} {tech.get("version")}',
-                        (("Seen in", (tech.get("source") or "").replace("_", " ")),))
+                        (("Build", tech.get("detail") if tech.get("tech") == "exchange" else None),
+                         ("Seen in", seen_in.get(src, src.replace("_", " ")))))
     return []
 
 

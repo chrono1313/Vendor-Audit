@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.1"
+__version__ = "3.5.2"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -3010,6 +3010,8 @@ def _render_server_disclosure_section(data):
                          "x_aspnet_version": "disclosed in X-AspNet-Version",
                          "x_aspnetmvc_version": "disclosed in X-AspNetMvc-Version",
                          "sharepoint_header": "from the MicrosoftSharePointTeamServices header",
+                         "owa_header": f"build {t.get('detail')}, disclosed in the X-OWA-Version header",
+                         "owa_page": f"build {t.get('detail')}, seen in the Outlook Web App sign-in page",
                          }.get(t.get("source") or "")
             if t.get("eol_status") == "undetermined":
                 parts.append(_status("info", f"{disp} {ver} — support undetermined: {msg}",

@@ -129,6 +129,39 @@ def test_server_software():
           "SharePoint Online / Subscription builds must not be judged")
 
 
+def test_exchange():
+    """3.5.2 (m.rullman.se): Exchange's build, from Outlook Web App."""
+    ex = lambda build, src="owa_page": tech("", exchange_version=build, exchange_version_source=src).get("exchange")
+    e = ex("14.3.513.0")
+    check(e and e["version"] == "2010" and e["eol_status"] == "eol" and e["eol_last_release"] == "2020-10-13",
+          f"14.x is Exchange 2010, end of life: {e}")
+    check(ex("8.3.517.0")["version"] == "2007", "8.x is Exchange 2007")
+    check(ex("15.0.1497.48")["version"] == "2013", "15.0 is Exchange 2013")
+    check(ex("15.1.2507.61")["version"] == "2016" and ex("15.1.2507.61")["eol_status"] == "eol", "15.1 is 2016, EOL")
+    check(ex("15.2.1748.55")["version"] == "2019" and ex("15.2.1748.55")["eol_status"] == "eol",
+          "15.2 below 2562 is 2019, EOL")
+    se = ex("15.2.2562.57")
+    check(se and se["version"] == "Subscription Edition" and se["eol_status"] == "ok", f"15.2.2562+ is SE: {se}")
+    check(ex("16.0.1.2") is None and ex("not a build") is None, "unknown builds are not judged")
+    check(ex("14.3.513.0", "owa_header")["source"] == "owa_header", "source kept")
+
+    page_2010 = '<link rel="stylesheet" href="/owa/14.3.513.0/themes/resources/logon.css">'
+    page_2016 = '<link rel="stylesheet" href="/owa/auth/15.1.2507/themes/resources/owafont_ltr.css">'
+    check(ac._exchange_build({}, page_2010) == {"exchange_version": "14.3.513.0", "exchange_version_source": "owa_page"},
+          "2010 sign-in page")
+    check(ac._exchange_build({}, page_2016)["exchange_version"] == "15.1.2507", "2013+ sign-in page")
+    check(ac._exchange_build({"X-OWA-Version": "15.2.1748.55"}, page_2010)
+          == {"exchange_version": "15.2.1748.55", "exchange_version_source": "owa_header"}, "the header wins")
+    check(ac._exchange_build({}, '<a href="/owa/">mail</a>')["exchange_version"] is None, "no build, no guess")
+
+    import httpx
+    resp = httpx.Response(200, headers={"X-Powered-By": "ASP.NET", "Content-Type": "text/html"},
+                          text="<html><head>" + page_2010 + "</head></html>",
+                          request=httpx.Request("GET", "https://mail.example.com/owa/auth/logon.aspx"))
+    sh = ac.check_server_header("mail.example.com", _cached_response=resp)
+    check(sh.get("exchange_version") == "14.3.513.0", f"check_server_header reads the build: {sh.get('exchange_version')}")
+
+
 def test_distro_backports_not_flagged():
     # Upstream-EOL versions that a supported distro still patches.
     check("nginx" not in tech("nginx/1.18.0 (Ubuntu)"), "nginx 1.18 (Ubuntu 22.04) must not be flagged")
@@ -198,7 +231,7 @@ def test_libraries():
 
 def run():
     for fn in (test_schema, test_staleness, test_dates_flip_on_schedule,
-               test_server_software, test_distro_backports_not_flagged,
+               test_server_software, test_exchange, test_distro_backports_not_flagged,
                test_os_inference, test_centos_stream_is_not_centos, test_libraries):
         before = len(_failures)
         fn()
