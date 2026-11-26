@@ -78,7 +78,7 @@ Minimum Python version: 3.8+
 """
 from __future__ import annotations
 
-__version__ = "3.5.6"
+__version__ = "3.5.7"
 
 import os
 import sys
@@ -401,15 +401,18 @@ def _ssllabs_call(path, email=None, params=None, method="GET", json_body=None, t
         headers = {"Content-Type": "application/json"}
         if email:
             headers["email"] = email
-        # httpx is API-compatible with requests for the simple-request
-        # case used here: status_code, json(), text, headers, and
-        # raise_for_status() all exist with the same shape.
-        resp = httpx.post(url, headers=headers, json=json_body or {}, timeout=timeout)
+        kwargs = {"headers": headers, "json": json_body or {}}
     else:
         headers = {}
         if email:
             headers["email"] = email
-        resp = httpx.get(url, headers=headers, params=params or {}, timeout=timeout)
+        kwargs = {"headers": headers, "params": params or {}}
+    # 3.5.7: read under the API size cap, like every other fetch, with
+    # this call's own (long) time limit for the body too.
+    with httpx.Client(timeout=timeout) as client:
+        resp = audit_checks._request_capped(client, method, url,
+                                            max_bytes=audit_checks._API_MAX_BYTES,
+                                            budget_s=timeout, **kwargs)
 
     if resp.status_code == 400:
         try:

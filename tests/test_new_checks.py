@@ -641,7 +641,8 @@ def test_slow_ripestat_routing():
     from vendor_audit import audit as audit_mod
 
     class Slow:
-        def get(self, *a, **k):
+        # 3.5.7: API calls stream their body (under the size cap).
+        def stream(self, *a, **k):
             time.sleep(10)
     z = {("example.com", "A"): ["192.0.2.1"], ("example.com", "AAAA"): ["2001:db8::1"]}
     with zone(z), mock.patch.object(ac, "_get_client", return_value=Slow()), \

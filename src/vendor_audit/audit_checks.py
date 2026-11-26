@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.6"
+__version__ = "3.5.7"
 
 import os
 import re
@@ -432,14 +432,78 @@ def _run_with_hard_timeout(fn, timeout, on_timeout=None):
     return result[0]
 
 
-def _http_get(url, **kwargs):
-    """HTTP GET via the thread-local httpx client.
+# ── Limits on every fetch (3.5.7) ─────────────────────────────────────────────
+# Every network call the audit makes has a time limit, sized to the kind of
+# work, and every response body it reads has a size limit:
+#
+#   DNS query            2 s or 5 s per query (resolver lifetime)
+#   HTTP, audited site   1.5 s to connect, 3 s for each read (set_http_timeout),
+#                        _FETCH_BODY_BUDGET_S for the whole body, _FETCH_MAX_BYTES
+#   API call             same time limits, _API_MAX_BYTES (RIPEstat, SSL Labs,
+#                        hstspreload.org; trusted, but a fault there must not
+#                        fill memory either)
+#   TLS handshake        _http_timeout for the connect and each step
+#   SMTP (deep)          _STARTTLS_STEP_TIMEOUT per step, _STARTTLS_BUDGET per
+#                        host, _SMTP_MAX_REPLY_LINES lines per reply
+#   Each check           AUDIT_WALL_DEADLINE_S (audit.py), follow-ups half that;
+#                        the audit returns with whatever finished
+#
+# The body budget is the check deadline itself, so no fetch is cut short
+# that could have finished in time to count; it bounds a server that drips
+# its response a byte at a time. A check cut off by its deadline can leave
+# a connection open; the web service closes every one of those when the
+# audit returns (netguard.close_leftover_connections).
+#
+# The caps are far above any real response: the largest pages we read are
+# under 5 MB (the --deep page cap) and every policy file, security.txt and
+# API answer we have seen is under 100 KB. Responses are decoded before
+# they are counted, so a compressed bomb stops at the cap too (httpx asks
+# only for gzip and deflate, at most ~1000:1 per network read).
+_FETCH_MAX_BYTES     = 1 * 1024 * 1024     # anything read in full from an audited site
+_API_MAX_BYTES       = 8 * 1024 * 1024     # third-party API answers
+_FETCH_BODY_BUDGET_S = 15.0                # = audit.AUDIT_WALL_DEADLINE_S
 
-    httpx honors its own timeout reliably (via anyio's cancellation),
-    so unlike the previous requests-based implementation we don't need
-    a watchdog thread to enforce a hard wall-clock deadline. The
-    Client-level default timeout (httpx.Timeout(_http_timeout)) applies;
-    callers can override per-request via timeout=.
+
+def _read_capped(resp, max_bytes, budget_s=_FETCH_BODY_BUDGET_S):
+    """(body, truncated) from a streaming response: at most max_bytes of
+    the decoded body, and no reading past budget_s from now."""
+    deadline = time.monotonic() + budget_s
+    chunks, total, truncated = [], 0, False
+    # No chunk_size: with one, httpx holds data back until a whole chunk
+    # has arrived, and a dripping server would never reach the time check.
+    for chunk in resp.iter_bytes():
+        if not chunk:
+            continue
+        room = max_bytes - total
+        if len(chunk) >= room:
+            chunks.append(chunk[:room])
+            truncated = True
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if time.monotonic() > deadline:
+            truncated = True
+            break
+    return b"".join(chunks), truncated
+
+
+def _request_capped(client, method, url, max_bytes=_FETCH_MAX_BYTES,
+                    budget_s=_FETCH_BODY_BUDGET_S, **kwargs):
+    """One request whose body is read with _read_capped. Returns the httpx
+    Response with .content, .text and .json() working as after a normal
+    request, plus .body_truncated."""
+    with client.stream(method, url, **kwargs) as resp:
+        body, truncated = _read_capped(resp, max_bytes, budget_s)
+    # What Response.read() would have set; .content, .text and .json()
+    # read it after the stream has closed.
+    resp._content = body
+    resp.body_truncated = truncated
+    return resp
+
+
+def _http_get(url, max_bytes=_FETCH_MAX_BYTES, **kwargs):
+    """HTTP GET via the thread-local httpx client, with the body read under
+    the fetch limits above (max_bytes; _API_MAX_BYTES for API calls).
 
     Compatibility shims:
       - allow_redirects= → follow_redirects= (renamed in httpx)
@@ -452,7 +516,7 @@ def _http_get(url, **kwargs):
         kwargs["follow_redirects"] = kwargs.pop("allow_redirects")
     kwargs.pop("verify", None)
     kwargs.pop("stream", None)
-    return _get_client().get(url, **kwargs)
+    return _request_capped(_get_client(), "GET", url, max_bytes=max_bytes, **kwargs)
 
 
 def _http_stream(url, **kwargs):
@@ -1223,7 +1287,7 @@ def check_mta_sts_policy(domain):
         with httpx.Client(http2=True, verify=True, follow_redirects=False,
                           headers={"User-Agent": f"vendor-audit/{__version__}"},
                           timeout=httpx.Timeout(_http_timeout, connect=_http_connect_timeout)) as client:
-            resp = client.get(url)
+            resp = _request_capped(client, "GET", url)
     except Exception as e:
         msg = str(e) or e.__class__.__name__
         low = msg.lower()
@@ -1914,7 +1978,7 @@ def check_ip_routing(domain):
         for _ in range(RETRIES):
             attempts += 1
             try:
-                resp = _get_client().get(url, params=params, timeout=timeout)
+                resp = _http_get(url, max_bytes=_API_MAX_BYTES, params=params, timeout=timeout)
                 resp.raise_for_status()
                 elapsed = time.monotonic() - t0
                 status = "retry-ok" if attempts > 1 else "ok"
@@ -2133,8 +2197,8 @@ def _ripe_prefix_rpki(ip):
         last = None
         for _ in range(2):
             try:
-                resp = _get_client().get(f"{base}/{endpoint}/data.json",
-                                         params={**params, "sourceapp": "vendoraudit-org"}, timeout=2.5)
+                resp = _http_get(f"{base}/{endpoint}/data.json", max_bytes=_API_MAX_BYTES,
+                                 params={**params, "sourceapp": "vendoraudit-org"}, timeout=2.5)
                 resp.raise_for_status()
                 return resp.json().get("data", {})
             except Exception as e:      # noqa: BLE001
@@ -2909,6 +2973,7 @@ def check_hsts(domain, _cached_response=None):
         try:
             pr = _http_get(
                 f"https://hstspreload.org/api/v2/status?domain={domain}",
+                max_bytes=_API_MAX_BYTES,
             )
             data = pr.json()
             status = data.get("status", "") or ""
@@ -2991,22 +3056,16 @@ def check_redirect(domain, body_cap=None):
                 f"{scheme}://{domain}",
                 follow_redirects=True,
             ) as resp:
-                chunks = []
-                total  = 0
-                for chunk in resp.iter_bytes(chunk_size=65536):
-                    if not chunk:
-                        continue
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total >= body_cap:
-                        break
+                # 3.5.7: the shared reader, which also stops a server that
+                # drips its page a byte at a time.
+                body, truncated = _read_capped(resp, body_cap)
                 # Stash custom attributes for downstream consumers
                 # (check_hsts, check_server_header) that inspect the
                 # cached response. headers/status/url/history all remain
                 # valid after the stream context exits; only the body
                 # stream itself is closed.
-                resp._body_chunk = b"".join(chunks)
-                resp._body_truncated = (total >= body_cap)
+                resp._body_chunk = body
+                resp._body_truncated = truncated
             elapsed_ms = (time.monotonic() - t0) * 1000.0
 
             # Sanity-check: does the body look like HTML? A JSON API, PDF,
@@ -3559,15 +3618,9 @@ def check_error_page(domain):
         try:
             with _http_stream(url, follow_redirects=False) as resp:
                 status = resp.status_code
-                chunks = []
-                total = 0
                 CAP = 16 * 1024
-                for chunk in resp.iter_bytes(chunk_size=4096):
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total >= CAP:
-                        break
-                body = b"".join(chunks).decode("utf-8", errors="replace")
+                raw, _truncated = _read_capped(resp, CAP)
+                body = raw.decode("utf-8", errors="replace")
         except Exception as e:
             out["error"] = _plain_error(e)
             return out
@@ -4047,16 +4100,7 @@ def check_server_header(domain, _cached_response=None):
                 f"{scheme}://{domain}",
                 follow_redirects=True,
             ) as resp:
-                chunks = []
-                total  = 0
-                for chunk in resp.iter_bytes(chunk_size=65536):
-                    if not chunk:
-                        continue
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total >= _BODY_SNIFF_BYTES:
-                        break
-                resp._body_chunk = b"".join(chunks)
+                resp._body_chunk, _truncated = _read_capped(resp, _BODY_SNIFF_BYTES)
             return _parse_response(resp)
         except httpx.TimeoutException:
             last_err = Exception(f"Timeout exceeded for {scheme}://{domain}")
@@ -6141,6 +6185,41 @@ def check_page_security_signals(html, page_url, audit_domain):
 _STARTTLS_STEP_TIMEOUT = 5
 _STARTTLS_BUDGET = 6.0
 
+# 3.5.7: smtplib reads a reply's lines with no limit on how many. A greeting
+# or EHLO answer is a few lines (EHLO lists one extension per line, rarely
+# more than 20); a server that keeps sending "250-" lines is cut off here.
+_SMTP_MAX_REPLY_LINES = 200
+
+
+class _ReplyLineLimit:
+    """The SMTP connection's reply reader, raising once one reply passes
+    _SMTP_MAX_REPLY_LINES (smtplib reports it as a disconnect)."""
+
+    def __init__(self, f):
+        self._f = f
+        self.lines = 0
+
+    def readline(self, size=-1):
+        self.lines += 1
+        if self.lines > _SMTP_MAX_REPLY_LINES:
+            raise OSError(f"reply longer than {_SMTP_MAX_REPLY_LINES} lines")
+        return self._f.readline(size)
+
+    def close(self):
+        self._f.close()
+
+
+def _bounded_smtp(timeout):
+    """An smtplib.SMTP whose replies are capped at _SMTP_MAX_REPLY_LINES."""
+    class _SMTP(smtplib.SMTP):
+        def getreply(self):
+            if self.file is None:
+                self.file = _ReplyLineLimit(self.sock.makefile("rb"))
+            elif isinstance(self.file, _ReplyLineLimit):
+                self.file.lines = 0
+            return super().getreply()
+    return _SMTP(timeout=timeout)
+
 
 def check_starttls_mx(mx_entries):
     """For each MX host, open TCP/25, EHLO, STARTTLS, and inspect the cert.
@@ -6182,7 +6261,7 @@ def check_starttls_mx(mx_entries):
             if not verify:
                 ctx.verify_mode = ssl.CERT_NONE
             try:
-                with smtplib.SMTP(timeout=timeout) as smtp:
+                with _bounded_smtp(timeout) as smtp:
                     # 3.5.4: connect() separately to keep the greeting,
                     # which often names the mail server software (Exim).
                     code, greeting = smtp.connect(host, 25)

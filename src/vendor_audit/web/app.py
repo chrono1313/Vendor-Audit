@@ -407,7 +407,14 @@ def _worker_audit(domain: str, *, deep: bool = False) -> dict:
     pool will recover if it does.
     """
     netguard.install()          # already done by the pool initializer; cheap and idempotent
-    return audit.safe_run_audit(domain, deep=deep)
+    try:
+        return audit.safe_run_audit(domain, deep=deep)
+    finally:
+        # 3.5.7: nothing this audit opened stays open once it has returned:
+        # connections a check's deadline cut off, and idle keep-alive ones
+        # in the audit's finished threads. Not logged: the idle ones make
+        # the count nonzero after almost every audit.
+        netguard.close_leftover_connections()
 
 
 # ── Templates ────────────────────────────────────────────────────────────────

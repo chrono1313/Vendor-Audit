@@ -15,6 +15,12 @@ Two layers use the same rules:
     every redirect hop. When nothing public is left the lookup fails with
     NonPublicAddressError and that one check reports it as an error.
 
+install() also tracks the connections the worker opens, so that
+close_leftover_connections() can shut every one still open once an audit
+has returned (3.5.7). A check cut off by its deadline can leave a
+connection waiting on a slow server; its result no longer counts, and
+nothing should keep the worker busy after the audit is done.
+
 install() also removes proxy settings (HTTPS_PROXY and the like) from the
 worker's environment. Through a forward proxy the worker would connect to
 the proxy, not the audited site, and the check above would only ever see
@@ -28,6 +34,9 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+import ssl
+import threading
+import weakref
 from typing import Iterable
 
 # IP networks we consider non-public. These are checked against EVERY address
@@ -126,12 +135,61 @@ def _guarded_getaddrinfo(host, port, *args, **kwargs):
 _PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 
 
+# ── Leftover connections (3.5.7) ─────────────────────────────────────────────
+# Every outbound TCP connection in an audit is opened by
+# socket.create_connection (httpx, smtplib, the raw TLS probe); a TLS one is
+# then wrapped by SSLContext.wrap_socket, which hands back a new socket
+# object for the same connection. Both are recorded, weakly, so a socket
+# that is closed and dropped simply disappears from the set.
+_open_sockets: "weakref.WeakSet[socket.socket]" = weakref.WeakSet()
+_open_lock = threading.Lock()
+_real_create_connection = socket.create_connection
+_real_wrap_socket = ssl.SSLContext.wrap_socket
+
+
+def _track(sock):
+    with _open_lock:
+        _open_sockets.add(sock)
+    return sock
+
+
+def _tracked_create_connection(*args, **kwargs):
+    return _track(_real_create_connection(*args, **kwargs))
+
+
+def _tracked_wrap_socket(self, *args, **kwargs):
+    return _track(_real_wrap_socket(self, *args, **kwargs))
+
+
+def close_leftover_connections() -> int:
+    """Shut down every connection this process opened that is still open,
+    and return how many there were. Call it once an audit has returned:
+    whatever is still connected belongs to a check its deadline cut off.
+    shutdown() wakes a thread blocked reading the socket, which then fails
+    and finishes; that thread closes the socket itself."""
+    with _open_lock:
+        socks = list(_open_sockets)
+        _open_sockets.clear()
+    n = 0
+    for sock in socks:
+        try:
+            if sock.fileno() == -1:             # closed, or handed to an SSL wrapper
+                continue
+            sock.shutdown(socket.SHUT_RDWR)
+            n += 1
+        except OSError:
+            pass                                # already gone
+    return n
+
+
 def install() -> None:
     """Guard every connection in this process. Safe to call more than once."""
     for name in _PROXY_VARS:
         os.environ.pop(name, None)
         os.environ.pop(name.lower(), None)
     socket.getaddrinfo = _guarded_getaddrinfo
+    socket.create_connection = _tracked_create_connection
+    ssl.SSLContext.wrap_socket = _tracked_wrap_socket
 
 
 def installed() -> bool:

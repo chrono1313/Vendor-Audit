@@ -21,6 +21,7 @@ import contextlib
 import http.server
 import os
 import socket
+import ssl
 import sys
 import threading
 
@@ -42,6 +43,7 @@ def guarded(names):
     """Install the guard with a fake resolver: names → list of addresses,
     and 127.0.0.1 counted as public."""
     real_gai, real_pub, before = netguard._real_getaddrinfo, netguard.is_public_address, socket.getaddrinfo
+    before_cc, before_wrap = socket.create_connection, ssl.SSLContext.wrap_socket     # 3.5.7 tracking
     saved_env = dict(os.environ)          # install() drops proxy settings
 
     def fake_gai(host, port, *args, **kw):
@@ -58,6 +60,7 @@ def guarded(names):
         yield
     finally:
         socket.getaddrinfo = before
+        socket.create_connection, ssl.SSLContext.wrap_socket = before_cc, before_wrap
         netguard._real_getaddrinfo, netguard.is_public_address = real_gai, real_pub
         os.environ.clear()
         os.environ.update(saved_env)
@@ -160,6 +163,9 @@ def test_install_scope():
         netguard.install()
         check(netguard.installed(), "guard should be installed")
     check(socket.getaddrinfo is before, "test helper should restore getaddrinfo")
+    check(socket.create_connection is netguard._real_create_connection
+          and ssl.SSLContext.wrap_socket is netguard._real_wrap_socket,
+          "and the connection tracking")
     from vendor_audit import cli  # noqa: F401
     check(not netguard.installed(), "importing the CLI must not install the guard")
 
