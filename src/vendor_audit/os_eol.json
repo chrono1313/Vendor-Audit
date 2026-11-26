@@ -1,7 +1,7 @@
 {
   "_comment": "End-of-life data for server operating systems inferred from HTTP headers. Same date-driven schema v2 as library_eol.json; see that file's _comment. The date used is the end of FREE security support (Ubuntu standard support, Debian LTS, RHEL maintenance support, Windows extended support); paid extensions are recorded as 'extended' and mentioned in the report but do not change the verdict, because the audit cannot see from outside whether a server has one. '_package_hints' maps an exact distro package version to the release that ships it (distributions freeze the upstream version for the life of a release), which lets a Server header that names the distro but not its version be resolved. Each listed version maps to one long-term release. Where a short-lived interim release shipped the same version (Ubuntu 19.10 and 20.04 both had Apache 2.4.41) the interim one reached end of life first, so the verdict is the same either way. A list of releases means two long-term releases share the version, and the finding is raised only when every candidate is end of life.",
   "_schema_version": 2,
-  "_generated_on": "2026-11-18",
+  "_generated_on": "2026-11-26",
   "_verified_on": "2026-11-18",
   "centos": {
     "name": "CentOS Linux",
@@ -180,7 +180,7 @@
     },
     "releases": {
       "26.10": {
-        "eol": "2027-07-01",
+        "eol": "2027-07-15",
         "latest": "26.10"
       },
       "26.04": {
@@ -379,7 +379,7 @@
     "releases": {
       "13": {
         "eol": "2030-06-30",
-        "latest": "13.7",
+        "latest": "13.8",
         "extended": "2035-06-30"
       },
       "12": {
@@ -468,7 +468,7 @@
     "releases": {
       "2023": {
         "eol": "2029-06-30",
-        "latest": "2023.12.20261112.0"
+        "latest": "2023.12.20261120.0"
       },
       "2018.03": {
         "eol": "2023-12-31",
@@ -532,7 +532,7 @@
       },
       "2": {
         "eol": "2026-06-30",
-        "latest": "2.0.20261112.0"
+        "latest": "2.0.20261120.0"
       }
     },
     "_note": "Recognised in Server headers for reporting. The token does not say which generation is running, so no end-of-life finding is raised from it.",

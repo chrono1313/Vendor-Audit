@@ -1,7 +1,7 @@
 {
   "_comment": "End-of-life data for server software disclosed in HTTP response headers (Server, X-Powered-By, X-AspNet-Version, X-AspNetMvc-Version, MicrosoftSharePointTeamServices, X-OWA-Version, X-Jenkins), in an Outlook Web App, Confluence or Jira page, in a Grafana or Roundcube page, in the Via or kbn-version header, in a default error page, in a nameserver's version.bind answer, or (deep scans) in a mail server's SMTP greeting. Same date-driven schema v2 as library_eol.json; see that file's _comment. One extra field: 'only_flag_below'. Linux distributions keep patching the package versions they ship long after upstream stops, and the audit cannot see from outside whether a given nginx/OpenSSL/Python is a distro package. For those products only release cycles BELOW 'only_flag_below' are judged; that floor is the oldest cycle any distribution still in free support ships, so everything under it is unpatched everywhere. The gate is lifted only when the Server header says the build is for Windows ((Win32), (Win64)), where no distribution is backporting anything. A (Unix) source build of the web server may still link the distribution's patched OpenSSL or Python, so the gate stays on.",
   "_schema_version": 2,
-  "_generated_on": "2026-11-18",
+  "_generated_on": "2026-11-26",
   "_verified_on": "2026-11-18",
   "php": {
     "name": "PHP",
@@ -9,21 +9,25 @@
       "product": "php"
     },
     "releases": {
+      "8.6": {
+        "eol": "2030-12-31",
+        "latest": "8.6.0"
+      },
       "8.5": {
         "eol": "2029-12-31",
-        "latest": "8.5.12"
+        "latest": "8.5.13"
       },
       "8.4": {
         "eol": "2028-12-31",
-        "latest": "8.4.27"
+        "latest": "8.4.28"
       },
       "8.3": {
         "eol": "2027-12-31",
-        "latest": "8.3.36"
+        "latest": "8.3.37"
       },
       "8.2": {
         "eol": "2026-12-31",
-        "latest": "8.2.35"
+        "latest": "8.2.36"
       },
       "8.1": {
         "eol": "2025-12-31",
@@ -206,11 +210,11 @@
     "releases": {
       "1.31": {
         "eol": null,
-        "latest": "1.31.8"
+        "latest": "1.31.10"
       },
       "1.30": {
         "eol": null,
-        "latest": "1.30.6"
+        "latest": "1.30.8"
       },
       "1.29": {
         "eol": "2026-05-13",
@@ -449,6 +453,10 @@
       "5": {
         "eol": "2012-09-30",
         "latest": "5.5.36"
+      },
+      "4": {
+        "eol": "2009-06-25",
+        "latest": "4.1.40"
       }
     },
     "only_flag_below": "9.0",
@@ -621,15 +629,15 @@
     "releases": {
       "4.0": {
         "eol": "2029-03-31",
-        "latest": "4.0.9"
+        "latest": "4.0.10"
       },
       "3.4": {
         "eol": "2028-03-31",
-        "latest": "3.4.12"
+        "latest": "3.4.13"
       },
       "3.3": {
         "eol": "2027-03-31",
-        "latest": "3.3.13"
+        "latest": "3.3.14"
       },
       "3.2": {
         "eol": "2026-03-31",
@@ -831,17 +839,15 @@
       }
     },
     "releases": {
-      "subscription": {
-        "eol": null,
-        "latest": "15.2.2562.57"
-      },
       "2019": {
         "eol": "2025-10-14",
-        "latest": "15.2.1544.36"
+        "latest": "15.2.1544.36",
+        "extended": "2026-11-01"
       },
       "2016": {
         "eol": "2025-10-14",
-        "latest": "15.1.2507.61"
+        "latest": "15.1.2507.61",
+        "extended": "2026-11-01"
       },
       "2013": {
         "eol": "2023-04-11",
@@ -854,6 +860,10 @@
       "2007": {
         "eol": "2017-04-11",
         "latest": "8.3.517.0"
+      },
+      "subscription": {
+        "eol": null,
+        "latest": "15.2.2562.57"
       }
     },
     "_note": "From the X-OWA-Version header, or the build in the Outlook Web App sign-in page's resource paths (/owa/14.3.513.0/themes/... on 2007 and 2010, /owa/auth/15.1.2507/themes/... on 2013 and later). Major 8 = 2007, 14 = 2010, 15.0 = 2013, 15.1 = 2016. 15.2 is shared: Subscription Edition builds start at 15.2.2562, every 2019 build is below it (Microsoft, Exchange Server build numbers and release dates). 'eol' is the end of security support; the paid Extended Security Update period for 2016 and 2019 ended 2026-11-01.",
