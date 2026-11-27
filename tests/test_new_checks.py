@@ -1335,8 +1335,10 @@ def test_composite_checks_split():
     check(f.get("Certificate key size") == "high" and f.get("Certificate signature") == "pass", "short key only")
 
     counts = ac.check_counts()
-    check(counts["total"] == 93 and counts["standard"] == 87,
-          f"93 checks, 87 on every scan: {counts['total']}, {counts['standard']}")
+    readme = open(os.path.join(os.path.dirname(__file__), "..", "README.md"), encoding="utf-8").read()
+    check(f"Vendor Audit has {counts['total']} checks in six categories: {counts['standard']} run" in readme
+          and f"A default run makes {counts['standard']} checks" in readme,
+          f"README states the counts ({counts['total']}, {counts['standard']} on every scan)")
 
 
 def test_user_agent_names_the_project():
@@ -1394,6 +1396,101 @@ def test_min_constraints_cover_every_dependency():
     check("tools/min_constraints.py" in wf and "schedule:" in wf, "tests.yml runs the oldest job and on a schedule")
 
 
+def test_delegation_serials_and_ds_digest():
+    """3.5.12: the parent's delegation matches the zone's NS records, every
+    nameserver serves the same SOA serial, and DS records avoid SHA-1."""
+    import dns.flags
+    import dns.message
+    import dns.rrset
+    addr = {"ns1.example.net": "192.0.2.1", "ns2.example.net": "192.0.2.2", "a.gtld.example": "192.0.2.100"}
+    serial = {"192.0.2.1": 2026112601, "192.0.2.2": 2026112001}
+
+    def fake_resolve(name, rtype, lifetime=None):
+        if rtype == "A":
+            return [addr[name]] if name in addr else []
+        if rtype == "NS" and name == "com":
+            return ["a.gtld.example."]
+        return []
+
+    def fake_udp(q, where, timeout=None):
+        r = dns.message.make_response(q)
+        qn, qt = q.question[0].name.to_text(), dns.rdatatype.to_text(q.question[0].rdtype)
+        if where == "192.0.2.100":            # the parent: a referral, not authoritative
+            r.authority.append(dns.rrset.from_text("example.com.", 172800, "IN", "NS",
+                                                   "ns1.example.net.", "ns-old.example.org."))
+            return r
+        if qn == "example.com." and qt == "NS":
+            r.flags |= dns.flags.AA
+            r.answer.append(dns.rrset.from_text("example.com.", 3600, "IN", "NS", "ns1.example.net.", "ns2.example.net."))
+        elif qn == "example.com." and qt == "SOA":
+            r.flags |= dns.flags.AA
+            r.answer.append(dns.rrset.from_text("example.com.", 3600, "IN", "SOA",
+                                                f"ns1.example.net. h.example.com. {serial[where]} 7200 3600 1209600 3600"))
+        return r
+
+    with mock.patch.object(ac, "resolve", side_effect=fake_resolve), \
+         mock.patch.object(ac.dns.query, "udp", side_effect=fake_udp), \
+         mock.patch.object(ac, "_is_public_ip", return_value=True):
+        h = ac.check_ns_health("example.com", ns_list=["ns1.example.net", "ns2.example.net"])
+    check(h["ns_sets"] == {"ns1.example.net": ["ns1.example.net", "ns2.example.net"],
+                           "ns2.example.net": ["ns1.example.net", "ns2.example.net"]}, f"each server's NS set: {h['ns_sets']}")
+    check(h["serials"] == {"ns1.example.net": 2026112601, "ns2.example.net": 2026112001}, f"serials: {h['serials']}")
+    check(h["parent"] == {"zone": "com", "server": "a.gtld.example", "ns": ["ns-old.example.org", "ns1.example.net"]},
+          f"the parent's delegation: {h['parent']}")
+    check(not h["lame_ns"] and h["probed"] == 2, "the existing probes still run")
+
+    d = sample()
+    d["ns_health"] = h
+    f = findings(d)
+    check(f.get("Nameserver delegation match") == "low" and f.get("Nameserver SOA serials") == "low",
+          f"mismatch and differing serials are low: {f.get('Nameserver delegation match')}, {f.get('Nameserver SOA serials')}")
+    txt = detail(d)
+    check(line(txt, "LOW", "The parent zone (com) and the zone list different nameservers"), "delegation line reads LOW")
+    check("Only at the parent (com): ns-old.example.org" in txt and "Only in the zone's NS records: ns2.example.net" in txt,
+          "the report names the servers on only one side")
+    check(line(txt, "LOW", "Nameservers serve different SOA serials") and "ns2.example.net: 2026112001" in txt,
+          "the serials are listed")
+    _end_to_end(d | {"dnssec": {"tld": {"signed": True, "tld": "com"},
+                                "domain": {"dnskey": True, "ad_flag": True, "algorithms": [13], "ds_digest_types": [1]}}},
+                ["Nameserver delegation match", "Nameserver SOA serials", "DNSSEC DS digest"])
+
+    good = dict(h, parent={"zone": "com", "server": "a.gtld.example", "ns": ["ns1.example.net", "ns2.example.net"]},
+                serials={"ns1.example.net": 7, "ns2.example.net": 7})
+    d["ns_health"] = good
+    f = findings(d)
+    check(f.get("Nameserver delegation match") == "pass" and f.get("Nameserver SOA serials") == "pass", "match and same pass")
+    check(line(detail(d), "PASS", "Every nameserver serves SOA serial 7"), "pass line")
+    d["ns_health"] = dict(good, ns_sets={"ns1.example.net": ["ns1.example.net", "ns2.example.net"],
+                                         "ns2.example.net": ["ns2.example.net"]})
+    check(findings(d).get("Nameserver delegation match") == "low", "servers that disagree with each other: low")
+    d["ns_health"] = dict(good, parent={"zone": "com", "error": "parent_unreachable"}, serials={"ns1.example.net": 7})
+    f = findings(d)
+    check("Nameserver delegation match" not in f and "Nameserver SOA serials" not in f,
+          "no parent answer, or one serial: not rated")
+    old = dict(h)
+    for k in ("ns_sets", "serials", "parent"):
+        old.pop(k)
+    d["ns_health"] = old
+    f = findings(d)
+    check("Nameserver delegation match" not in f and "Nameserver SOA serials" not in f, "scans saved before 3.5.12")
+
+    for types, want in (([2], "pass"), ([2, 4], "pass"), ([1, 2], "low"), ([1], "low"), ([3], "low"), ([], None), ([8], None)):
+        d = sample()
+        d["dnssec"] = {"tld": {"signed": True, "tld": "com"},
+                       "domain": {"dnskey": True, "ad_flag": True, "algorithms": [13], "ds_digest_types": types}}
+        check(findings(d).get("DNSSEC DS digest") == want, f"DS digest {types} → {want}: {findings(d).get('DNSSEC DS digest')}")
+    check(ac._ds_digest_outcome({"ds_digest_types": [1, 2]}) == "sha1_extra"
+          and ac._ds_digest_outcome({"ds_digest_types": [1]}) == "sha1_only", "two different low results")
+    d["dnssec"]["domain"].update(dnskey=False, ds_digest_types=[1])
+    check("DNSSEC DS digest" not in findings(d), "unsigned zone: not rated")
+
+    with mock.patch.object(ac, "resolve", side_effect=lambda n, t, lifetime=None:
+                           ["2371 13 2 1F987CC6583E92DF0890718C42", "2371 13 1 AB12"] if t == "DS" else []), \
+         mock.patch.object(ac, "udp_query", return_value=None):
+        r = ac.check_dnssec("example.com")
+    check(r["domain"].get("ds_digest_types") == [1, 2], f"DS digest types read: {r['domain']}")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -1408,7 +1505,7 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_www_apex_mdn, test_null_mx_subdomain_wording,
          test_every_new_check_end_to_end, test_composite_checks_split,
          test_user_agent_names_the_project, test_www_apex_resolve_is_dns_only,
-         test_min_constraints_cover_every_dependency]
+         test_min_constraints_cover_every_dependency, test_delegation_serials_and_ds_digest]
 
 
 def run():

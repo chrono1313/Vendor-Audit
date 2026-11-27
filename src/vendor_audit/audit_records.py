@@ -87,7 +87,8 @@ _TOPIC = {
     "MTA-STS policy MX match": "mta_sts",
     "MTA-STS max_age": "mta_sts",
     "Dangling CNAME": "dangling_dns",
-    "DNSSEC algorithm": "dnssec",
+    "DNSSEC algorithm": "dnssec", "DNSSEC DS digest": "dnssec",
+    "Nameserver delegation match": "nameservers", "Nameserver SOA serials": "nameservers",
     "SOA timers": "nameservers",
     "Nameservers on IPv6": "ipv6",
     "Nameserver networks": "nameservers",
@@ -178,6 +179,9 @@ _STANDARD = {
     "MTA-STS max_age": "RFC 8461 §3.2",
     "Dangling CNAME": "RFC 1034; OWASP WSTG-CONF-10",
     "DNSSEC algorithm": "RFC 8624; RFC 9905",
+    "DNSSEC DS digest": "RFC 8624 §3.3; RFC 9905",
+    "Nameserver delegation match": "RFC 1034 §4.2.2",
+    "Nameserver SOA serials": "RFC 1996; IANA name server requirements",
     "SOA timers": "RFC 1912 §2.2; RFC 2308 §5",
     "Nameservers on IPv6": "RFC 3901",
     "Nameserver networks": "RFC 2182 §3.1",
@@ -441,6 +445,18 @@ _CHECK_TEXT = {
         "Expect-CT asked browsers to require Certificate Transparency. Browsers now require it anyway and ignore the header.",
         "It is harmless, but does nothing.",
         "Remove the Expect-CT header."),
+    "DNSSEC DS digest": (
+        "The DS record in the parent zone holds a hash of the zone's signing key, and names the hash algorithm it used.",
+        "SHA-1 is no longer considered safe, and RFC 9905 says it must not be used for DS records. Validators still accept it today; replacing it now avoids a scramble when they stop.",
+        "Publish a SHA-256 (digest type 2) DS record through the registrar, then remove the SHA-1 one."),
+    "Nameserver delegation match": (
+        "The parent zone (for most domains, the registry) and the zone itself each list the domain's nameservers, and the two lists should match.",
+        "When they differ, resolvers use whichever list they saw, so a server on only one list gets some of the queries or none of them, and old servers linger after a move to a new DNS provider.",
+        "Change the nameservers at the registrar, or the NS records in the zone, so both list the same servers."),
+    "Nameserver SOA serials": (
+        "The SOA serial is the zone's version number, and every nameserver should serve the same one.",
+        "A server with a different serial is serving a different copy of the zone, so some visitors get out-of-date records. A difference can be momentary while an update spreads.",
+        "Check that zone transfers (or the provider's sync) reach every server, and that no secondary is failing to refresh."),
     "Page language declared": (
         "The lang attribute on <html> names the page's language.",
         "Screen readers use it to pick a voice and pronunciation, and browsers to offer translation. WCAG 2.1 requires it (success criterion 3.1.1).",
@@ -1121,6 +1137,32 @@ def _ev_deprecated_headers(G):
                ("Expect-CT", s.get("expect_ct") or "not sent"))
 
 
+def _ev_ds(G):
+    types = G("dnssec").get("domain", {}).get("ds_digest_types") or []
+    return _kv(("DS digest types", ", ".join(f"{t} ({_t._DS_DIGEST_NAMES.get(t, 'unknown')})" for t in types)))
+
+
+def _ev_delegation(G):
+    from .audit_checks import delegation_diff
+    h = G("ns_health")
+    p = h.get("parent") or {}
+    out = _kv(("Parent zone", p.get("zone")), ("Asked", p.get("server")),
+              ("Delegated at the parent", ", ".join(p.get("ns") or [])))
+    diff = delegation_diff(h)
+    if diff:
+        parent, zone, odd = diff
+        out += _kv(("NS records in the zone", ", ".join(sorted(zone))),
+                   ("Only at the parent", ", ".join(sorted(parent - zone)) or None),
+                   ("Only in the zone", ", ".join(sorted(zone - parent)) or None))
+        out += _list("Servers that list a different set", [f"{s}: {', '.join(sorted(v))}" for s, v in odd.items()])
+    return out
+
+
+def _ev_serials(G):
+    serials = G("ns_health").get("serials") or {}
+    return _list("SOA serial by nameserver", [f"{h}: {s}" for h, s in serials.items()])
+
+
 def _ev_lang(G):
     a = G("page_signals").get("a11y") or {}
     return _kv(("<html lang>", a.get("html_lang") or "not set"))
@@ -1177,6 +1219,8 @@ _EVIDENCE = {
     "Null MX on no-mail domain": _ev_null_mx,
     "MTA-STS policy MX match": _ev_mta_sts_mx, "MTA-STS max_age": _ev_mta_sts_mx,
     "Dangling CNAME": _ev_dangling, "DNSSEC algorithm": _ev_dnssec_alg, "SOA timers": _ev_soa,
+    "DNSSEC DS digest": _ev_ds, "Nameserver delegation match": _ev_delegation,
+    "Nameserver SOA serials": _ev_serials,
     "Nameservers on IPv6": _ev_infra("ns"), "Nameserver networks": _ev_infra("ns"),
     "Nameserver RPKI": _ev_infra("ns"),
     "Mail servers on IPv6": _ev_infra("mx"), "Mail server RPKI": _ev_infra("mx"),

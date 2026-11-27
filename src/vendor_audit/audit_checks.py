@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.11"
+__version__ = "3.5.12"
 
 # Every request the audit sends names the tool and where to find out about
 # it, so an operator who sees it in their logs can tell who is checking
@@ -69,6 +69,7 @@ import dns.flags
 import dns.rcode
 import dns.exception
 import dns.reversename
+import dns.name
 
 import httpx
 import tldextract as _tldextract
@@ -1792,6 +1793,15 @@ def check_ns_health(domain, *, ns_list=None, timeout=2.5):
                       reach (DNS resolution failed, UDP timeout, etc.)
       ns_list:        the NS list we tested (echo back for renderers)
       error:          set only if we couldn't get the NS list at all
+
+    3.5.12 adds, from the same probes plus one query to the parent zone:
+      ns_sets:        {ns_hostname: [NS names it serves for the zone]},
+                      from the authoritative answer to the step-2 query
+      serials:        {ns_hostname: SOA serial it serves}
+      parent:         {"zone", "server", "ns": [names]} — the delegation
+                      the parent zone's server hands out (RFC 1034 §4.2.2:
+                      both sides of a zone cut should list the same NS
+                      records), or {"error"} when it couldn't be read
     """
     # Get the NS list to probe. Caller can pre-supply (saves a DNS query
     # when check_ns_soa already ran in this audit) or we fetch it ourselves.
@@ -1831,6 +1841,9 @@ def check_ns_health(domain, *, ns_list=None, timeout=2.5):
     lame:        list[str]                 = []
     open_recur:  list[str]                 = []
     versions:    dict[str, str]            = {}
+    ns_sets:     dict[str, list[str]]      = {}
+    serials:     dict[str, int]            = {}
+    parent:      dict                      = {}
     unprobed:    list[tuple[str, str]]     = []
     results_lock = threading.Lock()
 
@@ -1862,10 +1875,35 @@ def check_ns_health(domain, *, ns_list=None, timeout=2.5):
             if not aa_set:
                 with results_lock:
                     lame.append(ns_host)
+            else:
+                # 3.5.12: the NS set this server serves for the zone.
+                names = sorted({rd.target.to_text().rstrip(".").lower()
+                                for rrset in r1.answer if rrset.rdtype == dns.rdatatype.NS
+                                for rd in rrset})
+                if names:
+                    with results_lock:
+                        ns_sets[ns_host] = names
         except (dns.exception.DNSException, OSError):
             with results_lock:
                 unprobed.append((ns_host, "lame_probe_failed"))
             return
+
+        # Step 2b (3.5.12): the SOA serial this server serves. Every
+        # authoritative server should serve the same one (RFC 1996; IANA's
+        # name server requirements); a lagging one serves an old zone.
+        if aa_set:
+            try:
+                qs = dns.message.make_query(domain, "SOA")
+                qs.flags &= ~dns.flags.RD
+                rs = dns.query.udp(qs, ns_ip, timeout=timeout)
+                if rs.flags & dns.flags.AA:
+                    for rrset in rs.answer:
+                        if rrset.rdtype == dns.rdatatype.SOA:
+                            with results_lock:
+                                serials[ns_host] = int(rrset[0].serial)
+                            break
+            except (dns.exception.DNSException, OSError, ValueError, IndexError):
+                pass
 
         # Step 3: open-recursor probe — query for a third-party zone with
         # RD set; flag as open if the response has RA + answer + NOERROR
@@ -1915,9 +1953,17 @@ def check_ns_health(domain, *, ns_list=None, timeout=2.5):
             except (dns.exception.DNSException, OSError, ValueError):
                 pass
 
+    def _probe_parent():
+        # 3.5.12: the delegation as the parent zone hands it out. One NS
+        # query to one of the parent's servers, RD clear: the answer is a
+        # referral whose authority section lists the delegated NS names.
+        got = _parent_delegation(domain, timeout)
+        with results_lock:
+            parent.update(got)
+
     threads = []
-    for ns in ns_list:
-        t = threading.Thread(target=_probe_one, args=(ns,), daemon=True)
+    for target, args in [(_probe_one, (ns,)) for ns in ns_list] + [(_probe_parent, ())]:
+        t = threading.Thread(target=target, args=args, daemon=True)
         t.start()
         threads.append(t)
     for t in threads:
@@ -1949,15 +1995,58 @@ def check_ns_health(domain, *, ns_list=None, timeout=2.5):
             "error":            "dns_intercepted",
         }
 
-    return {
-        "lame_ns":          sorted(lame),
-        "open_resolver_ns": sorted(open_recur),
-        "probed":           probed,
-        "unprobed":         unprobed,
-        "ns_list":          ns_list,
-        "versions":         dict(sorted(versions.items())),
-        "error":            None,
-    }
+    with results_lock:
+        return {
+            "lame_ns":          sorted(lame),
+            "open_resolver_ns": sorted(open_recur),
+            "probed":           probed,
+            "unprobed":         unprobed,
+            "ns_list":          ns_list,
+            "versions":         dict(sorted(versions.items())),
+            "ns_sets":          dict(sorted(ns_sets.items())),
+            "serials":          dict(sorted(serials.items())),
+            "parent":           dict(parent) or {"error": "no_answer"},
+            "error":            None,
+        }
+
+
+def _parent_delegation(domain, timeout=2.5):
+    """{"zone", "server", "ns": [names]}: the NS names the parent zone's
+    servers delegate `domain` to, or {"error": reason}.
+
+    The parent is the nearest enclosing name with NS records ("com" for
+    example.com, "example.com" for a delegated dept.example.com). Up to two
+    of its servers are asked, at public addresses only."""
+    labels = domain.rstrip(".").lower().split(".")
+    for i in range(1, len(labels)):
+        zone = ".".join(labels[i:])
+        servers = resolve(zone, "NS", lifetime=2.0)
+        if resolve_error(servers) or not servers:
+            continue
+        for server in sorted(r.rstrip(".").lower() for r in servers)[:2]:
+            # An IPv4 address first; AAAA only for a server without one.
+            addrs = [a for a in resolve(server, "A", lifetime=1.5) if not a.startswith("ERROR:") and _is_public_ip(a)]
+            if not addrs:
+                addrs = [a for a in resolve(server, "AAAA", lifetime=1.5)
+                         if not a.startswith("ERROR:") and _is_public_ip(a)]
+            if not addrs:
+                continue
+            try:
+                q = dns.message.make_query(domain, "NS")
+                q.flags &= ~dns.flags.RD
+                r = dns.query.udp(q, addrs[0], timeout=min(timeout, 2.0))
+            except (dns.exception.DNSException, OSError):
+                continue
+            want = dns.name.from_text(domain)
+            names = sorted({rd.target.to_text().rstrip(".").lower()
+                            for rrset in list(r.authority) + list(r.answer)
+                            if rrset.rdtype == dns.rdatatype.NS and rrset.name == want
+                            for rd in rrset})
+            if names:
+                return {"zone": zone, "server": server, "ns": names}
+            return {"zone": zone, "server": server, "error": "no_delegation"}
+        return {"zone": zone, "error": "parent_unreachable"}
+    return {"error": "no_parent"}
 
 
 # ── IP routing / RPKI ─────────────────────────────────────────────────────────
@@ -2506,10 +2595,25 @@ def check_dnssec(domain):
             return {"ad_error": "timeout_or_unreachable"}
         return {"ad_flag": bool(resp.flags & dns.flags.AD)}
 
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    def _check_domain_ds():
+        # 3.5.12: the digest types of the DS records in the parent zone
+        # ("key tag, algorithm, digest type, digest"). RFC 8624 §3.3 and
+        # RFC 9905: SHA-1 (1) and GOST (3) must not be used for new DS.
+        records = resolve(domain, "DS", lifetime=3.0)
+        if resolve_error(records):
+            return
+        types = set()
+        for rec in records:
+            parts = rec.split()
+            if len(parts) >= 3 and parts[2].isdigit():
+                types.add(int(parts[2]))
+        result["domain"]["ds_digest_types"] = sorted(types)
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
         tld_fut    = ex.submit(_check_tld)
         dnskey_fut = ex.submit(_check_domain_dnskey)
         ad_fut     = ex.submit(_check_domain_ad)
+        ex.submit(_check_domain_ds)
 
     tld_res = tld_fut.result()
     if tld_res.get("error"):
@@ -6614,6 +6718,48 @@ def _cert_sig_outcome(tls):
     return "weak_signature" if ("sha1" in sig or "md5" in sig) else "strong"
 
 
+# DS digest types (RFC 8624 §3.3, RFC 9905): SHA-256 (2) and SHA-384 (4)
+# are current; SHA-1 (1) and GOST R 34.11-94 (3) must not be used for new
+# DS records, though validators still accept SHA-1.
+_DS_MODERN_DIGESTS = {2, 4}
+_DS_DEPRECATED_DIGESTS = {1, 3}
+
+
+def _ds_digest_outcome(dom):
+    """"modern", "sha1_extra" (a deprecated DS beside a current one),
+    "sha1_only", or None when there are no DS records to judge."""
+    types = set(dom.get("ds_digest_types") or [])
+    if types & _DS_MODERN_DIGESTS:
+        return "sha1_extra" if types & _DS_DEPRECATED_DIGESTS else "modern"
+    if types & _DS_DEPRECATED_DIGESTS:
+        return "sha1_only"
+    return None
+
+
+def delegation_diff(ns_health):
+    """(parent set, zone set, per-server sets that differ) for the
+    nameserver delegation check, or None when the parent's list wasn't
+    read. The zone's own list is what its servers serve (falling back to
+    the resolver's answer when none answered authoritatively)."""
+    parent = set((ns_health.get("parent") or {}).get("ns") or [])
+    if not parent:
+        return None
+    sets = {h: set(v) for h, v in (ns_health.get("ns_sets") or {}).items()}
+    zone = set().union(*sets.values()) if sets else set(ns_health.get("ns_list") or [])
+    if not zone:
+        return None
+    odd = {h: v for h, v in sets.items() if v != zone}
+    return parent, zone, odd
+
+
+def _delegation_outcome(ns_health):
+    diff = delegation_diff(ns_health)
+    if diff is None:
+        return None
+    parent, zone, odd = diff
+    return "match" if parent == zone and not odd else "mismatch"
+
+
 # DNSKEY algorithms fit for signing (RFC 8624, RFC 9905): RSASHA256,
 # ECDSAP256SHA256, ECDSAP384SHA384, ED25519, ED448.
 _DNSSEC_MODERN_ALGS = {8, 13, 14, 15, 16}
@@ -7001,6 +7147,10 @@ def _collect_outcomes(results):
                 _p("DNSSEC algorithm", "not_recommended")
             else:
                 _p("DNSSEC algorithm", "deprecated")
+        # 3.5.12: the DS digest in the parent zone.
+        outcome = _ds_digest_outcome(dom_d) if dom_d.get("dnskey") else None
+        if outcome:
+            _p("DNSSEC DS digest", outcome)
 
     # ── TLS ───────────────────────────────────────────────────────────────────
     if not tls.get("error"):
@@ -7295,6 +7445,13 @@ def _collect_outcomes(results):
         else:
             _p("Authoritative delegation", "unprobed")
             _p("NS not open resolver",     "unprobed")
+        # 3.5.12: both sides of the zone cut, and the servers' copies.
+        outcome = _delegation_outcome(ns_health)
+        if outcome:
+            _p("Nameserver delegation match", outcome)
+        serials = set((ns_health.get("serials") or {}).values())
+        if len(ns_health.get("serials") or {}) >= 2:
+            _p("Nameserver SOA serials", "same" if len(serials) == 1 else "differ")
 
     # ── 3.4: SOA timers, dangling CNAMEs, nameserver and mail addresses ─────
     soa = ns_soa.get("soa")

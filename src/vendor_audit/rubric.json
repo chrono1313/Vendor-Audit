@@ -1,5 +1,5 @@
 {
-  "rubric_version": "3.5.11",
+  "rubric_version": "3.5.12",
   "compatible_with": "vendor_audit 2.x",
   "_comment": "Severity rubric. There are no points and nothing is added up. 'findings' maps each check label to its possible outcomes, and each outcome to [severity, text]. Severities: critical = broken or unsupported today; high = an important protection is missing or weak; medium = an expected practice is missing; low = a refinement; info = optional, or could not be determined (listed, never counted); pass = the practice is met. audit_checks.assess_results() decides WHICH outcome applies; this file decides how serious it is and how it reads. An outcome that is not listed produces no finding. One cause, one finding: DNSSEC and clickjacking protection are each a single check, and HSTS max-age and includeSubDomains are rated only when the header is set (a missing header is one finding). End-of-life findings carry a dynamic label ('EOL OS: ubuntu 18.04') and take their severity from 'eol_severity'.",
   "severities": [
@@ -119,11 +119,14 @@
       "DNSSEC",
       "DNSSEC TLD signed",
       "DNSSEC algorithm",
+      "DNSSEC DS digest",
       "CAA records",
       "Nameserver count",
       "Authoritative delegation",
+      "Nameserver delegation match",
       "NS not open resolver",
       "SOA timers",
+      "Nameserver SOA serials",
       "Nameservers on IPv6",
       "Nameserver networks",
       "Dangling CNAME"
@@ -498,6 +501,16 @@
       "some_lame": [
         "high",
         "At least one nameserver listed at the parent registry is lame — it does not answer authoritatively for this zone (RFC 1034)"
+      ]
+    },
+    "Nameserver delegation match": {
+      "match": [
+        "pass",
+        "The nameservers delegated at the parent zone match the zone's own NS records"
+      ],
+      "mismatch": [
+        "low",
+        "The nameservers delegated at the parent zone differ from the zone's own NS records"
       ]
     },
     "NS not open resolver": {
@@ -1286,6 +1299,20 @@
         "DNSSEC signs only with a forbidden algorithm (such as SHA-1) — validators treat the zone as unsigned"
       ]
     },
+    "DNSSEC DS digest": {
+      "modern": [
+        "pass",
+        "DS records use SHA-256 or stronger"
+      ],
+      "sha1_extra": [
+        "low",
+        "A deprecated SHA-1 DS record is still published beside a SHA-256 one"
+      ],
+      "sha1_only": [
+        "low",
+        "DS records use only a deprecated digest (SHA-1) — RFC 9905 says not to"
+      ]
+    },
     "SOA timers": {
       "within_guidance": [
         "pass",
@@ -1294,6 +1321,16 @@
       "outside_guidance": [
         "info",
         "SOA timers outside RFC guidance"
+      ]
+    },
+    "Nameserver SOA serials": {
+      "same": [
+        "pass",
+        "Every nameserver serves the same SOA serial"
+      ],
+      "differ": [
+        "low",
+        "Nameservers serve different SOA serials — at least one may be serving an out-of-date copy of the zone"
       ]
     },
     "Nameservers on IPv6": {

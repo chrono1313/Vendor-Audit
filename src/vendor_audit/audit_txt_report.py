@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.11"
+__version__ = "3.5.12"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -239,6 +239,9 @@ SEVERITY_TITLES = {
 
 
 # DNSKEY algorithm numbers (IANA registry), for the DNSSEC detail line.
+# DS digest types (IANA "Digest Algorithms" registry), 3.5.12.
+_DS_DIGEST_NAMES = {1: "SHA-1", 2: "SHA-256", 3: "GOST R 34.11-94", 4: "SHA-384"}
+
 _DNSSEC_ALG_NAMES = {
     1: "RSAMD5", 3: "DSA", 5: "RSASHA1", 6: "DSA-NSEC3-SHA1", 7: "RSASHA1-NSEC3-SHA1",
     8: "RSASHA256", 10: "RSASHA512", 12: "ECC-GOST", 13: "ECDSAP256SHA256",
@@ -448,6 +451,7 @@ _CRITICALITY_RANK_TABLE = {
     "DNSSEC TLD signed":            43,
     "DNSSEC":                       44,
     "DNSSEC algorithm":             44,
+    "DNSSEC DS digest":             44,
     "Cert chain completeness":      45,
     "Certificate key size":         45,
     "Certificate signature":        45,
@@ -457,6 +461,7 @@ _CRITICALITY_RANK_TABLE = {
     "DKIM key strength":            48,
     "DKIM (common selectors)":      48,
     "Authoritative delegation":     49,   # lame NS = some users get NODATA/SERVFAIL
+    "Nameserver delegation match":  49,
     "NS not open resolver":         50,   # DDoS-amp risk; not a takeover but real
     "MX targets not CNAMEs":        51,   # RFC 2181 violation; sending MTAs vary
     "MX targets are hostnames":     51,   # RFC 5321 violation
@@ -502,6 +507,7 @@ _CRITICALITY_RANK_TABLE = {
     "Mail servers on IPv6":         85,
     "Nameserver count":             86,
     "Nameserver networks":          86,
+    "Nameserver SOA serials":       87,
     "SOA timers":                   88,
     "HTTP version":                 89,
     "Redirect first-hop hygiene":   90,
@@ -2200,6 +2206,20 @@ def _render_dns_section(data):
                     f"Signing algorithm: {names} — must not be used (RFC 8624, RFC 9905)",
                     sub_lines=["Validating resolvers treat a zone signed only with it as unsigned"],
                     check="DNSSEC algorithm"))
+        # 3.5.12: the DS record's digest, in the parent zone.
+        from .audit_checks import _ds_digest_outcome
+        ds_o = _ds_digest_outcome(dom_d) if dom_d.get("dnskey") else None
+        if ds_o:
+            names = ", ".join(f"{t} ({_DS_DIGEST_NAMES.get(t, 'unknown')})" for t in dom_d.get("ds_digest_types") or [])
+            if ds_o == "modern":
+                parts.append(_status("pass", f"DS digest: {names}", check="DNSSEC DS digest"))
+            elif ds_o == "sha1_extra":
+                parts.append(_status("warn", f"DS digest: {names} — remove the SHA-1 DS record (RFC 9905)",
+                                     check="DNSSEC DS digest"))
+            else:
+                parts.append(_status("warn", f"DS digest: {names} — must not be used (RFC 8624, RFC 9905)",
+                                     sub_lines=["Publish a SHA-256 (type 2) DS record through the registrar"],
+                                     check="DNSSEC DS digest"))
         parts.append("")
         parts.append("")
 
@@ -2277,6 +2297,37 @@ def _render_dns_section(data):
                 else:
                     parts.append(_status("pass",
                         "Nameservers do not serve open recursion", check="NS not open resolver"))
+
+                # 3.5.12: the parent's delegation, and each server's copy.
+                from .audit_checks import delegation_diff
+                diff = delegation_diff(ns_health)
+                if diff:
+                    parent, zone, odd = diff
+                    pz = (ns_health.get("parent") or {}).get("zone")
+                    if parent == zone and not odd:
+                        parts.append(_status("pass",
+                            f"The parent zone ({pz}) delegates to the same nameservers the zone lists",
+                            check="Nameserver delegation match"))
+                    else:
+                        sub = []
+                        if parent - zone:
+                            sub.append(f"Only at the parent ({pz}): {', '.join(sorted(parent - zone))}")
+                        if zone - parent:
+                            sub.append(f"Only in the zone's NS records: {', '.join(sorted(zone - parent))}")
+                        sub += [f"{h} lists: {', '.join(sorted(v))}" for h, v in odd.items()]
+                        parts.append(_status("warn",
+                            f"The parent zone ({pz}) and the zone list different nameservers (RFC 1034 §4.2.2)",
+                            sub_lines=sub, check="Nameserver delegation match"))
+                serials = ns_health.get("serials") or {}
+                if len(serials) >= 2:
+                    if len(set(serials.values())) == 1:
+                        parts.append(_status("pass",
+                            f"Every nameserver serves SOA serial {next(iter(serials.values()))}",
+                            check="Nameserver SOA serials"))
+                    else:
+                        parts.append(_status("warn", "Nameservers serve different SOA serials",
+                            sub_lines=[f"{h}: {v}" for h, v in serials.items()],
+                            check="Nameserver SOA serials"))
 
                 unprobed = ns_health.get("unprobed") or []
                 for ns_host, reason in unprobed:

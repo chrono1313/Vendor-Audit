@@ -57,7 +57,7 @@ vendor-audit example.com --deep --report
 vendor-audit --file domains.txt --outcsv results.csv
 ```
 
-A default run makes 87 checks in one to two seconds, and `--deep` adds 5 more
+A default run makes 90 checks in one to two seconds, and `--deep` adds 5 more
 and 3–5 seconds. In bulk mode (`--file`) domains are audited 10 at a time, so
 200 domains usually take under a minute. `--ssl` adds an SSL Labs grade;
 it runs one domain at a time and adds 1–2 minutes per domain, because SSL
@@ -145,7 +145,7 @@ values mean nothing.
 
 ## What it checks
 
-Vendor Audit has 93 checks in six categories: 87 run on every scan, 5 more
+Vendor Audit has 96 checks in six categories: 90 run on every scan, 5 more
 with `--deep`, and the SSL Labs grade with `--ssl`. On top of those, each
 operating system, server or library version detected gets its own end-of-life
 check. Checks that don't apply to a domain are skipped (mail checks for a
@@ -162,10 +162,12 @@ for domains that receive no mail, MTA-STS (record, policy fetch, policy
 covering every MX host, `max_age`), TLS-RPT, BIMI, DANE TLSA on MX (`--deep`),
 STARTTLS-MX (`--deep`).
 
-**DNS** — DNSSEC chain validation (TLD signing, DNSKEY, AD flag) and signing
-algorithm, CAA records, nameserver count, authoritative delegation, open
-resolvers, SOA timers, nameservers on IPv6 and spread over networks, and
-CNAMEs that point at names which no longer exist (subdomain takeover).
+**DNS** — DNSSEC chain validation (TLD signing, DNSKEY, AD flag), signing
+algorithm and DS digest, CAA records, nameserver count, authoritative
+delegation, parent and zone listing the same nameservers, every nameserver
+serving the same SOA serial, open resolvers, SOA timers, nameservers on IPv6
+and spread over networks, and CNAMEs that point at names which no longer
+exist (subdomain takeover).
 
 **Routing** — IPv6 reachability, IPv4 / IPv6 RPKI ROA coverage, IPv4 / IPv6
 IRR/RIS presence (via RIPEstat), and RPKI for the nameservers' and mail
