@@ -173,7 +173,8 @@ def _req(domain, ip, flags=""):
 
 def test_page_and_server():
     lv = _tool()
-    journal = _journal((NOW - 300, _req("example.com", "203.0.113.7")),
+    journal = _journal((NOW - 400, _req("deep.example", "203.0.113.7", " deep=1")),
+                       (NOW - 300, _req("example.com", "203.0.113.7")),
                        (NOW - 200, _req("vendoraudit.org", "198.51.100.2", " fresh=1")),
                        (NOW - 198, "audit cache hit (fresh): domain='vendoraudit.org' ip=198.51.100.2"),
                        (NOW - 100, _req("<script>x.example", "203.0.113.7")))
@@ -188,14 +189,15 @@ def test_page_and_server():
         rows_all = lv.read_rows("24 hours ago", include_follow_ups=True)
     check(ran[0][:2] == ["journalctl", "--namespace=vendor-audit"] and "--since" in ran[0],
           f"reads the vendor-audit namespace: {ran[0]}")
-    check([r["domain"] for r in rows] == ["example.com", "vendoraudit.org", "<script>x.example"],
+    check([r["domain"] for r in rows] == ["deep.example", "example.com", "vendoraudit.org", "<script>x.example"],
           f"rows, with the re-audit's follow-up folded: {[r['domain'] for r in rows]}")
-    check(len(rows_all) == 4, "all=1 keeps the follow-up")
+    check(len(rows_all) == 5, "all=1 keeps the follow-up")
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), lv.Handler)
     server.verifier, _ = verifier(lv)
     from zoneinfo import ZoneInfo
-    server.config = {"tz": ZoneInfo("UTC"), "tz_name": "UTC", "namespace": "vendor-audit"}
+    server.config = {"tz": ZoneInfo("UTC"), "tz_name": "UTC", "namespace": "vendor-audit",
+                     "site": "https://site.example"}
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
 
@@ -225,6 +227,14 @@ def test_page_and_server():
                   and headers.get("Cache-Control") == "no-store"
                   and "noindex" in headers.get("X-Robots-Tag", ""), "locked-down headers")
             check("<script" not in body.replace("&lt;script", ""), "the page itself has no script")
+            # Each row links to the domain's result page on the public site
+            # (cached, or audited again), deep audits to the deep result.
+            check('href="https://site.example/audit/result?domain=example.com" target=_blank' in body,
+                  "a View link to the result page")
+            check('href="https://site.example/audit/result?domain=deep.example&amp;deep=1"' in body
+                  and "View deep" in body, "a deep audit links to the deep result")
+            check("domain=%3Cscript%3Ex.example" in body, "the domain is URL-encoded in the link")
+            check('rel="noopener noreferrer"' in body, "opened without a referrer")
             body = get("/?ip=198.51.100.2", tok)[1]
             check("vendoraudit.org" in body and ">example.com<" not in body, "filter by visitor")
             body = get("/?domain=198.51.100.2", tok)[1]
@@ -234,7 +244,8 @@ def test_page_and_server():
             check("--since" in ran[-1] and ran[-1][ran[-1].index("--since") + 1] == "30 days ago",
                   "a filter looks back 30 days")
             body = get("/?view=top&since=7d", tok)[1]
-            check("Visitors (2)" in body and "Domains (3)" in body, "top view")
+            check("Visitors (2)" in body and "Domains (4)" in body, "top view")
+            check('https://site.example/audit/result?domain=vendoraudit.org' in body, "top view links too")
             check(get("/?since=forever", tok)[0] == 200, "an unknown period falls back")
             check(get("/?" + "&".join(f"a{i}=1" for i in range(50)), tok)[0] == 200, "too many fields: ignored")
     finally:
@@ -247,8 +258,13 @@ def test_config_and_unit():
     cfg = lv.config_from_env({"ACCESS_TEAM_DOMAIN": "Solitary-Sun.cloudflareaccess.com", "ACCESS_AUD": AUD.upper(),
                               "LOGVIEW_TZ": "America/Los_Angeles"})
     check(cfg["team"] == "solitary-sun.cloudflareaccess.com" and cfg["aud"] == AUD and cfg["port"] == 8001, f"{cfg}")
+    check(cfg["site"] == "https://vendoraudit.org", "View links go to the public site by default")
+    check(lv.config_from_env({"ACCESS_TEAM_DOMAIN": TEAM, "ACCESS_AUD": AUD,
+                              "LOGVIEW_SITE": "https://audit.example/"})["site"] == "https://audit.example",
+          "LOGVIEW_SITE")
     for env in ({"ACCESS_TEAM_DOMAIN": "evil.example.com", "ACCESS_AUD": AUD},
-                {"ACCESS_TEAM_DOMAIN": TEAM, "ACCESS_AUD": "short"}, {}):
+                {"ACCESS_TEAM_DOMAIN": TEAM, "ACCESS_AUD": "short"}, {},
+                {"ACCESS_TEAM_DOMAIN": TEAM, "ACCESS_AUD": AUD, "LOGVIEW_SITE": "javascript:alert(1)"}):
         try:
             lv.config_from_env(env)
             check(False, f"bad config accepted: {env}")

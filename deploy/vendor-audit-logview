@@ -24,6 +24,10 @@ Configuration (deploy/vendor-audit-logview.service, EnvironmentFile
     ACCESS_AUD          the Access application's AUD tag (64 hex digits)
     LOGVIEW_TZ          time zone for the page (default UTC)
     LOGVIEW_PORT        default 8001
+    LOGVIEW_SITE        the public site, for each row's "View" link to
+                        that domain's result page (default
+                        https://vendoraudit.org): a cached result if
+                        there is one, otherwise the site audits it again
 
 Read-only: it runs journalctl on the vendor-audit namespace and nothing
 else. Standard library only; reuses the parsing in vendor-audit-log,
@@ -208,7 +212,9 @@ form{display:flex;gap:6px;margin:8px 0 12px}
 input{flex:1;min-width:0;padding:7px 9px;font:inherit;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
 button{padding:7px 12px;font:inherit;border:1px solid var(--line);border-radius:8px;background:var(--chip);color:var(--fg)}
 .row{padding:9px 0;border-top:1px solid var(--line)}
-.row .d{font-weight:600;word-break:break-all}
+.row .d{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.row .d a:first-child{font-weight:600;word-break:break-all}
+.row .d a.v{white-space:nowrap;font-size:14px}
 .row .m{color:var(--mute);font-size:13px;word-break:break-all}
 .top h2{font-size:16px;margin:18px 0 6px}
 .top div{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid var(--line);word-break:break-all}
@@ -219,7 +225,13 @@ def _href(**params):
     return "/?" + urlencode({k: v for k, v in params.items() if v})
 
 
-def render(query, rows_for, tz_name="UTC", viewer=""):
+def _result_url(site, domain, deep=False):
+    """The public result page for a domain: served from the site's cache
+    when it has a result, otherwise audited again."""
+    return f"{site}/audit/result?" + urlencode({"domain": domain, **({"deep": "1"} if deep else {})})
+
+
+def render(query, rows_for, tz_name="UTC", viewer="", site="https://vendoraudit.org"):
     """The page for a query dict (from parse_qs); rows_for(since) reads the log."""
     q = {k: (v[0] if v else "") for k, v in query.items()}
     ip = q.get("ip", "").strip()[:64]
@@ -270,15 +282,20 @@ def render(query, rows_for, tz_name="UTC", viewer=""):
             parts.append(f"<h2>{title} ({len(counts)})</h2>")
             for name, n in counts.most_common(25):
                 link = esc(_href(since=since, **{key: name}))
-                parts.append(f'<div><a href="{link}">{esc(name)}</a><span>{n}</span></div>')
+                view = (f' · <a href="{esc(_result_url(site, name))}" target=_blank rel="noopener noreferrer">View</a>'
+                        if key == "domain" else "")
+                parts.append(f'<div><span><a href="{link}">{esc(name)}</a>{view}</span><span>{n}</span></div>')
         parts.append("</div>")
     else:
         shown = list(reversed(rows))[:MAX_ROWS]
         for r in shown:
             when = f"{r['time']:%b %d %H:%M:%S}"
+            deep = "deep" in r["what"]
+            view = esc(_result_url(site, r["domain"], deep))
             parts.append(
                 f'<div class=row><div class=d><a href="{esc(_href(domain=r["domain"], since=since))}">'
-                f'{esc(r["domain"])}</a></div><div class=m>{esc(when)} · {esc(r["what"])} · '
+                f'{esc(r["domain"])}</a><a class=v href="{view}" target=_blank rel="noopener noreferrer">'
+                f'View{" deep" if deep else ""} \u203a</a></div><div class=m>{esc(when)} · {esc(r["what"])} · '
                 f'<a href="{esc(_href(ip=r["ip"], since=since))}">{esc(r["ip"])}</a></div></div>')
         if len(rows) > MAX_ROWS:
             parts.append(f"<p class=mute>Showing the newest {MAX_ROWS}. Narrow it with a filter.</p>")
@@ -339,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
             query = {}
         page = render(query,
                       lambda since, all_: read_rows(since, cfg["tz"], cfg["namespace"], all_),
-                      cfg["tz_name"], claims.get("email", ""))
+                      cfg["tz_name"], claims.get("email", ""), cfg["site"])
         self._send(200, page, "text/html; charset=utf-8")
 
     def log_message(self, fmt, *args):            # one short line per request, no query string
@@ -355,8 +372,11 @@ def config_from_env(env=os.environ):
     if not _AUD_RE.fullmatch(aud):
         raise SystemExit("vendor-audit-logview: ACCESS_AUD must be the application's 64-hex-digit AUD tag")
     tz_name = env.get("LOGVIEW_TZ", "UTC").strip() or "UTC"
+    site = env.get("LOGVIEW_SITE", "https://vendoraudit.org").strip().rstrip("/")
+    if not re.fullmatch(r"https://[a-z0-9.-]+", site):
+        raise SystemExit("vendor-audit-logview: LOGVIEW_SITE must be https://<hostname>")
     from zoneinfo import ZoneInfo
-    return {"team": team, "aud": aud, "tz_name": tz_name, "tz": ZoneInfo(tz_name),
+    return {"team": team, "aud": aud, "tz_name": tz_name, "tz": ZoneInfo(tz_name), "site": site,
             "port": int(env.get("LOGVIEW_PORT", "8001")), "namespace": LOG.NAMESPACE}
 
 
