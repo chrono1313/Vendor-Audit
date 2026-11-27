@@ -7,7 +7,7 @@ The web layer wraps the audit library in a small HTTP service:
   GET  /audit/<domain>.md      — text report (Markdown), cached or re-run
   GET  /audit/<domain>.html    — offline copy of the result page
   GET  /healthz                — liveness probe (no audit)
-  GET  /robots.txt             — Disallow: /
+  GET  /robots.txt             — front page open to crawlers, /audit closed
 
 The application is meant to bind to 127.0.0.1 only and sit behind cloudflared
 (or another tunnel) which provides TLS and the public path. Direct exposure
@@ -1168,13 +1168,17 @@ async def healthz():
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 async def robots():
-    """Disallow everything. The handoff specifies this.
+    """The front page may be crawled and indexed; everything under /audit
+    may not.
 
-    The audit results don't need to be in any search index — they're
-    re-run each time, and indexing them would suggest they're authoritative
-    longer than they are.
+    Fetching an /audit URL runs an audit of someone else's domain, so a
+    crawler following result links would make this server audit sites on
+    its behalf. The results also don't belong in a search index: they're
+    re-run each time, and indexing them would suggest they're
+    authoritative longer than they are. (Before going public this was
+    "Disallow: /", as the handoff specified.)
     """
-    return PlainTextResponse(content="User-agent: *\nDisallow: /\n")
+    return PlainTextResponse(content="User-agent: *\nDisallow: /audit\n")
 
 
 # ── security.txt (RFC 9116) ──────────────────────────────────────────────────
