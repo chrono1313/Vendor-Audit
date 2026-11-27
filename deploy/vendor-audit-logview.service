@@ -1,0 +1,72 @@
+[Unit]
+# The audit log as a web page (deploy/vendor-audit-logview), for reading
+# on a phone. It listens on 127.0.0.1:8001 only; cloudflared publishes it
+# at its own hostname, behind Cloudflare Access (deploy/INSTALL.md,
+# "Audit log page").
+#
+# Install:  /etc/systemd/system/vendor-audit-logview.service
+# Verify:   systemd-analyze security vendor-audit-logview
+Description=Vendor Audit log page (behind Cloudflare Access)
+Documentation=https://github.com/chrono1313/Vendor-Audit
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=60s
+
+[Service]
+Type=exec
+
+# A throwaway user made up at start and never written to disk. Its only
+# extra right is the systemd-journal group, to read the vendor-audit
+# journal namespace. It is not the vendor-audit user: the web app itself
+# still can't read its own log.
+DynamicUser=yes
+SupplementaryGroups=systemd-journal
+
+# ACCESS_TEAM_DOMAIN, ACCESS_AUD, LOGVIEW_TZ (deploy/logview.env.example).
+EnvironmentFile=/etc/vendor-audit/logview.env
+
+# System Python, isolated mode (-I: no user site-packages, no PYTHONPATH,
+# no current directory on the path). Standard library only.
+ExecStart=/usr/bin/python3 -I /opt/vendor-audit/deploy/vendor-audit-logview
+WorkingDirectory=/
+Restart=on-failure
+RestartSec=3s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vendor-audit-logview
+
+# Same sandbox as vendor-audit.service (see the notes there).
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RemoveIPC=yes
+UMask=0077
+# IPv4/IPv6 for its listener and for fetching Cloudflare Access's public
+# keys; AF_UNIX for journalctl.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallFilter=~@debug @mount @swap @reboot @privileged @resources
+SystemCallErrorNumber=EPERM
+MemoryDenyWriteExecute=yes
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

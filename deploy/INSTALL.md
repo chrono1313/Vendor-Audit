@@ -166,9 +166,9 @@ Smoke test the endpoints from the VM itself:
 curl -sS http://127.0.0.1:8000/healthz
 # expect: ok\nversion=1.0\n
 
-# robots.txt
+# robots.txt: the front page may be indexed, /audit (which runs audits) may not
 curl -sS http://127.0.0.1:8000/robots.txt
-# expect: User-agent: *\nDisallow: /\n
+# expect: User-agent: *\nDisallow: /audit\n
 
 # The form page
 curl -sS http://127.0.0.1:8000/ | head -5
@@ -254,6 +254,62 @@ systemd-analyze cat-config systemd/journald@vendor-audit.conf | grep -E 'MaxRete
 sudo journalctl --namespace=vendor-audit --header | grep -E 'Head timestamp|File path' | head
 ```
 
+## Audit log page (optional)
+
+The same log as a web page, for reading on a phone:
+`deploy/vendor-audit-logview`, a small read-only service on
+127.0.0.1:8001 that cloudflared publishes at its own hostname (here
+`log.vendoraudit.org`). Cloudflare Access signs you in before a request
+reaches the VM (a one-time code by email); the service then checks the
+token Access attaches to every request, so nothing that bypassed Access
+is answered. It runs as a throwaway user whose only extra right is reading
+the journal; the web app itself still can't read its own log.
+
+1. In Cloudflare: **Zero Trust → Access controls → Applications → Add an
+   application → Self-hosted and private → Public DNS**. Destination
+   `log` . `vendoraudit.org`, no path. Policy: Allow, Include → Emails →
+   your address. Login method: One-time PIN. Save, then copy the **AUD
+   tag** (Additional settings). Your **team domain** is under
+   **Zero Trust → Settings** (`yourteam.cloudflareaccess.com`).
+
+2. On the VM, the settings, the unit, and a check:
+
+   ```bash
+   sudo install -m 600 /opt/vendor-audit/deploy/logview.env.example /etc/vendor-audit/logview.env
+   sudoedit /etc/vendor-audit/logview.env          # ACCESS_TEAM_DOMAIN and ACCESS_AUD
+   sudo install -m 644 /opt/vendor-audit/deploy/vendor-audit-logview.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now vendor-audit-logview
+   curl -s http://127.0.0.1:8001/healthz                       # expect: ok
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8001/   # expect: 403 (no sign-in)
+   ```
+
+3. Publish it through the tunnel. In `/etc/cloudflared/config.yml`, add a
+   rule above the catch-all `- service: http_status:404`:
+
+   ```yaml
+     - hostname: log.vendoraudit.org
+       service: http://127.0.0.1:8001
+   ```
+
+   ```bash
+   sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+   sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress rule https://log.vendoraudit.org
+   sudo systemctl restart cloudflared
+   ```
+
+4. In Cloudflare **DNS → Records**, add a CNAME: name `log`, target
+   `<tunnel UUID>.cfargotunnel.com` (the UUID is the name of the
+   credentials file in `/etc/cloudflared`), Proxied.
+
+5. Open `https://log.vendoraudit.org` on your phone. Cloudflare asks for
+   your email and sends a code; after that the page shows the last 24
+   hours, with 7 and 30 days, a busiest-visitors view, and a search box
+   for a domain or visitor IP.
+
+Updating: `git reset` on `/opt/vendor-audit` updates the page too; restart
+it with `sudo systemctl restart vendor-audit-logview`.
+
 ## Troubleshooting
 
 ### Service won't start: "PermissionError" or "Cannot allocate memory"
@@ -326,8 +382,8 @@ match), or change cloudflared to point at a different local port.
 ## Uninstalling
 
 ```bash
-sudo systemctl disable --now vendor-audit
-sudo rm /etc/systemd/system/vendor-audit.service
+sudo systemctl disable --now vendor-audit vendor-audit-logview
+sudo rm /etc/systemd/system/vendor-audit.service /etc/systemd/system/vendor-audit-logview.service
 sudo rm /etc/systemd/journald@vendor-audit.conf /usr/local/bin/vendor-audit-log
 sudo systemctl daemon-reload
 

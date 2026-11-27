@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""vendor-audit-logview — the 30-day audit log as a web page, for a phone.
+
+The same table `vendor-audit-log` prints, served on 127.0.0.1:8001 and
+published through the Cloudflare tunnel at its own hostname, behind
+Cloudflare Access: Cloudflare signs the viewer in (a one-time code by
+email) before a request reaches this machine. This service then checks
+the token Access attaches to every signed-in request (the
+Cf-Access-Jwt-Assertion header: an RS256 JWT signed by the team's keys,
+for this application's audience), so a request that didn't come through
+Access is refused even if the tunnel or DNS were ever misconfigured.
+
+    GET /            the log: last 24 hours, newest first
+        ?since=7d    24h | 7d | 30d
+        ?ip=…        one visitor (all 30 days unless since= is given)
+        ?domain=…    one audited domain (likewise)
+        ?view=top    busiest visitors and domains
+        ?all=1       include re-audits' follow-up cache hits
+    GET /healthz     "ok" (no sign-in; says nothing about the log)
+
+Configuration (deploy/vendor-audit-logview.service, EnvironmentFile
+/etc/vendor-audit/logview.env):
+    ACCESS_TEAM_DOMAIN  e.g. yourteam.cloudflareaccess.com
+    ACCESS_AUD          the Access application's AUD tag (64 hex digits)
+    LOGVIEW_TZ          time zone for the page (default UTC)
+    LOGVIEW_PORT        default 8001
+
+Read-only: it runs journalctl on the vendor-audit namespace and nothing
+else. Standard library only; reuses the parsing in vendor-audit-log,
+which sits next to it in deploy/.
+"""
+
+import base64
+import hashlib
+import hmac
+import html
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+from collections import Counter
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+from urllib.parse import parse_qs, urlencode, urlsplit
+
+
+def _load_log_tool():
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "vendor-audit-log")
+    loader = SourceFileLoader("vendor_audit_log", path)
+    mod = module_from_spec(spec_from_loader("vendor_audit_log", loader))
+    loader.exec_module(mod)
+    return mod
+
+
+LOG = _load_log_tool()
+
+SINCE = {"24h": "24 hours ago", "7d": "7 days ago", "30d": "30 days ago"}
+MAX_ROWS = 1000
+_TEAM_RE = re.compile(r"[a-z0-9][a-z0-9-]*\.cloudflareaccess\.com")
+_AUD_RE = re.compile(r"[0-9a-f]{64}")
+
+
+# ── Cloudflare Access token check ───────────────────────────────────────────
+# RS256 = RSASSA-PKCS1-v1_5 with SHA-256 (RFC 7518 §3.3, RFC 8017 §8.2.2).
+# Verification recomputes the whole expected encoded message and compares
+# it byte for byte, rather than parsing the decrypted block, so there is no
+# parsing for a forged signature to slip through.
+
+_SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
+
+
+def _b64url(s):
+    if isinstance(s, str):
+        s = s.encode("ascii")
+    return base64.urlsafe_b64decode(s + b"=" * (-len(s) % 4))
+
+
+def rs256_verify(n, e, signing_input, signature):
+    k = (n.bit_length() + 7) // 8
+    if k < 256 or len(signature) != k:            # 2048-bit keys or larger
+        return False
+    s = int.from_bytes(signature, "big")
+    if s >= n:
+        return False
+    em = pow(s, e, n).to_bytes(k, "big")
+    t = _SHA256_DIGEST_INFO + hashlib.sha256(signing_input).digest()
+    expected = b"\x00\x01" + b"\xff" * (k - len(t) - 3) + b"\x00" + t
+    return hmac.compare_digest(em, expected)
+
+
+def _fetch_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "vendor-audit-logview"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.loads(resp.read(256 * 1024))
+
+
+class AccessVerifier:
+    """Checks Cf-Access-Jwt-Assertion tokens against the team's public
+    keys (fetched from <team>/cdn-cgi/access/certs, cached for an hour,
+    refetched early when a token names a key not seen yet, at most once a
+    minute) and this application's AUD tag."""
+
+    LEEWAY = 60                                   # seconds of clock skew allowed
+
+    def __init__(self, team_domain, aud, fetch=_fetch_json, clock=time.time):
+        self.issuer = f"https://{team_domain}"
+        self.certs_url = f"{self.issuer}/cdn-cgi/access/certs"
+        self.aud = aud
+        self._fetch, self._clock = fetch, clock
+        self._keys, self._fetched, self._tried = {}, 0.0, 0.0
+        self._lock = threading.Lock()
+
+    def _refresh(self, unknown_kid=False):
+        with self._lock:
+            now = self._clock()
+            if unknown_kid:
+                if now - self._tried < 60:
+                    return
+            elif self._keys and now - self._fetched < 3600:
+                return
+            self._tried = now
+            try:
+                data = self._fetch(self.certs_url)
+                keys = {}
+                for k in data.get("keys") or []:
+                    if k.get("kty") == "RSA" and k.get("kid") and k.get("n") and k.get("e"):
+                        keys[k["kid"]] = (int.from_bytes(_b64url(k["n"]), "big"),
+                                          int.from_bytes(_b64url(k["e"]), "big"))
+            except Exception as exc:              # keep the keys we have
+                print(f"vendor-audit-logview: could not fetch Access keys: {exc}", file=sys.stderr)
+                return
+            if keys:
+                self._keys, self._fetched = keys, now
+
+    def verify(self, token):
+        """The token's claims if it is valid for this application, else None."""
+        try:
+            if not token or len(token) > 8192:
+                return None
+            head_b64, body_b64, sig_b64 = token.split(".")
+            header = json.loads(_b64url(head_b64))
+            if header.get("alg") != "RS256":
+                return None
+            self._refresh()
+            key = self._keys.get(header.get("kid"))
+            if key is None:
+                self._refresh(unknown_kid=True)
+                key = self._keys.get(header.get("kid"))
+            if key is None:
+                return None
+            if not rs256_verify(key[0], key[1], f"{head_b64}.{body_b64}".encode("ascii"), _b64url(sig_b64)):
+                return None
+            claims = json.loads(_b64url(body_b64))
+            aud = claims.get("aud")
+            if self.aud not in (aud if isinstance(aud, list) else [aud]):
+                return None
+            if claims.get("iss") != self.issuer:
+                return None
+            now = self._clock()
+            exp = claims.get("exp")
+            if not isinstance(exp, (int, float)) or now > exp + self.LEEWAY:
+                return None
+            nbf = claims.get("nbf")
+            if isinstance(nbf, (int, float)) and now + self.LEEWAY < nbf:
+                return None
+            return claims
+        except Exception:                         # malformed token of any kind
+            return None
+
+
+# ── The log ─────────────────────────────────────────────────────────────────
+
+def read_rows(since, tz=None, namespace=None, include_follow_ups=False):
+    """Audit-log rows since `since` (a journalctl time), oldest first."""
+    cmd = ["journalctl", f"--namespace={namespace or LOG.NAMESPACE}", "-u", LOG.UNIT,
+           "-o", "json", "--no-pager", "--since", since]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    folder = LOG.Folder()
+    rows = []
+    for line in proc.stdout.splitlines():
+        row = LOG.parse_entry(line, tz)
+        if row is None or (not include_follow_ups and not folder.keep(row)):
+            continue
+        rows.append(row)
+    if proc.returncode != 0 and not rows:
+        raise RuntimeError((proc.stderr or "journalctl failed").strip()[:300])
+    return rows
+
+
+_CSS = """
+:root{--bg:#fff;--fg:#1a1a1a;--mute:#666;--line:#e3e3e3;--chip:#f2f2f2;--link:#0b57d0}
+@media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#e8e8e8;--mute:#9a9a9a;--line:#2c2c2c;--chip:#222;--link:#8ab4f8}}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+h1{font-size:19px;margin:0 0 4px}
+a{color:var(--link);text-decoration:none}
+.mute{color:var(--mute);font-size:13px}
+nav{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
+nav a{padding:5px 10px;border-radius:14px;background:var(--chip);font-size:14px}
+nav a.on{background:var(--fg);color:var(--bg)}
+form{display:flex;gap:6px;margin:8px 0 12px}
+input{flex:1;min-width:0;padding:7px 9px;font:inherit;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+button{padding:7px 12px;font:inherit;border:1px solid var(--line);border-radius:8px;background:var(--chip);color:var(--fg)}
+.row{padding:9px 0;border-top:1px solid var(--line)}
+.row .d{font-weight:600;word-break:break-all}
+.row .m{color:var(--mute);font-size:13px;word-break:break-all}
+.top h2{font-size:16px;margin:18px 0 6px}
+.top div{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid var(--line);word-break:break-all}
+"""
+
+
+def _href(**params):
+    return "/?" + urlencode({k: v for k, v in params.items() if v})
+
+
+def render(query, rows_for, tz_name="UTC", viewer=""):
+    """The page for a query dict (from parse_qs); rows_for(since) reads the log."""
+    q = {k: (v[0] if v else "") for k, v in query.items()}
+    ip = q.get("ip", "").strip()[:64]
+    domain = q.get("domain", "").strip().lower().rstrip(".")[:253]
+    try:                                          # the one search box takes either
+        ip, domain = str(ipaddress.ip_address(domain)), ""
+    except ValueError:
+        pass
+    view = "top" if q.get("view") == "top" else "list"
+    show_all = q.get("all") == "1"
+    since = q.get("since") if q.get("since") in SINCE else ("30d" if (ip or domain or view == "top") else "24h")
+    esc = html.escape
+
+    error = None
+    try:
+        rows = rows_for(SINCE[since], show_all)
+    except Exception as exc:
+        rows, error = [], str(exc)
+    if ip:
+        rows = [r for r in rows if r["ip"] == ip]
+    if domain:
+        rows = [r for r in rows if r["domain"].lower() == domain]
+
+    keep = dict(ip=ip, domain=domain, all="1" if show_all else "")
+    chips = []
+    for key, label in (("24h", "24 hours"), ("7d", "7 days"), ("30d", "30 days")):
+        cls = ' class="on"' if (since == key and view == "list") else ""
+        chips.append(f'<a{cls} href="{esc(_href(since=key, **keep))}">{label}</a>')
+    cls = ' class="on"' if view == "top" else ""
+    chips.append(f'<a{cls} href="{esc(_href(view="top", since=since, **keep))}">Top</a>')
+    if ip or domain:
+        chips.append(f'<a href="{esc(_href(since=since))}">Clear filter</a>')
+
+    parts = [f"<h1>Audit log</h1><div class=mute>{len(rows)} request{'s' if len(rows) != 1 else ''}, "
+             f"last {esc({'24h': '24 hours', '7d': '7 days', '30d': '30 days'}[since])}"
+             + (f" · visitor {esc(ip)}" if ip else "") + (f" · {esc(domain)}" if domain else "")
+             + f" · times {esc(tz_name)}</div>",
+             "<nav>" + "".join(chips) + "</nav>",
+             '<form method=get action="/"><input name=domain placeholder="Domain or visitor IP" '
+             f'value="{esc(domain or ip)}" autocapitalize=off autocorrect=off spellcheck=false>'
+             f'<input type=hidden name=since value="{esc(since)}"><button>Filter</button></form>']
+    if error:
+        parts.append(f"<p>Could not read the log: {esc(error)}</p>")
+    elif view == "top":
+        parts.append("<div class=top>")
+        for title, counts, key in (("Visitors", Counter(r["ip"] for r in rows), "ip"),
+                                   ("Domains", Counter(r["domain"] for r in rows), "domain")):
+            parts.append(f"<h2>{title} ({len(counts)})</h2>")
+            for name, n in counts.most_common(25):
+                link = esc(_href(since=since, **{key: name}))
+                parts.append(f'<div><a href="{link}">{esc(name)}</a><span>{n}</span></div>')
+        parts.append("</div>")
+    else:
+        shown = list(reversed(rows))[:MAX_ROWS]
+        for r in shown:
+            when = f"{r['time']:%b %d %H:%M:%S}"
+            parts.append(
+                f'<div class=row><div class=d><a href="{esc(_href(domain=r["domain"], since=since))}">'
+                f'{esc(r["domain"])}</a></div><div class=m>{esc(when)} · {esc(r["what"])} · '
+                f'<a href="{esc(_href(ip=r["ip"], since=since))}">{esc(r["ip"])}</a></div></div>')
+        if len(rows) > MAX_ROWS:
+            parts.append(f"<p class=mute>Showing the newest {MAX_ROWS}. Narrow it with a filter.</p>")
+        if not rows:
+            parts.append("<p class=mute>Nothing in this period.</p>")
+    other = _href(since=since, ip=ip, domain=domain, view="top" if view == "top" else "",
+                  all="" if show_all else "1")
+    parts.append(f'<p class=mute><a href="{esc(other)}">'
+                 + ("Fold re-audit follow-ups" if show_all else "Show re-audit follow-ups") + "</a>"
+                 + (f" · signed in as {esc(viewer)}" if viewer else "")
+                 + ' · <a href="/cdn-cgi/access/logout">Sign out</a></p>')
+    return ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+            '<meta name=viewport content="width=device-width,initial-scale=1">'
+            '<meta name=robots content="noindex,nofollow">'
+            f"<title>Audit log</title><style>{_CSS}</style></head><body>"
+            + "".join(parts) + "</body></html>")
+
+
+# ── HTTP ────────────────────────────────────────────────────────────────────
+
+_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+                               "base-uri 'none'; frame-ancestors 'none'",
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Robots-Tag": "noindex, nofollow",
+}
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "vendor-audit-logview"
+    sys_version = ""
+
+    def _send(self, status, body, ctype="text/plain; charset=utf-8"):
+        data = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        for k, v in _HEADERS.items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        url = urlsplit(self.path)
+        if url.path == "/healthz":
+            return self._send(200, "ok\n")
+        claims = self.server.verifier.verify(self.headers.get("Cf-Access-Jwt-Assertion", ""))
+        if claims is None:
+            return self._send(403, "Forbidden: sign in through Cloudflare Access.\n")
+        if url.path != "/":
+            return self._send(404, "Not found\n")
+        cfg = self.server.config
+        try:
+            query = parse_qs(url.query, max_num_fields=10)
+        except ValueError:
+            query = {}
+        page = render(query,
+                      lambda since, all_: read_rows(since, cfg["tz"], cfg["namespace"], all_),
+                      cfg["tz_name"], claims.get("email", ""))
+        self._send(200, page, "text/html; charset=utf-8")
+
+    def log_message(self, fmt, *args):            # one short line per request, no query string
+        print(f"{self.command} {urlsplit(self.path).path} {args[1] if len(args) > 1 else ''}",
+              file=sys.stderr)
+
+
+def config_from_env(env=os.environ):
+    team = env.get("ACCESS_TEAM_DOMAIN", "").strip().lower()
+    aud = env.get("ACCESS_AUD", "").strip().lower()
+    if not _TEAM_RE.fullmatch(team):
+        raise SystemExit("vendor-audit-logview: ACCESS_TEAM_DOMAIN must look like yourteam.cloudflareaccess.com")
+    if not _AUD_RE.fullmatch(aud):
+        raise SystemExit("vendor-audit-logview: ACCESS_AUD must be the application's 64-hex-digit AUD tag")
+    tz_name = env.get("LOGVIEW_TZ", "UTC").strip() or "UTC"
+    from zoneinfo import ZoneInfo
+    return {"team": team, "aud": aud, "tz_name": tz_name, "tz": ZoneInfo(tz_name),
+            "port": int(env.get("LOGVIEW_PORT", "8001")), "namespace": LOG.NAMESPACE}
+
+
+def main():
+    cfg = config_from_env()
+    server = ThreadingHTTPServer(("127.0.0.1", cfg["port"]), Handler)
+    server.verifier = AccessVerifier(cfg["team"], cfg["aud"])
+    server.config = cfg
+    print(f"vendor-audit-logview on 127.0.0.1:{cfg['port']} for {cfg['team']}", file=sys.stderr)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
