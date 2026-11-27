@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Email, DNS, TLS and web security checks explained | Vendor Audit</title>
+<meta name="description" content="Guides to SPF, DMARC, DKIM, MTA-STS, DNSSEC, CAA, TLS, HSTS, security headers, cookies, RPKI, IPv6 and end-of-life software: what each check looks for, why it matters, and how to fix it.">
+<link rel="canonical" href="{{ ix.url }}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Vendor Audit">
+<meta property="og:title" content="Email, DNS, TLS and web security checks explained">
+<meta property="og:description" content="What each Vendor Audit check looks for, why it matters, and how to fix it.">
+<meta property="og:url" content="{{ ix.url }}">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+  /* Palette: the same as form.html and render_html.py's _DOC_HEAD. */
+  :root {
+    --bg: rgb(34, 34, 33);
+    --surface: rgb(44, 44, 42);
+    --surface-2: rgb(52, 52, 49);
+    --fg: #ededeb;
+    --muted: #bdbdba;
+    --muted-soft: #98968f;
+    --border: #57574f;
+    --border-soft: #3e3e3a;
+    --accent: #7eb6ff;
+    --accent-hover: #a3cbff;
+    --critical-bg: #4a2626; --high-bg: #4a2f14; --medium-bg: #4a3a14;
+    --low-bg: #1f3350; --info-bg: #38383a; --pass-bg: #1f3d2a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    margin: 0;
+    padding: 1.5rem 1rem 3rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  a { color: var(--accent); }
+  a:hover { color: var(--accent-hover); }
+  .top {
+    display: flex; align-items: center; gap: 0.55rem;
+    color: var(--fg); text-decoration: none; font-weight: 600;
+  }
+  .top svg { width: 28px; height: 28px; }
+  .crumbs { color: var(--muted-soft); font-size: 0.88rem; margin: 1.4rem 0 0.3rem; }
+  .crumbs a { color: var(--muted); }
+  h1 { font-size: 1.85rem; line-height: 1.25; margin: 0 0 0.7rem; }
+  .lede { color: var(--muted); font-size: 1.08rem; margin: 0 0 1.4rem; }
+  h2 {
+    font-size: 1.3rem; margin: 2.4rem 0 0.8rem;
+    padding-top: 1.2rem; border-top: 1px solid var(--border-soft);
+  }
+  h3 { font-size: 1.08rem; margin: 1.6rem 0 0.4rem; }
+  p { margin: 0 0 0.9rem; }
+  code {
+    font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--surface); padding: 1px 5px; border-radius: 3px;
+  }
+  .try {
+    display: grid; grid-template-columns: 1fr auto; gap: 0.5rem;
+    background: var(--surface); border: 1px solid var(--border-soft);
+    border-radius: 8px; padding: 0.9rem; margin: 0 0 1rem;
+  }
+  .try label { grid-column: 1 / -1; color: var(--muted); font-size: 0.92rem; }
+  .try input {
+    font: inherit; padding: 0.6rem 0.8rem; min-width: 0;
+    border: 1px solid var(--border); border-radius: 5px;
+    background: var(--bg); color: var(--fg);
+  }
+  .try input::placeholder { color: var(--muted-soft); }
+  .try button {
+    font: inherit; font-weight: 600; padding: 0.6rem 1.2rem;
+    background: var(--accent); color: rgb(20, 22, 28);
+    border: none; border-radius: 5px; cursor: pointer;
+  }
+  .try button:hover { background: var(--accent-hover); }
+  .toc { margin: 0 0 0.5rem; padding-left: 1.2rem; color: var(--muted); }
+  .names { color: var(--muted); }
+  .toc li { margin: 0.15rem 0; }
+  .check {
+    background: var(--surface); border: 1px solid var(--border-soft);
+    border-radius: 8px; padding: 0.2rem 1rem 0.6rem; margin: 1rem 0;
+  }
+  .check h3 { margin-top: 0.9rem; }
+  .std { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.8rem; }
+  .std a { color: var(--muted); }
+  .kv { margin: 0 0 0.7rem; }
+  .kv b { color: var(--muted); font-weight: 600; }
+  .results { list-style: none; margin: 0.6rem 0 0.4rem; padding: 0; }
+  .results li {
+    display: grid; grid-template-columns: 5.2rem 1fr; gap: 0.6rem;
+    padding: 0.45rem 0; border-top: 1px solid var(--border-soft); font-size: 0.95rem;
+  }
+  .sev {
+    justify-self: start; padding: 0.05rem 0.5rem; border-radius: 6px;
+    font-size: 0.78rem; font-weight: 600; white-space: nowrap; height: fit-content;
+  }
+  .sev-pass { background: var(--pass-bg); color: #9af0b8; }
+  .sev-critical { background: var(--critical-bg); color: #ffb4b4; }
+  .sev-high { background: var(--high-bg); color: #ffc48a; }
+  .sev-medium { background: var(--medium-bg); color: #ffd978; }
+  .sev-low { background: var(--low-bg); color: #c3dcff; }
+  .sev-info { background: var(--info-bg); color: #d6d6d2; }
+  .group { margin: 0; padding: 0; list-style: none; }
+  .group li { padding: 0.7rem 0; border-top: 1px solid var(--border-soft); }
+  .group a { font-weight: 600; }
+  .group p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.95rem; }
+  footer {
+    color: var(--muted-soft); font-size: 0.85rem; margin-top: 3rem;
+    padding-top: 1rem; border-top: 1px solid var(--border-soft);
+  }
+  footer a { color: var(--muted); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<main>
+<a class="top" href="/">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" aria-hidden="true">
+    <circle cx="40" cy="40" r="28" fill="none" stroke="currentColor" stroke-width="5"/>
+    <line x1="60" y1="60" x2="82" y2="82" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="32" cy="38" r="4" fill="#7eb6ff"/><circle cx="46" cy="34" r="4" fill="#7eb6ff"/><circle cx="50" cy="48" r="4" fill="#7eb6ff"/>
+  </svg>
+  Vendor Audit
+</a>
+
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › Learn</nav>
+<h1>How each check works</h1>
+<p class="lede">Every check Vendor Audit runs, grouped by topic: what it looks for, why it matters, the standard behind it, every result it can give, and how to fix what fails.</p>
+
+<form class="try" method="get" action="/audit">
+  <label for="domain">Check a domain:</label>
+  <input id="domain" type="text" name="domain" placeholder="example.com" required
+         autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button type="submit">Audit</button>
+</form>
+
+{% for group, items in ix.groups %}
+<h2 id="{{ group | lower | replace(' ', '-') }}">{{ group }}</h2>
+<ul class="group">
+  {% for slug, name, description, n in items %}
+  <li><a href="/learn/{{ slug }}">{{ name }}</a>{% if n %} <span class="names">· {{ n }} check{{ "s" if n != 1 }}</span>{% endif %}
+    <p>{{ description }}</p></li>
+  {% endfor %}
+</ul>
+{% endfor %}
+
+<footer>
+  Vendor Audit v{{ version }} · a passive check of a domain's best-practice alignment ·
+  <a href="https://github.com/chrono1313/Vendor-Audit">source on GitHub</a>
+</footer>
+</main>
+</body>
+</html>

@@ -160,7 +160,7 @@ def _pages():
     from test_findings import sample
     out = []
     for name, url in (("form", "/"), ("error", "/no-such-page"), ("bad input", "/audit/result?domain=not a domain"),
-                      ("learn", "/learn/spf")):
+                      ("learn", "/learn/spf"), ("learn index", "/learn/"), ("learn eol", "/learn/end-of-life")):
         r = _request("GET", url)
         out.append((name, r.text, r.headers.get("content-security-policy", "")))
     d = sample(); d["_scan"] = {"deep": True, "version": "3.4.4"}
@@ -313,8 +313,9 @@ def test_downloads():
 
 
 def test_learn_pages():
-    """3.5.14: /learn/<topic> explainer pages, built from the audit's own
-    text: every check in the topic, with every result it can give."""
+    """3.5.14: /learn/ explainer pages, built from the audit's own text:
+    every rated check on exactly one page, with every result it can give;
+    an index, a sitemap, and links from the front page and from results."""
     if _skip():
         return
     import html as htmlmod
@@ -322,27 +323,55 @@ def test_learn_pages():
     from vendor_audit import audit_checks as ac
     from vendor_audit import audit_records as ar
     from vendor_audit.web import learn
-    r = _request("GET", "/learn/spf")
-    check(r.status_code == 200, f"/learn/spf: {r.status_code}")
-    page = htmlmod.unescape(r.text)
-    check("<title>SPF records:" in page and 'rel="canonical" href="https://vendoraudit.org/learn/spf"' in page,
-          "title and canonical URL")
-    check('<meta name="description" content="How SPF records work' in page, "meta description")
-    check('<form class="try" method="get" action="/audit">' in page, "a form to run an audit")
-    for label in ac.RUBRIC["findings"]:
-        if ar.topic_for(label) != "spf":
-            continue
-        check(f'id="{ar.slug(label)}"' in r.text, f"{label}: has its own section")
-        for severity, text in ac.RUBRIC["findings"][label].values():
-            check(text in page, f"{label}: result text missing: {text[:50]}")
-    check('href="https://www.rfc-editor.org/rfc/rfc7208.html#section-4.6.4"' in r.text, "standards are linked")
-    check("<code>v=spf1 -all</code>" in r.text and "&#34;<code>" not in r.text, "record syntax set as code")
-    check(not re.search(r"<script", r.text), "no script")
-    check(_request("GET", "/learn/no-such-topic").status_code == 404, "unknown topic: 404")
-    check(all(learn.page(slug) is not None for slug in learn.TOPICS), "every listed topic builds")
+    placed = [lb for labels in learn.checks_by_page().values() for lb in labels]
+    check(sorted(placed) == sorted(ac.RUBRIC["findings"]),
+          f"every check on exactly one page: missing {set(ac.RUBRIC['findings']) - set(placed)}, "
+          f"twice {[lb for lb in set(placed) if placed.count(lb) > 1]}")
+    for slug, labels in learn.checks_by_page().items():
+        r = _request("GET", f"/learn/{slug}")
+        check(r.status_code == 200, f"/learn/{slug}: {r.status_code}")
+        page = htmlmod.unescape(r.text)
+        check(f'rel="canonical" href="https://vendoraudit.org/learn/{slug}"' in page, f"{slug}: canonical URL")
+        check(f"<title>{learn.PAGES[slug]['title']} | Vendor Audit</title>" in page, f"{slug}: title")
+        check(len(learn.PAGES[slug]["description"]) <= 200, f"{slug}: description fits a search result")
+        check('<form class="try" method="get" action="/audit">' in page, f"{slug}: a form to run an audit")
+        for label in labels:
+            check(f'id="{ar.slug(label)}"' in r.text, f"{slug}: {label} has its own section")
+            for severity, text in ac.RUBRIC["findings"][label].values():
+                check(text in page, f"{slug}: {label}: result text missing: {text[:50]}")
+        for rel in learn.PAGES[slug]["related"]:
+            check(rel in learn.PAGES, f"{slug}: related page {rel} exists")
+        check("<script" not in r.text and "&#34;<code>" not in r.text, f"{slug}: no script, no quoted code")
+    spf = _request("GET", "/learn/spf").text
+    check('href="https://www.rfc-editor.org/rfc/rfc7208.html#section-4.6.4"' in spf, "standards are linked")
+    check("<code>v=spf1 -all</code>" in spf, "record syntax set as code")
+    eol = htmlmod.unescape(_request("GET", "/learn/end-of-life").text)
+    check("Exim" in eol and "Ubuntu" in eol and "jQuery" in eol, "the end-of-life page lists what it recognises")
+    check(_request("GET", "/learn/no-such-topic").status_code == 404, "unknown page: 404")
+    ix = _request("GET", "/learn/")
+    check(ix.status_code == 200 and all(f'href="/learn/{slug}"' in ix.text for slug in learn.PAGES),
+          "the index links every page")
+    check(_request("GET", "/learn").status_code in (200, 301), "/learn redirects to /learn/")
+    sm = _request("GET", "/sitemap.xml")
+    check(sm.status_code == 200 and "xml" in sm.headers.get("content-type", "")
+          and all(f"<loc>https://vendoraudit.org/learn/{slug}</loc>" in sm.text for slug in learn.PAGES)
+          and "/audit" not in sm.text, "sitemap.xml lists the pages and no /audit URL")
     robots = _request("GET", "/robots.txt").text
-    check("Disallow: /audit" in robots and "Disallow: /learn" not in robots and "Disallow: /\n" not in robots,
-          "crawlers may read /learn")
+    check("Disallow: /audit" in robots and "Disallow: /learn" not in robots and "Disallow: /\n" not in robots
+          and "Sitemap: https://vendoraudit.org/sitemap.xml" in robots, "robots.txt: /learn open, sitemap named")
+    front = _request("GET", "/").text
+    links = set(re.findall(r'href="(/learn/[^"#]*)"', front))
+    check(len(links) >= 15 and all(_request("GET", u).status_code == 200 for u in links),
+          f"the front page links the guides, and every link works: {sorted(links)}")
+    sys.path.insert(0, os.path.dirname(__file__))
+    from test_findings import sample
+    page = appmod.render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
+                                             "results": sample(), "timestamp": "2026-11-27T00:00:00Z",
+                                             "duration_ms": 1})
+    guides = re.findall(r'class="guide-link" href="([^"]+)"', page)
+    check(guides and all(g.startswith("https://vendoraudit.org/learn/") for g in guides)
+          and 'href="https://vendoraudit.org/learn/hsts#hsts"' in page,
+          f"each finding links its guide section: {guides[:3]}")
 
 
 def run():

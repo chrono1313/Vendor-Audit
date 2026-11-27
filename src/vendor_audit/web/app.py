@@ -8,7 +8,9 @@ The web layer wraps the audit library in a small HTTP service:
   GET  /audit/<domain>.html    — offline copy of the result page
   GET  /healthz                — liveness probe (no audit)
   GET  /robots.txt             — front page open to crawlers, /audit closed
-  GET  /learn/<topic>          — explainer page for one topic (web/learn.py)
+  GET  /learn/                 — index of the explainer pages (web/learn.py)
+  GET  /learn/<page>           — explainer page for one topic
+  GET  /sitemap.xml            — the front page and the explainer pages
 
 The application is meant to bind to 127.0.0.1 only and sit behind cloudflared
 (or another tunnel) which provides TLS and the public path. Direct exposure
@@ -730,6 +732,25 @@ async def form_page(request: Request):
     )
 
 
+@app.get("/learn", include_in_schema=False)
+async def learn_redirect():
+    return RedirectResponse("/learn/", status_code=301)
+
+
+@app.get("/learn/", response_class=HTMLResponse)
+@limiter.limit(LIMIT_FORM)
+async def learn_index(request: Request):
+    return templates.TemplateResponse(
+        request=request, name="learn_index.html",
+        context={"ix": learn.index(), "version": audit.__version__},
+    )
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+async def sitemap():
+    return Response(content=learn.sitemap_xml(), media_type="application/xml")
+
+
 @app.get("/learn/{topic}", response_class=HTMLResponse)
 @limiter.limit(LIMIT_FORM)
 async def learn_page(request: Request, topic: str):
@@ -1193,7 +1214,7 @@ async def robots():
     authoritative longer than they are. (Before going public this was
     "Disallow: /", as the handoff specified.)
     """
-    return PlainTextResponse(content="User-agent: *\nDisallow: /audit\n")
+    return PlainTextResponse(content=f"User-agent: *\nDisallow: /audit\nSitemap: {learn.SITE}/sitemap.xml\n")
 
 
 # ── security.txt (RFC 9116) ──────────────────────────────────────────────────

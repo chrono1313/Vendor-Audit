@@ -57,6 +57,7 @@ from datetime import datetime
 from .. import audit_txt_report
 from .. import audit_records
 from ..audit_txt_report import _ReportData, bot_challenge_note, ipv6_only_note
+from . import learn
 
 
 # ── Brand ────────────────────────────────────────────────────────────────────
@@ -838,10 +839,18 @@ def _render_drawers_html(records):
             out.append('</ul></section>')
 
         topic = rec["topic"]
+        more = []
         if topic and (audit_txt_report.EXPLANATIONS.get(topic) or {}).get("details"):
             name = audit_records.TOPIC_TITLES.get(topic, "this check")
-            out.append(f'<p class="more"><a class="more-link" href="#about-{_h(topic)}" '
-                       f'data-about="{_h(topic)}">More about {_h(name)}</a></p>')
+            more.append(f'<a class="more-link" href="#about-{_h(topic)}" '
+                        f'data-about="{_h(topic)}">More about {_h(name)}</a>')
+        # 3.5.14: the check's section on its public explainer page (absolute,
+        # so it also works in a downloaded report).
+        guide = learn.url_for_check(rec["label"]) or (learn.url_for_topic(topic) if topic else None)
+        if guide:
+            more.append(f'<a class="guide-link" href="{_h(guide)}">Guide to this check</a>')
+        if more:
+            out.append('<p class="more">' + " · ".join(more) + '</p>')
         out.append('</article>')
         out.append('</div>')
     out.append('</div>')

@@ -78,6 +78,7 @@
   }
   .try button:hover { background: var(--accent-hover); }
   .toc { margin: 0 0 0.5rem; padding-left: 1.2rem; color: var(--muted); }
+  .names { color: var(--muted); }
   .toc li { margin: 0.15rem 0; }
   .check {
     background: var(--surface); border: 1px solid var(--border-soft);
@@ -122,21 +123,23 @@
   Vendor Audit
 </a>
 
-<nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › Learn › {{ p.meta.name }}</nav>
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/">Home</a> › <a href="/learn/">Learn</a> › {{ p.meta.name }}</nav>
 <h1>{{ p.meta.h1 }}</h1>
 <p class="lede">{{ p.what }} {{ p.why }}</p>
 
 <form class="try" method="get" action="/audit">
-  <label for="domain">Check a domain's {{ p.meta.name }} and everything else Vendor Audit checks:</label>
+  <label for="domain">{% if p.multi %}Check a domain{% else %}Check a domain's {{ p.meta.name }}{% endif %} and everything else Vendor Audit checks:</label>
   <input id="domain" type="text" name="domain" placeholder="example.com" required
          autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
   <button type="submit">Audit</button>
 </form>
 
+{% set n = p.checks | length %}
 <ul class="toc">
   <li><a href="#how-it-works">How {{ p.meta.name }} works</a></li>
   <li><a href="#fix">How to fix it</a></li>
-  <li><a href="#checks">The {{ p.checks | length }} {{ p.meta.name }} checks Vendor Audit runs</a></li>
+  {% if p.lists %}<li><a href="#tracked">What Vendor Audit recognises</a></li>{% endif %}
+  {% if n %}<li><a href="#checks">The {{ n }} {{ p.meta.name }} check{{ "s" if n != 1 }} Vendor Audit runs</a></li>{% endif %}
 </ul>
 
 <h2 id="how-it-works">How {{ p.meta.name }} works</h2>
@@ -146,10 +149,24 @@
 {% endfor %}
 
 <h2 id="fix">How to fix it</h2>
-{% for line in p.fix %}<p>{{ line }}</p>{% endfor %}
+{% for heading, lines in p.fixes %}
+{% if heading %}<h3>{{ heading }}</h3>{% endif %}
+{% for line in lines %}<p>{{ line }}</p>{% endfor %}
+{% endfor %}
 
-<h2 id="checks">The {{ p.checks | length }} {{ p.meta.name }} checks Vendor Audit runs</h2>
+{% if p.lists %}
+<h2 id="tracked">What Vendor Audit recognises</h2>
+<p>Each of these is judged against its published end-of-life dates, from endoflife.date or from the project's own announcement. End-of-life findings are rated separately and are not counted among the checks.</p>
+{% for heading, names in p.lists %}
+<h3>{{ heading }}</h3>
+<p class="names">{{ names | join(" · ") }}</p>
+{% endfor %}
+{% endif %}
+
+{% if n %}
+<h2 id="checks">The {{ n }} {{ p.meta.name }} check{{ "s" if n != 1 }} Vendor Audit runs</h2>
 <p>Each check has a fixed set of results, and each result has one rating. These are the exact words the report uses.</p>
+{% endif %}
 {% for c in p.checks %}
 <section class="check" id="{{ c.anchor }}">
   <h3>{{ c.name }}</h3>
