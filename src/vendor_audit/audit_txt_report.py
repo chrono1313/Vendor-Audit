@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.10"
+__version__ = "3.5.11"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -2778,7 +2778,8 @@ def _render_http_section(data):
     # ── www and apex unified (1.1) ───────────────────────────────────────────
     wau = r.get("www_apex_unified", {}) or {}
     wau_outcome = wau.get("outcome")
-    if wau_outcome in ("unified", "canonical", "split"):
+    if wau_outcome in ("unified", "canonical", "split") or (
+            wau_outcome != "half_missing" and wau.get("apex_resolves") is True and wau.get("www_resolves") is True):
         # 3.5.10: its own check; "unified" below is only rated when this passes.
         parts.append(_status("pass",
             f"{wau.get('apex_host') or 'Apex'} and {wau.get('www_host') or 'www'} both have DNS records",

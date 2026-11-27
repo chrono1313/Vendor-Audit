@@ -36,7 +36,12 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.10"
+__version__ = "3.5.11"
+
+# Every request the audit sends names the tool and where to find out about
+# it, so an operator who sees it in their logs can tell who is checking
+# their site (3.5.11).
+USER_AGENT = f"vendor-audit/{__version__} (+https://vendoraudit.org)"
 
 import os
 import re
@@ -377,7 +382,7 @@ def _get_client():
             http1=True,
             verify=False,
             follow_redirects=False,
-            headers={"User-Agent": f"vendor-audit/{__version__}"},
+            headers={"User-Agent": USER_AGENT},
             # Separate connect/read timeouts so we abort quickly on
             # packet-dropping hosts without truncating slow-but-OK ones.
             # See _http_timeout / _http_connect_timeout comments.
@@ -1326,7 +1331,7 @@ def check_mta_sts_policy(domain):
         # RFC 8461 §3.3: no redirects, and the certificate must validate —
         # so this one fetch uses a verifying client, unlike the shared one.
         with httpx.Client(http2=True, verify=True, follow_redirects=False,
-                          headers={"User-Agent": f"vendor-audit/{__version__}"},
+                          headers={"User-Agent": USER_AGENT},
                           timeout=httpx.Timeout(_http_timeout, connect=_http_connect_timeout)) as client:
             resp = _request_capped(client, "GET", url)
     except Exception as e:
@@ -2577,7 +2582,7 @@ def check_http_version(domain):
             http2=True,
             verify=False,
             follow_redirects=True,
-            headers={"User-Agent": f"vendor-audit/{__version__}"},
+            headers={"User-Agent": USER_AGENT},
             timeout=_http_timeout,
         ) as client:
             resp = client.head(f"https://{domain}")
@@ -7608,16 +7613,21 @@ def _collect_outcomes(results):
     # 3.5.10: two checks. "resolve" is whether both forms have DNS records;
     # "unified" is whether they lead to one site, and is only rated when
     # both exist (with one form missing there is nothing to unify).
+    # 3.5.11: "resolve" reads only DNS, so it is rated whenever both
+    # lookups answered, even when neither form could be fetched (an
+    # IPv6-only site audited from a server without IPv6, for example).
     wau = results.get("www_apex_unified", {})
     wau_outcome = wau.get("outcome")
-    if wau_outcome in ("unified", "canonical", "split", "half_missing") and not no_web_presence:
+    if wau and not no_web_presence:
         if wau_outcome == "half_missing":
             side = wau.get("missing_side")
             _p("www and apex resolve", f"half_missing_{side}" if side in ("apex", "www") else "half_missing")
-        else:
+        elif (wau.get("apex_resolves") is True and wau.get("www_resolves") is True) or \
+                wau_outcome in ("unified", "canonical", "split"):
             _p("www and apex resolve", "both")
+        if wau_outcome in ("unified", "canonical", "split"):
             _p("www and apex unified", wau_outcome)
-    # "not_scored" (or absent) → 0/0, no rubric row emitted.
+    # "not_scored" (or absent) → no "unified" row.
 
     # ── Cert covers redirect variant ──────────────────────────────────────────
     cert_var = results.get("cert_variant", {})
@@ -7824,7 +7834,7 @@ def auditor_cannot_reach(results):
 
 # Checks in the connection-based categories that read DNS, not the site,
 # and so stay rated when the site can't be reached.
-_DNS_BASED_WEB_CHECKS = {"HTTPS DNS record"}
+_DNS_BASED_WEB_CHECKS = {"HTTPS DNS record", "www and apex resolve"}
 
 
 # Checks that run only with --deep / Deep checks, and only with --ssl (CLI).

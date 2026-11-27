@@ -200,6 +200,10 @@ The checks that open extra connections to the audited server are the TLS
 seconds. OpenSSL 3 can no longer offer RC4, 3DES or export ciphers, so those
 are not tested.
 
+Every web request identifies itself as
+`vendor-audit/<version> (+https://vendoraudit.org)`, so the owner of an
+audited site can see who checked it and why.
+
 ## Installation
 
 ### Via pipx (recommended, all platforms)
@@ -269,7 +273,11 @@ python -m pytest
 Each test file also runs on its own, without pytest:
 `python3 tests/test_findings.py`. GitHub runs the full suite on every push
 and pull request, on Python 3.12 through 3.14
-(`.github/workflows/tests.yml`).
+(`.github/workflows/tests.yml`), twice over: with the newest release of
+every dependency, and with each at the minimum `pyproject.toml` allows
+(`tools/min_constraints.py`). The newest-release run also repeats every
+Thursday, so a dependency release that breaks something shows up before
+the VM is upgraded.
 
 ## Usage
 

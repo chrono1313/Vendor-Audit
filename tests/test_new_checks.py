@@ -742,7 +742,7 @@ def test_ipv6_only_site_from_ipv4_only_auditor():
     from vendor_audit.web import render_html
     d = _v6_only_site(False)
     f = findings(d)
-    cats = {x["category"] for x in ac.assess_results(d) if x["label"] != "HTTPS DNS record"}
+    cats = {x["category"] for x in ac.assess_results(d) if x["label"] not in ac._DNS_BASED_WEB_CHECKS}
     check(not cats & {"TLS", "HTTP", "Website"}, f"no website/TLS/HTTP findings when the auditor can't reach: {cats}")
     check(f.get("IPv6") == "pass" and f.get("IPv6 RPKI") == "pass", "DNS and routing still rated")
     check(f.get("TLS connection") is None, "the false 'No HTTPS' critical is gone")
@@ -1339,6 +1339,61 @@ def test_composite_checks_split():
           f"93 checks, 87 on every scan: {counts['total']}, {counts['standard']}")
 
 
+def test_user_agent_names_the_project():
+    """3.5.11: every request says who is checking: the tool, its version and
+    where to read about it."""
+    import ast
+    import glob
+    check(ac.USER_AGENT == f"vendor-audit/{ac.__version__} (+https://vendoraudit.org)", ac.USER_AGENT)
+    src = os.path.join(os.path.dirname(ac.__file__))
+    for path in glob.glob(os.path.join(src, "**", "*.py"), recursive=True):
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "Client"
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "httpx"):
+                hdr = next((k.value for k in node.keywords if k.arg == "headers"), None)
+                keys = [k.value for k in getattr(hdr, "keys", []) if isinstance(k, ast.Constant)]
+                check("User-Agent" in keys,
+                      f"{os.path.relpath(path, src)}:{node.lineno}: httpx.Client without a User-Agent")
+    client = ac._get_client()
+    check(client.headers.get("user-agent") == ac.USER_AGENT, f"the shared client sends it: {client.headers}")
+
+
+def test_www_apex_resolve_is_dns_only():
+    """3.5.11: whether both forms have DNS records needs no connection, so
+    it stays rated when the site can't be reached, and when neither form
+    answered HTTPS."""
+    d = _v6_only_site(False)
+    d["www_apex_unified"] = {"outcome": "not_scored", "apex_host": "example.com", "www_host": "www.example.com",
+                             "apex_resolves": True, "www_resolves": True}
+    f = findings(d)
+    check(f.get("www and apex resolve") == "pass" and "www and apex unified" not in f,
+          f"IPv6-only, unreachable: resolve still rated, unified not: {f.get('www and apex resolve')}")
+    check(line(detail(d), "PASS", "example.com and www.example.com both have DNS records"), "and reported")
+    d["www_apex_unified"] = {"outcome": "half_missing", "missing_side": "www", "apex_host": "example.com",
+                             "www_host": "www.example.com", "apex_resolves": True, "www_resolves": False}
+    check(findings(d).get("www and apex resolve") == "medium", "a missing www form is still a medium finding")
+    d = sample()
+    d["www_apex_unified"] = {"outcome": "not_scored", "apex_resolves": True, "www_resolves": None}
+    check("www and apex resolve" not in findings(d), "a failed lookup is not rated")
+
+
+def test_min_constraints_cover_every_dependency():
+    """3.5.11: the "oldest" CI job pins each dependency to its floor."""
+    import importlib.util
+    root = os.path.join(os.path.dirname(__file__), "..")
+    spec = importlib.util.spec_from_file_location("min_constraints", os.path.join(root, "tools", "min_constraints.py"))
+    mc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mc)
+    lines, bad = mc.constraints(os.path.join(root, "pyproject.toml"))
+    check(not bad, f"every dependency has a plain >= floor: {bad}")
+    names = {ln.split("==")[0] for ln in lines}
+    check({"dnspython", "httpx", "tldextract", "idna", "fastapi", "pytest"} <= names, f"pins: {lines}")
+    check("httpx==0.25" in lines, "extras are dropped (a constraints file can't hold them)")
+    wf = open(os.path.join(root, ".github", "workflows", "tests.yml"), encoding="utf-8").read()
+    check("tools/min_constraints.py" in wf and "schedule:" in wf, "tests.yml runs the oldest job and on a schedule")
+
+
 TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_reports,
          test_mx_hosts_and_reverse_dns, test_null_mx, test_mta_sts_mx_match_and_max_age,
          test_dangling_cname, test_dnssec_algorithm_and_soa, test_infra_routing, test_https_rr,
@@ -1351,7 +1406,9 @@ TESTS = [test_spf_records_and_mechanisms, test_dmarc_records_and_external_report
          test_email_card_names_every_spf_break, test_email_card_opens_worst_finding, test_spf_fix_line_break,
          test_findings_view_lists_informational, test_spf_lookup_tree,
          test_www_apex_mdn, test_null_mx_subdomain_wording,
-         test_every_new_check_end_to_end, test_composite_checks_split]
+         test_every_new_check_end_to_end, test_composite_checks_split,
+         test_user_agent_names_the_project, test_www_apex_resolve_is_dns_only,
+         test_min_constraints_cover_every_dependency]
 
 
 def run():

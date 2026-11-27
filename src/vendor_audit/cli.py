@@ -78,7 +78,7 @@ Minimum Python version: 3.8+
 """
 from __future__ import annotations
 
-__version__ = "3.5.10"
+__version__ = "3.5.11"
 
 import os
 import sys
@@ -409,7 +409,7 @@ def _ssllabs_call(path, email=None, params=None, method="GET", json_body=None, t
         kwargs = {"headers": headers, "params": params or {}}
     # 3.5.7: read under the API size cap, like every other fetch, with
     # this call's own (long) time limit for the body too.
-    with httpx.Client(timeout=timeout) as client:
+    with httpx.Client(timeout=timeout, headers={"User-Agent": audit_checks.USER_AGENT}) as client:
         resp = audit_checks._request_capped(client, method, url,
                                             max_bytes=audit_checks._API_MAX_BYTES,
                                             budget_s=timeout, **kwargs)

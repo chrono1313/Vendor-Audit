@@ -2,6 +2,16 @@
 # version the package supports (pyproject.toml: requires-python >= 3.12).
 # It can also be started by hand: Actions → tests → Run workflow.
 #
+# Two kinds of install (3.5.11):
+#   test    the newest release of every dependency, as a fresh
+#           `pip install` on the VM would get. Also runs every Thursday,
+#           so a new release that breaks something shows up even in a
+#           week with no pushes, before anyone upgrades the VM.
+#   oldest  every dependency at the minimum pyproject.toml allows
+#           (tools/min_constraints.py), on the oldest supported Python, so
+#           the ">=" floors stay true.
+# The "Versions" step of each job lists what was installed.
+#
 # The tests make no network requests and run in a few seconds per version.
 # A red cross on a commit means a test failed: open the run on GitHub, then
 # the failing version, to see which check failed and why.
@@ -15,6 +25,8 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "41 16 * * 4"    # Thursdays 16:41 UTC (08:41 Pacific)
 
 permissions:
   contents: read
@@ -41,7 +53,36 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install
-        run: python -m pip install -e '.[web,dev]'
+        run: python -m pip install --upgrade -e '.[web,dev]'
+
+      - name: Versions
+        run: python -m pip list
+
+      - name: Tests
+        run: python -m pytest
+
+      - name: CLI starts
+        run: vendor-audit --version
+
+  oldest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the minimum versions
+        run: |
+          python tools/min_constraints.py | tee constraints.txt
+          python -m pip install -c constraints.txt -e '.[web,dev]'
+
+      - name: Versions
+        run: python -m pip list
 
       - name: Tests
         run: python -m pytest
