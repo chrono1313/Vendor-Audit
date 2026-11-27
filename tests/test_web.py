@@ -159,7 +159,8 @@ def _pages():
     sys.path.insert(0, os.path.dirname(__file__))
     from test_findings import sample
     out = []
-    for name, url in (("form", "/"), ("error", "/no-such-page"), ("bad input", "/audit/result?domain=not a domain")):
+    for name, url in (("form", "/"), ("error", "/no-such-page"), ("bad input", "/audit/result?domain=not a domain"),
+                      ("learn", "/learn/spf")):
         r = _request("GET", url)
         out.append((name, r.text, r.headers.get("content-security-policy", "")))
     d = sample(); d["_scan"] = {"deep": True, "version": "3.4.4"}
@@ -311,10 +312,44 @@ def test_downloads():
         appmod._result_cache.pop("dl-test.example", None)
 
 
+def test_learn_pages():
+    """3.5.14: /learn/<topic> explainer pages, built from the audit's own
+    text: every check in the topic, with every result it can give."""
+    if _skip():
+        return
+    import html as htmlmod
+    import re
+    from vendor_audit import audit_checks as ac
+    from vendor_audit import audit_records as ar
+    from vendor_audit.web import learn
+    r = _request("GET", "/learn/spf")
+    check(r.status_code == 200, f"/learn/spf: {r.status_code}")
+    page = htmlmod.unescape(r.text)
+    check("<title>SPF records:" in page and 'rel="canonical" href="https://vendoraudit.org/learn/spf"' in page,
+          "title and canonical URL")
+    check('<meta name="description" content="How SPF records work' in page, "meta description")
+    check('<form class="try" method="get" action="/audit">' in page, "a form to run an audit")
+    for label in ac.RUBRIC["findings"]:
+        if ar.topic_for(label) != "spf":
+            continue
+        check(f'id="{ar.slug(label)}"' in r.text, f"{label}: has its own section")
+        for severity, text in ac.RUBRIC["findings"][label].values():
+            check(text in page, f"{label}: result text missing: {text[:50]}")
+    check('href="https://www.rfc-editor.org/rfc/rfc7208.html#section-4.6.4"' in r.text, "standards are linked")
+    check("<code>v=spf1 -all</code>" in r.text and "&#34;<code>" not in r.text, "record syntax set as code")
+    check(not re.search(r"<script", r.text), "no script")
+    check(_request("GET", "/learn/no-such-topic").status_code == 404, "unknown topic: 404")
+    check(all(learn.page(slug) is not None for slug in learn.TOPICS), "every listed topic builds")
+    robots = _request("GET", "/robots.txt").text
+    check("Disallow: /audit" in robots and "Disallow: /learn" not in robots and "Disallow: /\n" not in robots,
+          "crawlers may read /learn")
+
+
 def run():
     for fn in (test_no_duplicate_definitions, test_routes_registered_once,
                test_workers_guard_connections, test_cache_compressed, test_slow_dns_does_not_stall_other_requests,
-               test_csp_styles, test_front_page_counts, test_head, test_fast_clicks_share_one_audit, test_downloads):
+               test_csp_styles, test_front_page_counts, test_head, test_fast_clicks_share_one_audit, test_downloads,
+               test_learn_pages):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

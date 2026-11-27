@@ -8,6 +8,7 @@ The web layer wraps the audit library in a small HTTP service:
   GET  /audit/<domain>.html    — offline copy of the result page
   GET  /healthz                — liveness probe (no audit)
   GET  /robots.txt             — front page open to crawlers, /audit closed
+  GET  /learn/<topic>          — explainer page for one topic (web/learn.py)
 
 The application is meant to bind to 127.0.0.1 only and sit behind cloudflared
 (or another tunnel) which provides TLS and the public path. Direct exposure
@@ -61,7 +62,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .. import audit, audit_checks, audit_txt_report, netguard
-from . import render_html
+from . import learn, render_html
 from .validate import ValidationError, validate_domain_input
 
 log = logging.getLogger("vendor_audit.web")
@@ -726,6 +727,20 @@ async def form_page(request: Request):
         request=request,
         name="form.html",
         context={"version": audit.__version__, "counts": audit_checks.check_counts()},
+    )
+
+
+@app.get("/learn/{topic}", response_class=HTMLResponse)
+@limiter.limit(LIMIT_FORM)
+async def learn_page(request: Request, topic: str):
+    """An explainer page (web/learn.py). Static text built from the audit's
+    own data; it never runs an audit, so crawlers are welcome."""
+    p = learn.page(topic)
+    if p is None:
+        raise HTTPException(status_code=404)
+    return templates.TemplateResponse(
+        request=request, name="learn_topic.html",
+        context={"p": p, "version": audit.__version__},
     )
 
 

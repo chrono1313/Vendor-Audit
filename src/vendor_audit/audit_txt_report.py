@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.13"
+__version__ = "3.5.14"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -583,12 +583,15 @@ EXPLANATIONS = {
         "fix":  "Publish a v=spf1 record that lists your senders and ends with -all.\nA domain that sends no mail needs \"v=spf1 -all\".",
         "details": [
             "Sender Policy Framework (SPF, RFC 7208) is published as a DNS TXT record on your domain. When a receiving mail server gets a message claiming to be from your domain, it can read the SPF record and check whether the sending IP appears on your authorised list. If it doesn't, the receiver applies whatever policy your record's qualifier specifies.",
-            "The qualifier — the symbol before all in the record — is what determines what receivers actually do. -all means hard fail (reject). ~all means soft fail (accept but mark, often spam-folder). ?all is neutral (no opinion). +all is permissive (anyone can send, almost certainly a misconfiguration). Only -all and a properly-published null sender (v=spf1 -all) on a non-sending domain are considered fully enforcing.",
+            "The qualifier — the symbol before all at the end of the record — says what receivers should do with mail from a server that isn't listed. -all is a hard fail (reject it). ~all is a soft fail (accept it but treat it as suspicious, often the spam folder). ?all is neutral (no opinion). +all authorises every server on the internet, which is almost always a mistake. Only -all, or v=spf1 -all on a domain that sends no mail, fully enforces SPF.",
             # 3.4.6: a (heading, text) pair renders as a short titled paragraph.
             ("Domains that don't send email.",
              "A domain that never sends email still needs SPF. Parked, redirect-only and brand-protection domains look legitimate to recipients, and attackers pick them because nobody watches them. Publish three records: v=spf1 -all as SPF (no server may send for the domain), a null MX of 0 . (RFC 7505: the domain accepts no mail), and a DMARC record of v=DMARC1; p=reject (receivers reject anything claiming to come from it). Together they tell every receiver that mail from this domain is always forged."),
-            "SPF has a well-known limitation: each include= or redirect= mechanism counts toward a hard cap of 10 DNS lookups per evaluation (RFC 7208 §4.6.4). Exceeding the cap causes receivers to treat the result as PermError and silently fail mail. If you use several SaaS providers (marketing, transactional, helpdesk) you can hit this quickly — flatten or consolidate via a SPF management service if you do.",
-            "SPF alone does not survive forwarding. When a mailing list or auto-forward rewrites the message, the original sender's SPF check fails for the new envelope sender. This is why DKIM and DMARC together cover what SPF can't — they sign the message itself, not just authorise the IP. A modern email-authentication setup uses all three.",
+            # 3.5.14: corrected (include: is a mechanism, redirect= a modifier;
+            # a, mx, ptr and exists count too; PermError is a failure, not a
+            # silent one). These paragraphs are also the /learn/spf page.
+            "SPF has a well-known limit: evaluating a record may trigger at most 10 DNS lookups (RFC 7208 §4.6.4). The include:, a, mx, ptr and exists mechanisms and the redirect= modifier each count, and so do the lookups inside every record an include: pulls in. Past the limit the check ends in a permanent error (PermError), which receivers and DMARC treat as a failure, so the record no longer protects the domain. If you use several SaaS providers (marketing, transactional, helpdesk) you can hit the limit quickly: remove senders you no longer use, or replace includes with the providers' IP ranges, which you then have to keep up to date.",
+            "SPF breaks when mail is forwarded. A mailing list or an auto-forward passes the message on from its own server, which isn't on your list, so SPF fails at the next receiver unless the forwarder rewrites the envelope sender. DKIM covers that case: it signs the message itself, so the signature survives forwarding. DMARC then asks receivers to require that SPF or DKIM passes for the domain in the From address. A complete setup uses all three.",
         ],
     },
     "dmarc": {
