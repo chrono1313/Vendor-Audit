@@ -1047,8 +1047,8 @@ def test_dkim_rotation_pair():
 
 def test_results_page_layout():
     # 3.4.8: categories come straight after the overview, "Fix these first"
-    # is gone, and the table has Findings / Passed / All (3.5.8) plus a filter tag
-    # instead of severity buttons, a category dropdown and a search box.
+    # is gone, and the table has Findings / Passed / All (3.5.8) instead of
+    # severity buttons, a category dropdown and a search box.
     from vendor_audit.web import render_html
     page = render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
                                       "results": sample(), "timestamp": "2026-11-20T00:00:00Z", "duration_ms": 1})
@@ -1057,10 +1057,24 @@ def test_results_page_layout():
     chips = re.findall(r'class="filter-chip" data-sev="(\w+)"', page)
     check(chips == ["issues", "pass", "all"], f"3.5.8: buttons are Findings, Passed, All: {chips}")
     check('id="filter-cat"' not in page and 'id="filter-q"' not in page, "no dropdown or search box")
-    check('id="filter-tag"' in page and 'data-cats="Email|' in page, "filter tag and category list present")
     check('href="#checks-issues">Findings' in page, "side nav links to Findings")
+    # 3.5.21: Findings / Passed / All are the only filters. No category
+    # filter, severity filter or filter tag; links that set one go to Findings.
+    check('id="filter-tag"' not in page and "data-cats" not in page and "data-cat=" not in page,
+          "no filter tag or category data")
+    check(">Categories</div>" not in page, "no Categories group in the side nav")
+    links = set(re.findall(r'href="#checks-([\w-]+)"', page))
+    check(links <= {"issues", "pass", "all"}, f"every #checks- link is a view: {sorted(links)}")
+    check(re.findall(r'class="cat-card" href="([^"]+)"', page) and
+          set(re.findall(r'class="cat-card" href="([^"]+)"', page)) == {"#checks-issues"},
+          "category cards link to Findings")
+    check(set(re.findall(r'class="(?:tile|sev-row)" href="([^"]+)"', page)) <= {"#checks-issues", "#checks-pass"},
+          "severity tiles link to Findings (the Passed tile to Passed)")
+    anchors = re.findall(r'<span class="anchor" id="checks-(\w+)">', page)
+    check(anchors == ["issues", "pass", "all"], f"anchors: {anchors}")
     js = render_html._RESULT_JS
-    check("filter-cat" not in js and "filter-q" not in js and "SEV_WORD[key]" in js, "script routes tiles to the tag")
+    check("filter-cat" not in js and "filter-q" not in js and "state.cat" not in js and "state.only" not in js
+          and "filter-tag" not in js, "script has only the three views")
 
 
 def test_spf_on_subdomain_covered_by_dmarc():
@@ -1114,7 +1128,7 @@ def test_email_card_names_every_spf_break():
     card = page[page.index("Email authentication") - 200:][:900]
     check("Broken" in card and "invalid (12 lookups, limit 10; includes a domain with no SPF)" in card,
           f"card names both SPF breaks: {card}")
-    rows = re.findall(r'<tr data-sev="\w+" data-cat="[^"]*" data-id="([\w-]+)">', page)
+    rows = re.findall(r'<tr data-sev="\w+" data-id="([\w-]+)">', page)
     breaks = [i for i in rows if i in ("spf-lookup-count", "spf-mechanisms")]
     href = re.search(r'<a class="stat-card" href="#check-([\w-]+)">\s*<span class="stat-title">Email authentication', page)
     check(breaks and href and href.group(1) == breaks[0],

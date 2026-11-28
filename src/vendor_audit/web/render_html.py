@@ -339,14 +339,6 @@ def _render_side_nav_html(data, records):
                    f'<span class="nav-count nav-count-issues">{data.issue_count}</span></a>')
     out.append(f'  <a class="nav-link" href="#checks">All checks'
                f'<span class="nav-count">{len(records)}</span></a>')
-    if data.category_rows:
-        out.append('  <div class="nav-group">Categories</div>')
-        for r in data.category_rows:
-            n = r["issues"]
-            count = (f'<span class="nav-count nav-count-issues">{n}</span>' if n
-                     else '<span class="nav-count">0</span>')
-            out.append(f'  <a class="nav-link" href="#checks-{_h(r["category"].lower())}">'
-                       f'{_h(r["category"])}{count}</a>')
     out.append('  <div class="nav-group">Scan</div>')
     out.append('  <a class="nav-link" href="#scan">Scan details</a>')
     out.append('  <div class="nav-group nav-ext">Other tools</div>')
@@ -556,7 +548,8 @@ def _render_overview_html(data, records, domain, audit_domain, timestamp, durati
     out.append('      ' + _ring_html(counts))
     out.append('      <div class="tiles">')
     for sev in ("pass",) + tuple(ISSUE_SEVERITIES) + ("info",):
-        out.append(f'        <a class="tile" href="#checks-{sev}">'
+        # 3.5.21: no filters beyond Findings / Passed / All.
+        out.append(f'        <a class="tile" href="#checks-{"pass" if sev == "pass" else "issues"}">'
                    f'<span class="tile-n">{counts[sev]}</span>'
                    f'<span class="tile-label"><span class="dot seg-{sev}" aria-hidden="true"></span>'
                    f'{"Info" if sev == "info" else _SEV_WORD[sev]}</span></a>')
@@ -570,7 +563,7 @@ def _render_overview_html(data, records, domain, audit_domain, timestamp, durati
     out.append('      <div class="sev-rows">')
     for sev in ISSUE_SEVERITIES:
         n = counts[sev]
-        out.append(f'        <a class="sev-row" href="#checks-{sev}">{_badge(sev)}'
+        out.append(f'        <a class="sev-row" href="#checks-issues">{_badge(sev)}'
                    f'<svg class="sev-track" viewBox="0 0 100 1" preserveAspectRatio="none" aria-hidden="true">'
                    f'<rect class="seg-{sev}" width="{n * 100.0 / biggest:.1f}" height="1"/></svg>'
                    f'<span class="sev-n">{n}</span></a>')
@@ -631,7 +624,7 @@ def _glance_cards(data, records):
         if tls.get("cert_lifetime_days") is not None:
             lines.append(f'{tls["cert_lifetime_days"]}-day lifetime')
         if tls.get("cert_issuer"):
-            lines.append(f'Issued by {tls["cert_issuer"]}')
+            lines.append(f'Issued by {audit_txt_report._expand_cert_issuer(tls["cert_issuer"])}')
         cards.append(card("Certificate expires in",
                           audit_txt_report._humanize_seconds(tls["cert_remaining_seconds"]),
                           "stat-bad" if overdue else "stat-good", lines,
@@ -728,7 +721,7 @@ def _render_categories_html(data):
             out.append('    </div>')
             continue
         desc = audit_txt_report.severity_summary(r["counts"], ", ")
-        out.append(f'    <a class="cat-card" href="#checks-{_h(r["category"].lower())}">')
+        out.append('    <a class="cat-card" href="#checks-issues">')
         out.append(f'      <span class="cat-head"><span class="cat-name">{_h(r["category"])}</span>'
                    f'<span class="cat-total">{_plural(r["total"], "check")}</span></span>')
         out.append('      ' + _stacked_bar_html(
@@ -748,19 +741,17 @@ def _render_checks_table_html(data, records):
     shows the filter bar and opens on Findings: the issues, then the
     informational rows under a divider."""
     counts = data.counts
-    cats = [r["category"] for r in data.category_rows]
     out = ['<section class="block" id="checks" aria-label="All checks">']
-    # Anchors for the filter links, so they still land here without the script.
-    for key in ["issues", "all"] + list(SEVERITY_ORDER) + [c.lower() for c in cats]:
-        out.append(f'  <span class="anchor" id="checks-{_h(key)}"></span>')
+    # Anchors for the view links, so they still land here without the script.
+    for key in ("issues", "pass", "all"):
+        out.append(f'  <span class="anchor" id="checks-{key}"></span>')
     out.append('  <div class="block-head"><h2>All checks</h2>'
                f'<span class="checks-count" id="checks-count" aria-live="polite">'
                f'{_plural(len(records), "check")}</span></div>')
 
-    # 3.4.8 redesign: three buttons. The category cards, side-nav category
-    # links and the overview's severity tiles still filter the table; the
-    # filter they set shows as a tag with a clear button.
-    out.append(f'  <div class="filters" id="filters" data-cats="{_h("|".join(cats))}">')
+    # 3.4.8 redesign: three buttons. 3.5.21: they are the only filters; the
+    # category cards and severity tiles link to Findings.
+    out.append('  <div class="filters" id="filters">')
     out.append('    <div class="filter-chips" role="group" aria-label="Show checks">')
     # 3.5.8: Findings, Passed, All.
     chips = [("issues", "Findings", data.issue_count), ("pass", "Passed", counts["pass"]),
@@ -768,8 +759,6 @@ def _render_checks_table_html(data, records):
     for key, word, n in chips:
         out.append(f'      <button type="button" class="filter-chip" data-sev="{key}" '
                    f'aria-pressed="false">{word} <span>{n}</span></button>')
-    out.append('      <span class="filter-tag" id="filter-tag" hidden><span id="filter-tag-text"></span>'
-               '<button type="button" id="filter-tag-clear" aria-label="Clear this filter">×</button></span>')
     out.append('    </div>')
     out.append('  </div>')
 
@@ -789,7 +778,7 @@ def _render_checks_table_html(data, records):
                        'Informational <span>optional practices and checks that could not run; '
                        'not counted</span></th></tr>')
         out.append(
-            f'      <tr data-sev="{sev}" data-cat="{_h(rec["category"])}" data-id="{rec["id"]}">'
+            f'      <tr data-sev="{sev}" data-id="{rec["id"]}">'
             f'<td>{_badge(sev)}</td>'
             f'<td><a class="row-link" href="#check-{rec["id"]}">{_h(rec["title"])}</a>'
             f'<span class="row-sub">{_h(rec["label"])}</span></td>'
@@ -1030,35 +1019,22 @@ _RESULT_JS = """\
   root.className += ' js';
 
   var ISSUE = { critical: 1, high: 1, medium: 1, low: 1 };
-  var SEV_WORD = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Informational' };
   var rows = [].slice.call(doc.querySelectorAll('.checks-table tbody tr[data-id]'));
   var infoDivider = doc.getElementById('info-divider');
   var chips = [].slice.call(doc.querySelectorAll('.filter-chip'));
-  var filters = doc.getElementById('filters');
-  var cats = filters && filters.getAttribute('data-cats') ? filters.getAttribute('data-cats').split('|') : [];
-  var tag = doc.getElementById('filter-tag');
-  var tagText = doc.getElementById('filter-tag-text');
-  var tagClear = doc.getElementById('filter-tag-clear');
   var countEl = doc.getElementById('checks-count');
   var noMatch = doc.getElementById('no-match');
   var section = doc.getElementById('checks');
   var hasIssues = rows.some(function (tr) { return ISSUE[tr.getAttribute('data-sev')]; });
   // sev: the button pressed (issues / all / pass); issues (Findings) shows
-  // the informational rows too, after the counted ones. only and cat come from
-  // the category cards, side-nav links and severity tiles, and show as a tag.
-  var state = { sev: hasIssues ? 'issues' : 'all', only: '', cat: '' };
+  // the informational rows too, after the counted ones.
+  var state = { sev: hasIssues ? 'issues' : 'all' };
 
   // -- Filters ---------------------------------------------------------
   function matches(tr) {
     var sev = tr.getAttribute('data-sev');
-    if (state.only) {
-      if (sev !== state.only) { return false; }
-    } else if (state.sev === 'issues' ? !(ISSUE[sev] || sev === 'info')
-               : (state.sev !== 'all' && sev !== state.sev)) {
-      return false;
-    }
-    if (state.cat && tr.getAttribute('data-cat') !== state.cat) { return false; }
-    return true;
+    if (state.sev === 'issues') { return !!(ISSUE[sev] || sev === 'info'); }
+    return state.sev === 'all' || sev === state.sev;
   }
 
   function apply() {
@@ -1076,16 +1052,8 @@ _RESULT_JS = """\
     // rows, so it shows only when both are on screen.
     if (infoDivider) { infoDivider.hidden = !(shownIssue && shownInfo); }
     chips.forEach(function (b) {
-      b.setAttribute('aria-pressed', !state.only && b.getAttribute('data-sev') === state.sev ? 'true' : 'false');
+      b.setAttribute('aria-pressed', b.getAttribute('data-sev') === state.sev ? 'true' : 'false');
     });
-    if (tag) {
-      var words = [];
-      if (state.cat) { words.push(state.cat); }
-      if (state.only) { words.push(SEV_WORD[state.only] || state.only); }
-      tag.hidden = !words.length;
-      if (tagText) { tagText.textContent = words.join(' \u00b7 '); }
-      if (tagClear) { tagClear.setAttribute('aria-label', 'Clear filter: ' + words.join(', ')); }
-    }
     if (countEl) {
       countEl.textContent = shown === rows.length
         ? rows.length + ' checks' : 'Showing ' + shown + ' of ' + rows.length;
@@ -1094,14 +1062,8 @@ _RESULT_JS = """\
   }
 
   chips.forEach(function (b) {
-    b.addEventListener('click', function () { state.sev = b.getAttribute('data-sev'); state.only = ''; apply(); });
+    b.addEventListener('click', function () { state.sev = b.getAttribute('data-sev'); apply(); });
   });
-  if (tagClear) {
-    tagClear.addEventListener('click', function () {
-      state.only = ''; state.cat = ''; state.sev = hasIssues ? 'issues' : 'all';
-      apply();
-    });
-  }
 
   // -- Check detail drawer ---------------------------------------------
   var current = null, lastFocus = null, openedHere = false, savedY = 0, routed = null;
@@ -1184,21 +1146,14 @@ _RESULT_JS = """\
     closeDrawer();
     if (wasOpen) { return; }
     if (hash.indexOf('checks-') === 0) {
-      var key = hash.slice(7), found = false;
-      chips.forEach(function (b) { if (b.getAttribute('data-sev') === key) { found = true; } });
-      if (found) {
-        state.sev = key; state.only = ''; state.cat = '';
-      } else if (SEV_WORD[key]) {
-        state.only = key; state.cat = ''; state.sev = 'all'; found = true;
-      } else {
-        cats.forEach(function (c) {
-          if (c.toLowerCase() === key) { state.cat = c; state.only = ''; state.sev = 'all'; found = true; }
-        });
-      }
-      if (found) {
-        apply();
-        if (section) { section.scrollIntoView(); }
-      }
+      // #checks-issues, #checks-pass, #checks-all pick that view. An older
+      // link to a category or severity (#checks-email, #checks-high) opens
+      // Findings.
+      var key = hash.slice(7), known = false;
+      chips.forEach(function (b) { if (b.getAttribute('data-sev') === key) { known = true; } });
+      state.sev = known ? key : 'issues';
+      apply();
+      if (section) { section.scrollIntoView(); }
     }
   }
 
@@ -1546,17 +1501,6 @@ html.js .filters { display: flex; flex-wrap: wrap; align-items: center; justify-
 .filter-chip:hover { background: var(--surface-hover); }
 .filter-chip[aria-pressed="true"] { background: var(--fg); border-color: var(--fg); color: rgb(28, 28, 27); font-weight: 600; }
 .filter-chip[aria-pressed="true"] span { color: rgb(70, 70, 66); }
-.filter-tag {
-  display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.86rem; min-height: 34px;
-  padding: 0 0.2rem 0 0.75rem; border: 1px solid var(--medium); border-radius: 999px; font-weight: 600;
-  background: var(--medium-bg); color: var(--medium);
-}
-.filter-tag[hidden] { display: none; }
-.filter-tag button {
-  font: inherit; font-size: 1.05rem; line-height: 1; width: 28px; height: 28px; border: 0; border-radius: 999px;
-  background: transparent; color: var(--medium); cursor: pointer;
-}
-.filter-tag button:hover { background: rgba(251, 191, 36, 0.18); color: var(--fg); }
 
 .table-wrap { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface); overflow: hidden; }
 .checks-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }

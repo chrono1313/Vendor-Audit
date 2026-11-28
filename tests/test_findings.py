@@ -255,7 +255,7 @@ def test_page_budget():
     check("2 critical and 4 high findings" in page, "headline should state the two worst severities")
     check("<!--AGO-->" in page, "scan-age placeholder must survive for the cache layer")
     check('class="ring"' in page and "passed of" in page, "pass-rate ring should be on the page")
-    rows = re.findall(r'<tr data-sev="(\w+)" data-cat="[^"]*" data-id="([\w-]+)">', page)
+    rows = re.findall(r'<tr data-sev="(\w+)" data-id="([\w-]+)">', page)
     check(len(rows) == len(ac.assess_results(sample())), f"one table row per check, got {len(rows)}")
     for _sev, rid in rows:
         check(f'id="check-{rid}"' in page, f"check {rid} has no detail panel")
