@@ -73,13 +73,15 @@ def results(now: datetime | None = None) -> dict:
                      "domain": None, "infra": False, "issues": []}],
         "stack": ["PHP", "WordPress"], "csp": None, "csp_report_only": None, "csp_quality": "missing",
         "public_key_pins": None, "expect_ct": None,
+        "cache_control": "no-store, no-cache, must-revalidate", "expires": "Thu, 19 Nov 1981 08:52:00 GMT",
     }
     tls = {
         "error": None, "version": "TLSv1.3", "cert_names_match": True,
         "cert_issued": _day(issued), "cert_expires": _day(expires), "cert_lifetime_days": 90,
         "cert_remaining_pct": 66.7, "cert_remaining_seconds": 60 * 86400, "chain_status": "complete",
         "cert_key_type": "EC", "cert_key_bits": 256, "cert_sig_alg": "ecdsa-with-SHA384",
-        "cert_issuer": "Example CA R3", "cert_sans": [d, f"www.{d}"],
+        "cert_issuer": "R12", "cert_sans": [d, f"www.{d}"],
+        "cert_aki": "00B529F22D8E6F31E89B4CAD783EFADCE90CD1D2",      # Let's Encrypt R12 (CCADB)
         "cipher": "TLS_AES_256_GCM_SHA384", "forward_secrecy": True,
     }
     error_page = {"outcome": "custom_404"}
@@ -92,7 +94,8 @@ def results(now: datetime | None = None) -> dict:
                 "missing_includes": []},
         "dmarc": {"present": True, "policy": "quarantine", "pct": 100, "sp": "none", "ruf": [],
                   "rua": [f"mailto:dmarc@{d}"], "record_count": 1, "inherited_from": None,
-                  "record": f"v=DMARC1; p=quarantine; sp=none; rua=mailto:dmarc@{d}", "rua_external": []},
+                  "record": f"v=DMARC1; p=quarantine; sp=none; rua=mailto:dmarc@{d}", "rua_external": [],
+                  "adkim": "r", "aspf": "r"},
         "dkim": {"checked": ["selector1", "selector2", "google", "default"], "found": ["selector1"],
                  "worst_strength": "good"},
         "mx": {"entries": [{"priority": 10, "host": h} for h in _MX], "null_mx": False,
@@ -104,7 +107,11 @@ def results(now: datetime | None = None) -> dict:
         "tls_rpt": {"present": False},
         "bimi": {"present": False},
         "dane": {"mx_count": 2, "with_tlsa": []},
-        "starttls_mx": {"mx_count": 2, "results": {h: {"error": None, "tls_version": "TLSv1.3"} for h in _MX}},
+        "starttls_mx": {"mx_count": 2, "results": {
+            h: {"error": None, "tls_version": "TLSv1.3", "cert_subject": h, "cert_issuer": "Example CA R3",
+                "cert_expires": _day(now + timedelta(days=41)), "cert_lifetime_days": 90,
+                "cert_verified": True, "cert_verify_reason": None, "cert_remaining_pct": 45.6}
+            for h in _MX}},
         # ── DNS ──
         "dnssec": {"tld": {"signed": True, "tld": "example"}, "domain": {"dnskey": False, "ad_flag": False}},
         "caa": {"present": True, "records": ['0 issue "letsencrypt.org"'], "issue": ["letsencrypt.org"],
@@ -136,7 +143,9 @@ def results(now: datetime | None = None) -> dict:
                    "asn_name": "SAMPLE-HOSTING", "rpki_status": "not-found", "irr_in_ris": True, "error": None}},
         # ── TLS ──
         "tls": tls,
-        "tls_legacy": {"tls1_0": "refused", "tls1_1": "refused", "static_rsa": "refused", "null_cipher": "refused"},
+        "tls_legacy": {"tls1_0": "refused", "tls1_1": "refused", "static_rsa": "refused", "null_cipher": "refused",
+                       "rc4": "refused", "des3": "refused", "cbc": "accepted",
+                       "cbc_suite": "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA", "pq": "not_offered"},
         "cert_variant": {"outcome": "covers"},
         "hsts": {"present": True, "header": "max-age=31536000", "max_age": 31536000, "includes_subdomains": False,
                  "preload_directive": False, "preloaded": False},
@@ -148,6 +157,7 @@ def results(now: datetime | None = None) -> dict:
                              "apex_resolves": True, "www_resolves": True},
         "http_version": {"version": "HTTP/2"},
         "https_rr": {"present": False, "records": [], "alpn": [], "ech": False, "error": None},
+        "wildcard_dns": {"wildcard": False, "name": f"va-3f9c2a71b0d4.{d}", "addresses": [], "error": None},
         # ── Website ──
         "server_header": sh,
         "csp_analysis": {"present": False, "script_src_outcome": "missing", "frame_ancestors_outcome": "missing"},
@@ -160,6 +170,7 @@ def results(now: datetime | None = None) -> dict:
         "cors": {"outcome": "no_cors"},
         "clock": {"outcome": "in_sync", "skew_seconds": 0.4, "server_time": now.strftime("%Y-%m-%d %H:%M:%S UTC")},
         "page_signals": {"parsed": True, "sri_outcome": "external_without_sri", "mixed_outcome": "none",
+                         "third_party_script_origins": ["cdn.jsdelivr.net", "www.googletagmanager.com"],
                          "a11y": {"html_lang_set": True, "html_lang": "en", "images_total": 12,
                                   "images_missing_alt": 2, "inputs_total": 3, "inputs_unlabeled": 0}},
         # End-of-life: judged live against the bundled end-of-life data.

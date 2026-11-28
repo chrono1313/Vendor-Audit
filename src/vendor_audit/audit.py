@@ -99,10 +99,11 @@ from .audit_checks import (
     check_tls_rpt,
     check_tech_eol,
     check_versioned_libraries,
+    check_wildcard_dns,
     check_www_apex_unification,
 )
 
-__version__ = "3.5.16"
+__version__ = "3.5.18"
 
 log = logging.getLogger(__name__)
 
@@ -131,7 +132,7 @@ _JOB_NAMES = {
     "security_txt": "security.txt", "error_page": "error page", "cors": "CORS", "http_version": "HTTP version",
     "dnssec": "DNSSEC", "ns_soa": "nameservers", "ns_health": "nameserver health", "caa": "CAA",
     "spf": "SPF", "dmarc": "DMARC", "mx": "MX", "dkim": "DKIM", "mta_sts": "MTA-STS", "tls_rpt": "TLS-RPT",
-    "bimi": "BIMI", "dangling_cname": "dangling CNAME", "https_rr": "HTTPS DNS record",
+    "bimi": "BIMI", "dangling_cname": "dangling CNAME", "https_rr": "HTTPS DNS record", "wildcard_dns": "wildcard DNS",
     "mta_sts_policy": "MTA-STS policy", "dane": "DANE", "starttls_mx": "STARTTLS on MX",
     "page_signals": "page analysis", "versioned_libs": "library versions", "ssllabs": "SSL Labs",
 }
@@ -398,6 +399,8 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
         # 3.4: CNAMEs of what the user typed and its www form that point
         # at names which no longer exist (subdomain takeover).
         ("dangling_cname",   lambda _d: check_dangling_cname(domain)),
+        # 3.5.18: a wildcard record under what the user typed.
+        ("wildcard_dns",     lambda _d: check_wildcard_dns(domain)),
         ("https_rr",         lambda d: check_https_rr(d)),
         # The www/apex-unification probe is keyed off the ORIGINAL input
         # domain, not audit_domain — we want to ask "do the apex and www

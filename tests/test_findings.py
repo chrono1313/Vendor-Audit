@@ -125,7 +125,7 @@ def test_rubric_integrity():
 
 def test_sample_counts():
     counts = ac.severity_counts(ac.assess_results(sample()))
-    want = {"critical": 2, "high": 4, "medium": 11, "low": 10, "info": 2}
+    want = {"critical": 2, "high": 4, "medium": 12, "low": 10, "info": 2}
     for s, n in want.items():
         check(counts[s] == n, f"sample domain: {counts[s]} {s}, want {n}")
     f = by_label(sample())
@@ -141,14 +141,14 @@ def test_sample_counts():
     # CSV sorting columns.
     from vendor_audit import audit_render
     key = audit_render.findings_sort_key
-    check(key(counts) == 2004011010, f"sort key for 2/4/11/10 should be 2004011010, got {key(counts)}")
+    check(key(counts) == 2004012010, f"sort key for 2/4/12/10 should be 2004012010, got {key(counts)}")
     check(key({"medium": 50}) < key({"high": 1}), "fifty mediums must still sort ahead of one high")
     check(key({"high": 900, "medium": 900, "low": 900}) < key({"critical": 1}), "nothing below outweighs a critical")
     check(key({}) == 0 and key({"low": 5000}) == 999, "clean is 0; counts cap at 999")
     row = audit_render._score_csv(sample())
-    check(row["findings_issues"] == "27" and row["findings_critical_high"] == "6",
+    check(row["findings_issues"] == "28" and row["findings_critical_high"] == "6",
           f"issues / critical+high columns wrong: {row['findings_issues']}, {row['findings_critical_high']}")
-    check(row["findings_passed_pct"] == str(round(100 * counts["pass"] / (counts["pass"] + 27))),
+    check(row["findings_passed_pct"] == str(round(100 * counts["pass"] / (counts["pass"] + 28))),
           "passed_pct should be passed / (passed + issues)")
     check(set(row) <= set(__import__("vendor_audit.cli", fromlist=["CSV_FIELDS"]).CSV_FIELDS),
           "every findings column must be in the CSV field list")

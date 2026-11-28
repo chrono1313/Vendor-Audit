@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vendor-audit"
-version = "3.5.16"
+version = "3.5.18"
 description = "A lightweight, fast, passive best-practice audit for a domain or list of domains."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -84,6 +84,8 @@ vendor_audit = [
     "os_eol.json",
     "tech_eol.json",
     "error_page_fingerprints.json",
+    "library_vulns.json",
+    "caa_identifiers.json",
 ]
 # The web layer ships HTML templates that need to be installed alongside
 # the .py files (Jinja2 loads them by file path at runtime).

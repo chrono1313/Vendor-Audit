@@ -57,7 +57,7 @@ vendor-audit example.com --deep --report
 vendor-audit --file domains.txt --outcsv results.csv
 ```
 
-A default run makes 90 checks in one to two seconds, and `--deep` adds 5 more
+A default run makes 98 checks in one to two seconds, and `--deep` adds 9 more
 and 3–5 seconds. In bulk mode (`--file`) domains are audited 10 at a time, so
 200 domains usually take under a minute. `--ssl` adds an SSL Labs grade;
 it runs one domain at a time and adds 1–2 minutes per domain, because SSL
@@ -145,7 +145,7 @@ values mean nothing.
 
 ## What it checks
 
-Vendor Audit has 96 checks in six categories: 90 run on every scan, 5 more
+Vendor Audit has 108 checks in six categories: 98 run on every scan, 9 more
 with `--deep`, and the SSL Labs grade with `--ssl`. On top of those, each
 operating system, server or library version detected gets its own end-of-life
 check. Checks that don't apply to a domain are skipped (mail checks for a
@@ -157,17 +157,19 @@ Forum baseline requirement) — no made-up checks.
 nothing, `ptr`, includes with no SPF record, `redirect=` resolution), DKIM
 (common-selector probe, key strength), DMARC (one record, `p=` policy, `pct=`,
 `sp=`, `rua=` reporting address, authorization of reports sent to other
-domains), MX records (hygiene, hosts that don't resolve, reverse DNS), null MX
+domains, strict or relaxed alignment), MX records (hygiene, hosts that don't resolve, reverse DNS), null MX
 for domains that receive no mail, MTA-STS (record, policy fetch, policy
 covering every MX host, `max_age`), TLS-RPT, BIMI, DANE TLSA on MX (`--deep`),
-STARTTLS-MX (`--deep`).
+STARTTLS-MX and the mail servers' certificates (`--deep`).
 
 **DNS** — DNSSEC chain validation (TLD signing, DNSKEY, AD flag), signing
-algorithm and DS digest, CAA records, nameserver count, authoritative
+algorithm and DS digest, CAA records and whether they still allow the CA
+that issued the current certificate (matched through CCADB's list of CAA
+identifiers), nameserver count, authoritative
 delegation, parent and zone listing the same nameservers, every nameserver
 serving the same SOA serial, open resolvers, SOA timers, nameservers on IPv6
-and spread over networks, and CNAMEs that point at names which no longer
-exist (subdomain takeover).
+and spread over networks, CNAMEs that point at names which no longer
+exist (subdomain takeover), and wildcard records.
 
 **Routing** — IPv6 reachability, IPv4 / IPv6 RPKI ROA coverage, IPv4 / IPv6
 IRR/RIS presence (via RIPEstat), and RPKI for the nameservers' and mail
@@ -177,7 +179,8 @@ servers' addresses, plus mail servers on IPv6. ASN is reported for context only.
 automated issuance), renewal headroom (under 10% of the lifetime left is
 overdue), name match, `www`-variant coverage, key size and signature, TLS 1.3
 support, TLS 1.0 / 1.1 still accepted, forward secrecy (static RSA and NULL
-ciphers refused), HSTS (presence, `includeSubDomains`, preload list, `max-age`
+ciphers refused), RC4 and 3DES refused, CBC cipher suites in TLS 1.2,
+post-quantum key exchange (ML-KEM, RFC 10024), HSTS (presence, `includeSubDomains`, preload list, `max-age`
 strength), and an optional SSL Labs grade with per-condition findings (`--ssl`).
 
 **HTTP** — HTTP/2 / HTTP/3 (Alt-Svc) support, HTTPS DNS record (RFC 9460),
@@ -190,17 +193,23 @@ analyzed Google-Evaluator-style: `script-src`, `object-src`, `base-uri`,
 X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy,
 Cross-Origin-Opener-Policy, Cross-Origin-Resource-Policy, and the deprecated
 X-XSS-Protection, Public-Key-Pins and Expect-CT), cookie attributes (Secure,
-HttpOnly, SameSite, `__Host-` / `__Secure-` prefixes), security.txt (contact,
+HttpOnly, SameSite, `__Host-` / `__Secure-` prefixes, whether shared caches may
+store the response that sets them), security.txt (contact,
 expiry, location, Canonical), default error page, CORS, server clock,
 end-of-life detection for the operating system, server software and
-client-side libraries, and under `--deep` a regex-light page parse for
-Subresource Integrity, mixed content, page language, third-party origins, and
-a basic accessibility subset.
+client-side libraries, library versions with known vulnerabilities (from
+retire.js's data), and under `--deep` a regex-light page parse for
+Subresource Integrity, mixed content, page language, image alt text, form
+labels and the other sites the page runs scripts from.
 
 The checks that open extra connections to the audited server are the TLS
-1.0 / 1.1 and cipher probes: four handshakes, in parallel, each capped at 1.5
-seconds. OpenSSL 3 can no longer offer RC4, 3DES or export ciphers, so those
-are not tested.
+1.0 / 1.1, cipher and key-exchange probes: eight connections, in parallel,
+each capped at 1.5 seconds. OpenSSL 3 can no longer offer RC4 or 3DES, and
+Python can't choose the key-exchange groups it offers, so four of them send a
+hand-built ClientHello that offers only what is being asked about and read
+the server's first reply (`tls_hello.py`). One connection answers one
+yes-or-no question; listing every cipher suite a server supports, as SSL Labs
+does, takes dozens.
 
 Every web request identifies itself as
 `vendor-audit/<version> (+https://vendoraudit.org)`, so the owner of an
@@ -330,15 +339,16 @@ Vendor Audit. No new audit runs.
 
 ### Deep mode
 
-`--deep` enables three extra checks that are slower or have a higher false-
+`--deep` enables extra checks that are slower or have a higher false-
 positive rate on bot-mitigated sites:
 
 - DANE TLSA on each MX host (DNS queries that often time out on non-DNSSEC
   zones)
-- STARTTLS-MX cert probe (port 25 egress; blocked on most cloud providers and
-  residential ISPs)
+- STARTTLS-MX and certificate probe (port 25 egress; blocked on most cloud
+  providers and residential ISPs)
 - HTML page parse for Subresource Integrity, mixed content, third-party
-  origins, and accessibility signals
+  scripts, and accessibility signals (page language, image alt text, form
+  labels)
 
 Default-mode runs typically complete in 1–3 seconds per domain. `--deep` adds
 3–5 seconds depending on MX count and server responsiveness.

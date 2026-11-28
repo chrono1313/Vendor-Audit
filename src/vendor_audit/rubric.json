@@ -1,5 +1,5 @@
 {
-  "rubric_version": "3.5.16",
+  "rubric_version": "3.5.18",
   "compatible_with": "vendor_audit 2.x",
   "_comment": "Severity rubric. There are no points and nothing is added up. 'findings' maps each check label to its possible outcomes, and each outcome to [severity, text]. Severities: critical = broken or unsupported today; high = an important protection is missing or weak; medium = an expected practice is missing; low = a refinement; info = optional, or could not be determined (listed, never counted); pass = the practice is met. audit_checks.assess_results() decides WHICH outcome applies; this file decides how serious it is and how it reads. An outcome that is not listed produces no finding. One cause, one finding: DNSSEC and clickjacking protection are each a single check, and HSTS max-age and includeSubDomains are rated only when the header is set (a missing header is one finding). End-of-life findings carry a dynamic label ('EOL OS: ubuntu 18.04') and take their severity from 'eol_severity'.",
   "severities": [
@@ -29,7 +29,22 @@
     "selector1",
     "selector2",
     "mail",
-    "k1"
+    "dkim",
+    "k1",
+    "k2",
+    "k3",
+    "s1",
+    "s2",
+    "mte1",
+    "mte2",
+    "ctct1",
+    "ctct2",
+    "fm1",
+    "fm2",
+    "fm3",
+    "protonmail",
+    "protonmail2",
+    "protonmail3"
   ],
   "strong_referrer_policies": [
     "no-referrer",
@@ -97,6 +112,7 @@
       "DMARC sp",
       "DMARC pct",
       "DMARC rua reporting",
+      "DMARC alignment",
       "DMARC single record",
       "DMARC external reports",
       "MX targets not CNAMEs",
@@ -111,6 +127,7 @@
       "TLS-RPT",
       "DANE TLSA on MX",
       "STARTTLS-MX",
+      "Mail server certificates",
       "DKIM (common selectors)",
       "DKIM key strength",
       "BIMI"
@@ -121,6 +138,7 @@
       "DNSSEC algorithm",
       "DNSSEC DS digest",
       "CAA records",
+      "CAA allows current CA",
       "Nameserver count",
       "Authoritative delegation",
       "Nameserver delegation match",
@@ -129,7 +147,8 @@
       "Nameserver SOA serials",
       "Nameservers on IPv6",
       "Nameserver networks",
-      "Dangling CNAME"
+      "Dangling CNAME",
+      "Wildcard DNS"
     ],
     "Routing": [
       "IPv6",
@@ -146,6 +165,9 @@
       "TLS 1.3",
       "Legacy TLS disabled",
       "Forward secrecy",
+      "Obsolete ciphers",
+      "TLS 1.2 CBC ciphers",
+      "Post-quantum key exchange",
       "Certificate lifetime",
       "Certificate renewal",
       "Certificate name match",
@@ -194,7 +216,12 @@
       "Server clock accuracy",
       "Subresource Integrity",
       "Mixed content (in-page)",
-      "Page language declared"
+      "Page language declared",
+      "Known-vulnerable libraries",
+      "Third-party scripts",
+      "Image alt text",
+      "Form labels",
+      "Cache-Control on cookie responses"
     ]
   },
   "eol_severity": {
@@ -1541,6 +1568,146 @@
       "missing": [
         "info",
         "Page does not declare its language (<html lang>)"
+      ]
+    },
+    "DMARC alignment": {
+      "strict": [
+        "pass",
+        "Strict alignment for both DKIM and SPF (adkim=s, aspf=s)"
+      ],
+      "mixed": [
+        "info",
+        "Strict alignment for one of DKIM and SPF, relaxed for the other"
+      ],
+      "relaxed": [
+        "info",
+        "Relaxed alignment, the default: mail authenticated for any subdomain counts for the domain"
+      ]
+    },
+    "Mail server certificates": {
+      "valid": [
+        "pass",
+        "Every mail server presented a valid certificate"
+      ],
+      "renewal_overdue": [
+        "low",
+        "A mail server's certificate is in the last 10% of its lifetime — renewal looks overdue"
+      ],
+      "invalid": [
+        "medium",
+        "A mail server's certificate failed validation (expired, self-signed or from an unknown CA) — senders that require valid TLS, under MTA-STS, will not deliver to it"
+      ]
+    },
+    "Wildcard DNS": {
+      "none": [
+        "pass",
+        "No wildcard record — names that don't exist under the domain don't resolve"
+      ],
+      "wildcard": [
+        "info",
+        "A wildcard record makes every name under the domain resolve, including mistyped and unused ones"
+      ]
+    },
+    "Obsolete ciphers": {
+      "refused": [
+        "pass",
+        "RC4 and 3DES cipher suites refused"
+      ],
+      "3des": [
+        "medium",
+        "3DES cipher suites accepted — 112-bit security, open to the Sweet32 attack (RFC 9325 §4.1)"
+      ],
+      "rc4": [
+        "high",
+        "RC4 cipher suites accepted — forbidden by RFC 7465"
+      ]
+    },
+    "TLS 1.2 CBC ciphers": {
+      "aead_only": [
+        "pass",
+        "CBC cipher suites refused — only AEAD suites (AES-GCM, ChaCha20-Poly1305) are accepted"
+      ],
+      "cbc": [
+        "low",
+        "CBC cipher suites accepted — RFC 9325 §4.2 says not to use them without encrypt-then-MAC"
+      ]
+    },
+    "Post-quantum key exchange": {
+      "offered": [
+        "pass",
+        "Hybrid post-quantum key exchange (ML-KEM, RFC 10024) offered"
+      ],
+      "not_offered": [
+        "info",
+        "No post-quantum key exchange — optional today; it protects recorded traffic from future quantum computers"
+      ]
+    },
+    "Known-vulnerable libraries": {
+      "none": [
+        "pass",
+        "No library version with a known vulnerability found in the page's scripts"
+      ],
+      "low": [
+        "low",
+        "The page loads a library version with a known low-severity vulnerability"
+      ],
+      "medium": [
+        "medium",
+        "The page loads a library version with a known vulnerability"
+      ],
+      "high": [
+        "high",
+        "The page loads a library version with a known high-severity vulnerability"
+      ]
+    },
+    "Third-party scripts": {
+      "none": [
+        "pass",
+        "The page runs no scripts from other sites"
+      ],
+      "listed": [
+        "info",
+        "The page runs scripts from other sites — each can change what the page does and sees"
+      ]
+    },
+    "Image alt text": {
+      "all": [
+        "pass",
+        "Every image on the page has alt text"
+      ],
+      "missing": [
+        "low",
+        "Some images have no alt text (WCAG 2.2 success criterion 1.1.1)"
+      ]
+    },
+    "Form labels": {
+      "all": [
+        "pass",
+        "Every form field on the page has a label"
+      ],
+      "missing": [
+        "low",
+        "Some form fields have no label (WCAG 2.2 success criteria 1.3.1 and 4.1.2)"
+      ]
+    },
+    "Cache-Control on cookie responses": {
+      "not_shared": [
+        "pass",
+        "The response that sets cookies does not let shared caches store it"
+      ],
+      "shared_cacheable": [
+        "low",
+        "The response that sets cookies may be stored by shared caches and served to other visitors (RFC 9111)"
+      ]
+    },
+    "CAA allows current CA": {
+      "allowed": [
+        "pass",
+        "The CAA records allow the CA that issued the current certificate"
+      ],
+      "not_allowed": [
+        "medium",
+        "The CAA records don't allow the CA that issued the current certificate — it must refuse to renew it (RFC 8659)"
       ]
     }
   }

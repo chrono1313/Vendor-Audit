@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.16"
+__version__ = "3.5.18"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -430,6 +430,8 @@ _CRITICALITY_RANK_TABLE = {
 
     # ── Tier 2: enables phishing / MITM / takeover ──────────────────────
     "Legacy TLS disabled":          20,   # TLS 1.0 / 1.1 still accepted
+    "Known-vulnerable libraries":   21,   # public exploits against visitors
+    "Obsolete ciphers":             22,   # RC4 / 3DES
     "DMARC pct":                    25,
     "DMARC sp":                     26,
     "DMARC rua reporting":          27,
@@ -446,8 +448,10 @@ _CRITICALITY_RANK_TABLE = {
     "TLS-RPT":                      37,
     "DANE TLSA on MX":              38,
     "STARTTLS-MX":                  39,
+    "Mail server certificates":     39,
     "Forward secrecy":              40,
     "CAA records":                  42,   # any CA can issue for the domain
+    "CAA allows current CA":        42,   # next renewal will be refused
     "DNSSEC TLD signed":            43,
     "DNSSEC":                       44,
     "DNSSEC algorithm":             44,
@@ -483,6 +487,7 @@ _CRITICALITY_RANK_TABLE = {
     "X-Content-Type-Options":       66,
     "Subresource Integrity":        67,
     "Mixed content (in-page)":      68,
+    "TLS 1.2 CBC ciphers":          69,
     "CORS configuration":           70,
     "Default error page":           71,
     "Server header":                72,
@@ -492,6 +497,7 @@ _CRITICALITY_RANK_TABLE = {
     "Cookie HttpOnly":              76,
     "Cookie SameSite":              77,
     "Cookie name prefixes":         78,
+    "Cache-Control on cookie responses": 79,
 
     # ── Tier 4: routing / availability ──────────────────────────────────
     # 3.5.5: above the optional headers (was the last tier), so a missing
@@ -511,6 +517,7 @@ _CRITICALITY_RANK_TABLE = {
     "SOA timers":                   88,
     "HTTP version":                 89,
     "Redirect first-hop hygiene":   90,
+    "Wildcard DNS":                 91,
 
     # ── Tier 5: optional headers and best-practice signals ──────────────
     "Referrer-Policy":             100,
@@ -526,6 +533,11 @@ _CRITICALITY_RANK_TABLE = {
     "HTTPS DNS record":            108,
     "BIMI":                        109,
     "Page language declared":      110,
+    "Image alt text":              110,
+    "Form labels":                 110,
+    "DMARC alignment":             111,
+    "Third-party scripts":         112,
+    "Post-quantum key exchange":   113,
 }
 
 # Default rank for a label not in the table — sorts after everything named.
@@ -601,8 +613,9 @@ EXPLANATIONS = {
         "details": [
             "Domain-based Message Authentication, Reporting, and Conformance (DMARC, RFC 7489) is published as a DNS TXT record at _dmarc.<domain>. It binds together SPF and DKIM and tells receivers what to do when a message fails both — reject it, quarantine it, or just observe (none).",
             "Deployment is typically a progression. Operators start at p=none with rua= reporting enabled to gather data on what's sending mail under their domain (legitimate or otherwise). After a few weeks of reports, they identify and authorise legitimate senders, then move to p=quarantine (spam-folder) and finally p=reject (drop). Jumping straight to p=reject without observation usually breaks something legitimate — newsletters, ticketing systems, payroll mail.",
-            "A few directives matter beyond the policy itself. pct= sets the percentage of failing mail the policy applies to (anything less than 100 is partial enforcement). sp= sets the policy for subdomains; without it, attackers can spoof random.<your-domain> and your main policy doesn't apply. rua= names the address(es) to receive aggregate XML reports — without it you have no visibility into what's hitting your domain.",
+            "A few directives matter beyond the policy itself. pct= sets the percentage of failing mail the policy applies to (anything less than 100 is partial enforcement). sp= sets the policy for subdomains; without it they inherit p=, and sp=none leaves them unprotected even under p=reject. rua= names the address(es) to receive aggregate XML reports — without it you have no visibility into what's hitting your domain.",
             "DMARC enforces alignment, not just authentication. SPF must pass for the envelope-from domain that aligns with the From: header domain (relaxed alignment is the common default). DKIM must pass on a signature whose d= domain aligns with the From: header. A message can pass SPF for some other domain and still fail DMARC because the domains don't align — this is the property that actually stops spoofing.",
+            "adkim= and aspf= choose relaxed alignment (r, the default: any subdomain of the From: domain counts) or strict (s: the exact domain). Strict stops mail authenticated by one subdomain, perhaps a third-party sender, from passing for the main domain, but fails legitimate mail sent from subdomains, so Vendor Audit lists relaxed alignment rather than counting it.",
         ],
     },
     "dkim": {
@@ -666,6 +679,7 @@ EXPLANATIONS = {
         "details": [
             "Email's transport story has improved a lot in the past decade, but the underlying SMTP protocol is still optimistic about encryption: STARTTLS upgrades a plaintext connection only if both ends opt in, and a network attacker can strip the STARTTLS advertisement from the server response and force fallback to plaintext. Mail-transport hardening is the layered set of standards that closes that gap.",
             "MTA-STS (RFC 8461) and DANE (RFC 7672) both make the TLS expectation explicit. MTA-STS publishes a policy via HTTPS that senders fetch and cache; DANE publishes TLSA records in DNSSEC-signed DNS that senders verify directly against the certificate. DANE is stronger (no caching window, cryptographic provenance) but requires DNSSEC. Most operators start with MTA-STS because it's deployable without DNSSEC.",
+            "With a deep scan, Vendor Audit also checks the certificate each mail server presents. Most senders accept any certificate, but under MTA-STS a sender must refuse a server whose certificate does not validate, so an expired or self-signed certificate there means mail is not delivered. Under DANE the TLSA record is what the certificate is checked against, so a self-signed one is fine.",
             "TLS-RPT (RFC 8460) sits alongside both as the feedback channel. DKIM (RFC 6376) is the message-signing layer that survives forwarding. Together: STARTTLS + MTA-STS or DANE + TLS-RPT + DKIM gives you an in-transit story where downgrades are detectable, message tampering is detectable, and impersonation requires breaking cryptography rather than just spoofing an IP.",
         ],
     },
@@ -709,7 +723,7 @@ EXPLANATIONS = {
         "fix":  "Enable TLS 1.3 in your web server; disable TLS 1.0/1.1 and any cipher suites flagged by SSL Labs as weak.",
         "details": [
             "Transport Layer Security (TLS) is the encryption layer underneath HTTPS. TLS 1.3 (RFC 8446, 2018) is the current standard — it removed every cipher suite the older versions had cryptographic weaknesses in, simplified the handshake to a single round-trip, and made forward secrecy mandatory. TLS 1.2 (RFC 5246) is still widely deployed and acceptable; TLS 1.0 and 1.1 are formally deprecated by RFC 8996 and should be disabled.",
-            "Vendor Audit checks the TLS version negotiated, whether TLS 1.0 and 1.1 are still accepted, forward secrecy, and the certificate: name match, key size, signature, lifetime, renewal headroom and chain. A full inventory of cipher suites and named vulnerabilities (POODLE, ROBOT and the like) is left to the Qualys SSL Labs assessment, which a deep scan can include.",
+            "Vendor Audit checks the TLS version negotiated, whether TLS 1.0 and 1.1 are still accepted, forward secrecy, whether RC4, 3DES or CBC cipher suites are accepted, whether post-quantum key exchange is offered, and the certificate: name match, key size, signature, lifetime, renewal headroom and chain. Each cipher question is one connection that offers only the suites being asked about. A full inventory of cipher suites and named vulnerabilities (POODLE, ROBOT and the like) is left to the Qualys SSL Labs assessment, which a deep scan can include.",
             "If you want a comprehensive TLS configuration review, run the SSL Labs assessment at https://ssllabs.com/ssltest/. It probes every cipher suite the server accepts, reports forward-secrecy support, flags named vulnerabilities, and gives a letter grade. Modern stacks (recent nginx, Apache, Cloudflare, Caddy, AWS ALB) configured with the Mozilla Intermediate or Modern profile typically score A or A+ without further tuning.",
             "Certificate lifetime is now an enforcement point in its own right. Under the CA/Browser Forum's Ballot SC081v3, the maximum lifetime stepped down from 398 days to 200 days on March 15, 2026; it drops to 100 days on March 15, 2027 and to 47 days on March 15, 2029. Short-lived certificates with automated renewal (ACME / Let's Encrypt) are the only path that scales at the 47-day endpoint; manually-renewed certificates are already strained at 200 days and won't be viable at 100. Vendor Audit reads a lifetime of 91 days or less as automated issuance — ACME certificates run 90 days or shorter, down to about six days — and anything longer as a sign of manual renewal. It also checks renewal headroom: a certificate with under 10% of its lifetime left should already have been replaced, whatever its length, because automated clients renew with a third to a half of the lifetime remaining.",
         ],
@@ -801,6 +815,7 @@ EXPLANATIONS = {
             "The cookie attribute set has expanded significantly over the past decade. Secure prevents the cookie from ever being sent over a plain-HTTP connection, closing the leakage path even if HSTS hasn't yet been seen by the browser. HttpOnly prevents JavaScript from reading the cookie via document.cookie, blocking the most common XSS-to-session-theft chain. SameSite controls cross-site request inclusion, mitigating CSRF.",
             "SameSite has three values. Strict means the cookie is sent only on requests originating from the same site; this is the safest but breaks some cross-site flows like an OAuth callback. Lax sends the cookie on top-level cross-site GET navigations but not on POST or sub-resource requests; this is the modern default and balances security with usability. None requires the cookie to opt explicitly into cross-site contexts and forces Secure to be set.",
             "The __Host- and __Secure- name prefixes are commitments enforced by the browser. A cookie named __Host-session must have Secure, no Domain attribute, and Path=/ — the browser refuses to set the cookie if any of those are violated. This protects against subtle attacks where an attacker sets a same-named cookie from a sibling subdomain and the browser sends both to your application. For session cookies specifically, __Host- is the modern best practice.",
+            "A Set-Cookie header does not stop a response being cached (RFC 9111). If the response that sets a session cookie is marked cacheable by shared caches (public, s-maxage, a max-age above zero, or a future Expires) and has no private or no-store, a CDN or corporate proxy can store it and hand the same cookie to the next visitor.",
             "Vendor Audit observes only the cookies set on the homepage response. Cookies set after authentication or by JavaScript don't appear in this view. A clean homepage cookie audit doesn't guarantee all of your cookies are well-configured — but a flagged homepage cookie is a clear sign the application has at least one misconfigured cookie path.",
         ],
     },
@@ -924,11 +939,12 @@ EXPLANATIONS = {
         ],
     },
     "page_analysis": {
-        "what": "A passive read of the homepage HTML for Subresource Integrity, mixed content, third-party origins, and basic accessibility signals.",
+        "what": "A passive read of the homepage HTML for known-vulnerable library versions, Subresource Integrity, mixed content, the other sites it runs scripts from, and basic accessibility signals.",
         "why":  "Missing SRI on third-party scripts means a CDN compromise injects code into your site; mixed content allows tampering with HTTPS pages.",
         "fix":  "Add integrity= attributes to all <script> and <link> tags loading from third-party origins; never include http:// resources in HTTPS pages.",
         "details": [
-            "Page analysis is a single GET of the homepage with the response body parsed for a small set of signals. It runs only in a deep scan because it's slower (the body has to be fetched and parsed) and noisier (sites behind bot-mitigation challenges produce unreliable findings). The output is a parser inventory and a handful of derived findings.",
+            "Page analysis is a single GET of the homepage with the response body parsed for a small set of signals. It runs only in a deep scan because it's slower (the body has to be fetched and parsed) and noisier (sites behind bot-mitigation challenges produce unreliable findings). The output is a parser inventory and a handful of derived findings. The one exception is the known-vulnerable library check, which runs on every scan: it needs only the script addresses in the first part of the page.",
+            "Library versions are read from the script addresses (jquery-3.4.1.min.js, /ajax/libs/lodash.js/4.17.15/) and the page itself, and checked against the vulnerability list maintained by the retire.js project, with each vulnerability's affected versions and CVE numbers. No script is downloaded, so a library bundled into the site's own files is not seen; a clean result means nothing visible, not nothing at all.",
             "Subresource Integrity (SRI, W3C standard) is a hash attribute on <script> and <link> tags that lets the browser verify the resource's bytes match an expected hash before executing it. Without SRI, a third-party CDN compromise injects code into every page that loads from it. The 2018 Ticketmaster breach came through a third-party chat script that attackers modified; Magecart attacks like it are the reason SRI exists. With SRI on every external resource, the same compromise causes scripts to fail to load instead of executing attacker code.",
             "Mixed content is HTTP resources loaded by an HTTPS page. Browsers block it by default for scripts and stylesheets (active mixed content) but allow it for images and audio with a console warning (passive mixed content). Either way, a network attacker can substitute the unencrypted resource — for a script, that's full control of the page; for an image it's smaller but still a tracking and tampering vector.",
             "The accessibility signals are not a substitute for a proper a11y audit: empty buttons, missing alt= attributes, missing form labels, missing <html lang=>. They're the kind of thing a quick visual scan catches that automated WAVE/Axe/pa11y tooling would catch in much more depth. A clean signal here means nothing structural is obviously broken; it doesn't mean the site is fully accessible.",
@@ -941,6 +957,7 @@ EXPLANATIONS = {
         "details": [
             "This audit follows the CNAME chain of the domain as entered and of its www form, and reports a chain whose last name returns NXDOMAIN (does not exist). A timeout or server error is not counted, since it does not show that the name is free.",
             "Only these two names are checked. A takeover can happen on any subdomain, so an inventory of the zone's CNAME records, checked when a cloud resource is removed, is the lasting fix.",
+            "The audit also looks up one random name under the domain. If it resolves, the zone has a wildcard record (RFC 4592): every name, mistyped or unused, reaches a server. That is often deliberate on hosting platforms, so it is listed rather than counted, but a wildcard pointing at a service the domain no longer controls hands every name to whoever claims it.",
         ],
     },
     "infra_routing": {
@@ -1756,6 +1773,15 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 out.append(_status("warn",
                     "No rua= tag — no aggregate reporting destination set; operator cannot see spoofing attempts or legit-mail rejections", check=chk + "DMARC rua reporting"))
 
+            # 3.5.18: alignment modes (RFC 7489 §3.1).
+            if dmarc.get("adkim") and dmarc.get("aspf"):
+                modes = f"adkim={dmarc['adkim']}, aspf={dmarc['aspf']}"
+                if dmarc["adkim"] == "s" and dmarc["aspf"] == "s":
+                    out.append(_status("pass", f"Strict alignment ({modes})", check=chk + "DMARC alignment"))
+                else:
+                    out.append(_status("info", f"Relaxed alignment for {'DKIM and SPF' if dmarc['adkim'] == dmarc['aspf'] else ('DKIM' if dmarc['adkim'] == 'r' else 'SPF')} ({modes}) — the default; strict is optional",
+                                       check=chk + "DMARC alignment"))
+
             # 3.4: one record only; reports to other organisations authorized.
             n_dmarc = dmarc.get("record_count")
             if n_dmarc and n_dmarc > 1:
@@ -2383,13 +2409,29 @@ def _render_dns_section(data):
             inh = caa.get("inherited_from")
             inh_str = f" (inherited from {inh})" if inh else ""
             issuers = caa.get("issue", []) or []
-            if not issuers or issuers == [";"]:
+            if issuers and all(not i.split(";", 1)[0].strip() for i in issuers):
                 parts.append(_status("pass",
-                    f"CAA records published — issuance disallowed by default{inh_str}", check="CAA records"))
+                    f"CAA records published — no CA may issue{inh_str}", check="CAA records"))
+            elif not issuers:
+                parts.append(_status("pass",
+                    f"CAA records published, but no issue records, so any CA may issue{inh_str}", check="CAA records"))
             else:
                 parts.append(_status("pass",
                     f"CAA records published — {len(issuers)} authorised CA{'s' if len(issuers) != 1 else ''}{inh_str}",
                     sub_lines=issuers, check="CAA records"))
+            # 3.5.18: the current certificate's CA.
+            from .audit_checks import _caa_issuer_outcome, ca_caa_names
+            tls_r = r.get("tls") or {}
+            co = _caa_issuer_outcome(caa, tls_r)
+            if co:
+                names, _how = ca_caa_names(tls_r)
+                who = _expand_cert_issuer(tls_r.get("cert_issuer")) or "the current CA"
+                if co == "allowed":
+                    parts.append(_status("pass", f"The current certificate's CA ({who}) is allowed",
+                                         check="CAA allows current CA"))
+                else:
+                    parts.append(_status("warn", f"The current certificate's CA ({who}) is not allowed — it must refuse to renew",
+                                         sub_lines=[f"That CA's CAA names: {', '.join(names)}"], check="CAA allows current CA"))
             if caa.get("iodef"):
                 parts.append(_status("pass",
                     "Security reporting contact (iodef=) set"))
@@ -2419,6 +2461,20 @@ def _render_dns_section(data):
                 parts.append(_status("pass", f"{chain} — target exists", check="Dangling CNAME"))
         if not any(i.get("chain") for i in named.values()):
             parts.append(_status("pass", "No CNAMEs on the domain or its www form", check="Dangling CNAME"))
+
+    # 3.5.18: wildcard records (RFC 4592).
+    wild = r.get("wildcard_dns") or {}
+    if wild.get("wildcard") is not None:
+        parts.append("")
+        parts.append("")
+        parts.append(_subheading("Wildcard records (RFC 4592)"))
+        parts.append("")
+        if wild["wildcard"]:
+            parts.append(_status("info", f"A random name ({wild.get('name')}) resolves — the domain has a wildcard record",
+                                 sub_lines=wild.get("addresses") or None, check="Wildcard DNS"))
+        else:
+            parts.append(_status("pass", "A random name under the domain does not resolve — no wildcard record",
+                                 check="Wildcard DNS"))
 
     # 3.5.9: end-of-life BIND named in a version.bind answer.
     tech_eol = r.get("tech_eol") or {}
@@ -2693,6 +2749,31 @@ def _render_tls_section(data):
         elif fo == "unprobed":
             parts.append(_status("info", "Key exchange not tested — this system's OpenSSL cannot offer it",
                                  check="Forward secrecy"))
+        # 3.5.18: hand-built ClientHello probes (tls_hello.py).
+        from .audit_checks import _obsolete_cipher_outcome, _cbc_outcome, _pq_outcome
+        oc = _obsolete_cipher_outcome(legacy) if legacy else None
+        if oc == "rc4":
+            parts.append(_status("fail", f"RC4 cipher suites accepted ({legacy.get('rc4_suite')}) — forbidden by RFC 7465",
+                                 check="Obsolete ciphers"))
+        elif oc == "3des":
+            parts.append(_status("warn", f"3DES cipher suites accepted ({legacy.get('des3_suite')}) — "
+                                 "112-bit security, open to Sweet32 (RFC 9325 §4.1)", check="Obsolete ciphers"))
+        elif oc == "refused":
+            parts.append(_status("pass", "RC4 and 3DES cipher suites refused", check="Obsolete ciphers"))
+        co = _cbc_outcome(legacy) if legacy else None
+        if co == "cbc":
+            parts.append(_status("warn", f"CBC cipher suites accepted in TLS 1.2 ({legacy.get('cbc_suite')})",
+                                 sub_lines=["RFC 9325 §4.2: not without encrypt-then-MAC; offer AES-GCM / ChaCha20-Poly1305 only"],
+                                 check="TLS 1.2 CBC ciphers"))
+        elif co == "aead_only":
+            parts.append(_status("pass", "CBC cipher suites refused — AEAD suites only", check="TLS 1.2 CBC ciphers"))
+        po = _pq_outcome(legacy) if legacy else None
+        if po == "offered":
+            parts.append(_status("pass", f"Post-quantum key exchange offered ({legacy.get('pq_group')}, RFC 10024)",
+                                 check="Post-quantum key exchange"))
+        elif po == "not_offered":
+            parts.append(_status("info", "No post-quantum key exchange (X25519MLKEM768, RFC 10024) — optional today",
+                                 check="Post-quantum key exchange"))
 
         ko, so = _cert_key_outcome(tls), _cert_sig_outcome(tls)
         kind, bits, sig = tls.get("cert_key_type"), tls.get("cert_key_bits"), tls.get("cert_sig_alg") or "?"
@@ -3184,10 +3265,34 @@ def _render_server_disclosure_section(data):
 
 # ── Detailed sections: Versioned libraries ──────────────────────────────────
 
+def _render_vulnerable_libraries_lines(data):
+    """3.5.18: library versions with known vulnerabilities (retire.js data)."""
+    vuln = (data.results.get("versioned_libs") or {}).get("vulnerable")
+    if vuln is None:
+        return []
+    libs = vuln.get("libraries") or []
+    if not libs:
+        return [_status("pass", "No library version with a known vulnerability in the page's scripts",
+                        check="Known-vulnerable libraries")]
+    out = []
+    for lib in libs:
+        kind = "fail" if lib["worst"] == "high" else "warn"
+        sub = [f'{x["severity"]}: {", ".join(x.get("cve") or []) or x.get("id") or "no identifier"}'
+               + (f' — {x["summary"]}' if x.get("summary") else "") for x in lib["vulnerabilities"]]
+        n = len(lib["vulnerabilities"])
+        out.append(_status(kind, f'{lib["library"]} {lib["version"]}: {n} known vulnerabilit{"y" if n == 1 else "ies"}',
+                           sub_lines=sub, check="Known-vulnerable libraries"))
+    return out
+
+
 def _render_versioned_libraries_section(data):
     vlibs = (data.results.get("versioned_libs") or {}).get("libraries") or []
+    vuln_lines = _render_vulnerable_libraries_lines(data)
     if not vlibs:
-        return ""
+        if not vuln_lines:
+            return ""
+        return "\n".join(["", _heading("VERSIONED LIBRARIES (OWASP A06:2021 — vulnerable & outdated components)"), "",
+                          *vuln_lines])
 
     parts = ["", _heading("VERSIONED LIBRARIES (OWASP A06:2021 — vulnerable & outdated components)"), ""]
     parts.extend(_section_explanation_lines("eol_libraries"))
@@ -3218,6 +3323,7 @@ def _render_versioned_libraries_section(data):
             else:
                 rows.append((name, ver, "in support", ""))
         parts.extend(_md_table(("Library", "Version", "Status", "Notes"), rows))
+        parts += [""] + vuln_lines
         return "\n".join(parts)
 
     parts.append(f"    {'Library'.ljust(name_w)}   {'Version'.ljust(ver_w)}   Status     Notes")
@@ -3234,6 +3340,7 @@ def _render_versioned_libraries_section(data):
         else:
             parts.append(f"    {name.ljust(name_w)}   {ver.ljust(ver_w)}   in support")
 
+    parts += [""] + vuln_lines
     return "\n".join(parts)
 
 
@@ -3457,7 +3564,19 @@ def _render_browser_security_headers_section(data):
     if not cookies:
         parts.append(_para("No Set-Cookie headers on this response (cookies set after "
                            "login or by JavaScript are not visible here).", 4))
-    else:
+    elif any(not ck.get("infra") for ck in cookies):
+        # 3.5.18: may shared caches store the response that sets them?
+        from .audit_checks import _shared_cacheable
+        cc = srv.get("cache_control") or "not sent"
+        if _shared_cacheable(srv):
+            parts.append(_status("warn", f"Shared caches may store this cookie-setting response (Cache-Control: {cc})",
+                                 sub_lines=["Send Cache-Control: private or no-store (RFC 9111)"],
+                                 check="Cache-Control on cookie responses"))
+        else:
+            parts.append(_status("pass", f"Shared caches may not store this cookie-setting response (Cache-Control: {cc})",
+                                 check="Cache-Control on cookie responses"))
+        parts.append("")
+    if cookies:
         for ck in cookies:
             name = ck.get("name", "")
             infra = ck.get("infra")
@@ -3795,6 +3914,13 @@ def _render_page_analysis_section(data):
     elif mc_outcome == "none":
         parts.append(_status("pass", "No mixed content detected", check="Mixed content (in-page)"))
 
+    if "third_party_script_origins" in page:
+        tps = page.get("third_party_script_origins") or []
+        if tps:
+            parts.append(_status("info", f"Scripts from {len(tps)} other site{'s' if len(tps) != 1 else ''}",
+                                 sub_lines=tps, check="Third-party scripts"))
+        else:
+            parts.append(_status("pass", "No scripts from other sites", check="Third-party scripts"))
     third = page.get("third_party_origins", []) or []
     if third:
         parts.append(_status("info",
@@ -3835,10 +3961,11 @@ def _render_page_analysis_section(data):
                 "No <img> tags found in static HTML"))
         elif no_alt == 0:
             parts.append(_status("pass",
-                f"All {total} <img> tag(s) have an alt attribute"))
+                f"All {total} <img> tag(s) have an alt attribute", check="Image alt text"))
         else:
             parts.append(_status("warn",
-                f"{no_alt}/{total} <img> tag(s) missing alt attribute (decorative images should still have alt=\"\")"))
+                f"{no_alt}/{total} <img> tag(s) missing alt attribute (decorative images should still have alt=\"\")",
+                check="Image alt text"))
 
         inp_total = a.get("inputs_total", 0)
         unl       = a.get("inputs_unlabeled", 0)
@@ -3847,10 +3974,10 @@ def _render_page_analysis_section(data):
                 "No labelable form <input> tags found"))
         elif unl == 0:
             parts.append(_status("pass",
-                f"All {inp_total} form input(s) have a label"))
+                f"All {inp_total} form input(s) have a label", check="Form labels"))
         else:
             parts.append(_status("warn",
-                f"{unl}/{inp_total} form input(s) without an associated label or aria-label"))
+                f"{unl}/{inp_total} form input(s) without an associated label or aria-label", check="Form labels"))
 
         empty_b = a.get("empty_buttons", 0)
         if empty_b > 0:
@@ -3975,6 +4102,18 @@ def _render_starttls_section(data):
     body = _render_starttls_hosts(data)
     if not body:
         return body
+    # 3.5.18: the certificates those servers presented.
+    from .audit_checks import _mail_cert_outcome
+    starttls = data.results.get("starttls_mx") or {}
+    mo = _mail_cert_outcome(starttls, data.results.get("dane") or {})
+    if mo:
+        bad = [f"{h}: {r.get('cert_verify_reason') or 'did not validate'}"
+               for h, r in (starttls.get("results") or {}).items()
+               if r.get("tls_version") and r.get("cert_verified") is False]
+        line = {"valid": ("pass", "Every mail server presented a valid certificate"),
+                "renewal_overdue": ("warn", "A mail server's certificate is in the last 10% of its lifetime — renewal looks overdue"),
+                "invalid": ("warn", "A mail server's certificate failed validation — senders enforcing MTA-STS will not deliver")}[mo]
+        body = "\n".join([body, "", _status(line[0], line[1], sub_lines=bad or None, check="Mail server certificates")])
     tech_eol = data.results.get("tech_eol") or {}
     extra = _eol_tech_block(
         [t for t in (tech_eol.get("techs") or []) if t.get("source") == "smtp_banner"],

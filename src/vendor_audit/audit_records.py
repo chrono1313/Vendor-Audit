@@ -42,10 +42,11 @@ _REDIRECT_PREFIX = "redirect target: "
 _TOPIC = {
     "SPF policy": "spf", "SPF lookup count": "spf",
     "DMARC policy": "dmarc", "DMARC sp": "dmarc", "DMARC pct": "dmarc",
-    "DMARC rua reporting": "dmarc",
+    "DMARC rua reporting": "dmarc", "DMARC alignment": "dmarc",
     "MX targets not CNAMEs": "mx", "MX targets are hostnames": "mx",
     "MTA-STS": "mta_sts", "TLS-RPT": "tls_rpt",
     "DANE TLSA on MX": "mail_transport", "STARTTLS-MX": "mail_transport",
+    "Mail server certificates": "mail_transport",
     "DKIM (common selectors)": "dkim", "DKIM key strength": "dkim",
     "BIMI": "bimi",
     "DNSSEC": "dnssec", "DNSSEC TLD signed": "dnssec",
@@ -73,10 +74,13 @@ _TOPIC = {
     "CSP script-src safety": "csp",
     "Cookie Secure": "cookies", "Cookie HttpOnly": "cookies",
     "Cookie SameSite": "cookies", "Cookie name prefixes": "cookies",
+    "Cache-Control on cookie responses": "cookies",
     "security.txt": "security_txt",
     "Default error page": "error_page",
     "CORS configuration": "cors",
     "Subresource Integrity": "page_analysis", "Mixed content (in-page)": "page_analysis",
+    "Known-vulnerable libraries": "page_analysis", "Third-party scripts": "page_analysis",
+    "Image alt text": "page_analysis", "Form labels": "page_analysis",
     "SPF single record": "spf",
     "SPF mechanisms": "spf",
     "DMARC single record": "dmarc",
@@ -86,7 +90,8 @@ _TOPIC = {
     "Null MX on no-mail domain": "mx",
     "MTA-STS policy MX match": "mta_sts",
     "MTA-STS max_age": "mta_sts",
-    "Dangling CNAME": "dangling_dns",
+    "Dangling CNAME": "dangling_dns", "Wildcard DNS": "dangling_dns",
+    "CAA allows current CA": "caa",
     "DNSSEC algorithm": "dnssec", "DNSSEC DS digest": "dnssec",
     "Nameserver delegation match": "nameservers", "Nameserver SOA serials": "nameservers",
     "SOA timers": "nameservers",
@@ -97,7 +102,8 @@ _TOPIC = {
     "Mail server RPKI": "rpki",
     "HTTPS DNS record": "http_version",
     "Legacy TLS disabled": "tls",
-    "Forward secrecy": "tls",
+    "Forward secrecy": "tls", "Obsolete ciphers": "tls", "TLS 1.2 CBC ciphers": "tls",
+    "Post-quantum key exchange": "tls",
     "Certificate key size": "tls", "Certificate signature": "tls",
     "CSP object-src": "csp",
     "CSP base-uri": "csp",
@@ -132,10 +138,11 @@ TOPIC_TITLES = {
 _STANDARD = {
     "SPF policy": "RFC 7208", "SPF lookup count": "RFC 7208 §4.6.4",
     "DMARC policy": "RFC 7489", "DMARC sp": "RFC 7489", "DMARC pct": "RFC 7489",
-    "DMARC rua reporting": "RFC 7489",
+    "DMARC rua reporting": "RFC 7489", "DMARC alignment": "RFC 7489 §3.1, §6.3",
     "MX targets not CNAMEs": "RFC 2181 §10.3", "MX targets are hostnames": "RFC 5321 §5.1",
     "MTA-STS": "RFC 8461", "TLS-RPT": "RFC 8460",
     "DANE TLSA on MX": "RFC 7672", "STARTTLS-MX": "RFC 3207",
+    "Mail server certificates": "RFC 8461 §4; RFC 7672",
     "DKIM (common selectors)": "RFC 6376", "DKIM key strength": "RFC 8301",
     "BIMI": "BIMI Group draft",
     "DNSSEC": "RFC 4033", "DNSSEC TLD signed": "RFC 4033",
@@ -163,10 +170,14 @@ _STANDARD = {
     "CSP script-src safety": "CSP Level 3",
     "Cookie Secure": "RFC 6265", "Cookie HttpOnly": "RFC 6265",
     "Cookie SameSite": "RFC 6265bis", "Cookie name prefixes": "RFC 6265bis",
+    "Cache-Control on cookie responses": "RFC 9111 §3, §5.2.2",
     "security.txt": "RFC 9116",
     "Default error page": "OWASP WSTG",
     "CORS configuration": "WHATWG Fetch",
     "Subresource Integrity": "W3C SRI", "Mixed content (in-page)": "W3C Mixed Content",
+    "Known-vulnerable libraries": "OWASP Top 10 A06:2021; retire.js",
+    "Third-party scripts": "W3C SRI; OWASP Third-Party JavaScript Management",
+    "Image alt text": "WCAG 2.2 SC 1.1.1", "Form labels": "WCAG 2.2 SC 1.3.1, 4.1.2",
     "SPF single record": "RFC 7208 §3.2",
     "SPF mechanisms": "RFC 7208 §4.6.4, §5.5",
     "DMARC single record": "RFC 7489 §6.6.3",
@@ -178,6 +189,8 @@ _STANDARD = {
     "MTA-STS policy MX match": "RFC 8461 §4.1",
     "MTA-STS max_age": "RFC 8461 §3.2",
     "Dangling CNAME": "RFC 1034; OWASP WSTG-CONF-10",
+    "Wildcard DNS": "RFC 4592",
+    "CAA allows current CA": "RFC 8659 §4.2; CCADB CAA identifiers",
     "DNSSEC algorithm": "RFC 8624; RFC 9905",
     "DNSSEC DS digest": "RFC 8624 §3.3; RFC 9905",
     "Nameserver delegation match": "RFC 1034 §4.2.2",
@@ -191,6 +204,9 @@ _STANDARD = {
     "HTTPS DNS record": "RFC 9460",
     "Legacy TLS disabled": "RFC 8996",
     "Forward secrecy": "RFC 9325 §4.1",
+    "Obsolete ciphers": "RFC 7465; RFC 9325 §4.1",
+    "TLS 1.2 CBC ciphers": "RFC 9325 §4.2; RFC 7366",
+    "Post-quantum key exchange": "RFC 10024; NIST FIPS 203",
     "Certificate key size": "CA/B Forum BR §6.1.5",
     "Certificate signature": "CA/B Forum BR §7.1.3.2",
     "CSP object-src": "CSP Level 3",
@@ -226,6 +242,14 @@ _CHECK_TEXT = {
         "DANE publishes the mail server's certificate fingerprint in DNSSEC-signed TLSA records.",
         "It lets a sending server verify the receiving server's certificate and refuse to fall back to plain text.",
         "Sign the zone with DNSSEC, then publish a TLSA record for each MX host. MTA-STS covers the same risk without DNSSEC."),
+    "Mail server certificates": (
+        "Each mail server presents a certificate when a sender starts STARTTLS. This checks that it validates against the public CAs and is not near expiry.",
+        "Most senders accept any certificate, but a domain that publishes MTA-STS tells senders to refuse delivery when the certificate does not validate. A server with a DANE TLSA record is checked against that record instead, so a self-signed certificate is fine there.",
+        "Install a certificate from a public CA on each mail server and renew it automatically, as for the website."),
+    "DMARC alignment": (
+        "Alignment decides how closely the domain that passed SPF or DKIM must match the From: domain. Relaxed, the default, accepts any subdomain; strict (adkim=s, aspf=s) requires the exact domain.",
+        "Strict alignment stops mail authenticated by one subdomain, perhaps a third-party sender, from passing DMARC for the main domain. It also fails legitimate mail sent from subdomains, so it suits only domains that send from the exact domain.",
+        "Add adkim=s and aspf=s to the DMARC record once DMARC reports show all legitimate mail aligns exactly."),
     "STARTTLS-MX": (
         "STARTTLS upgrades an SMTP connection between mail servers to TLS.",
         "Mail delivered to a server without it travels in plain text.",
@@ -321,6 +345,26 @@ _CHECK_TEXT = {
         "X-XSS-Protection switched on an old browser filter for cross-site scripting. Browsers have since removed that filter.",
         "Where the header is still honoured, its filtering mode has itself been used to attack pages.",
         "Remove the header or send X-XSS-Protection: 0, and rely on a Content-Security-Policy instead."),
+    "Cache-Control on cookie responses": (
+        "Whether the response that sets the site's cookies lets shared caches (CDNs, corporate proxies) store it.",
+        "A Set-Cookie header does not stop caching (RFC 9111 §7.3). If a shared cache stores the response, it can hand one visitor's session cookie to the next.",
+        "Send Cache-Control: private or no-store on responses that set cookies."),
+    "Known-vulnerable libraries": (
+        "The version of each JavaScript library the page loads, read from the script addresses and the page itself, checked against retire.js's list of known vulnerabilities. Scripts are not downloaded, so a library bundled into the site's own files is not seen.",
+        "Most of these are cross-site scripting flaws: with the right input, an attacker runs code in visitors' browsers on the site. They are public, with fixes, so they are among the first things attackers try.",
+        "Upgrade the library to a version past the listed vulnerabilities, or remove it if nothing uses it."),
+    "Third-party scripts": (
+        "The other sites the page runs JavaScript from: analytics, tag managers, chat widgets, CDNs.",
+        "A script runs with the page's full access: it can read what visitors type and change what they see. Each site listed is part of the vendor's supply chain, and a compromise there reaches every visitor.",
+        "Remove scripts that aren't needed, host the rest on the site's own domain where possible, and pin the rest with Subresource Integrity and a Content-Security-Policy."),
+    "Image alt text": (
+        "The alt attribute on <img> describes the image for people who can't see it. An image that is only decoration takes an empty alt=\"\".",
+        "Screen readers read the file name, or nothing, for an image without one. WCAG 2.2 requires a text alternative (success criterion 1.1.1), and accessibility laws in many places point to WCAG.",
+        "Give each meaningful image an alt describing it, and decorative ones alt=\"\"."),
+    "Form labels": (
+        "Each form field should have a label: a <label> element, or aria-label or aria-labelledby.",
+        "Without one, a screen reader announces only \"edit text\", and voice control can't name the field. WCAG 2.2 requires it (success criteria 1.3.1 and 4.1.2).",
+        "Add a <label for=\"…\"> for each field, or an aria-label where a visible label doesn't fit. A placeholder is not a label."),
     "Subresource Integrity": (
         "Subresource Integrity adds a hash to a script or stylesheet tag so the browser can check the file it downloads.",
         "Without it, whoever can change the file on the other host can run code on this site.",
@@ -369,6 +413,14 @@ _CHECK_TEXT = {
         "max_age tells sending servers how long to keep the MTA-STS policy.",
         "A short value means senders refetch it often, and an attacker who blocks the refetch can make them fall back to delivering without TLS. RFC 8461 suggests weeks or more.",
         "Set max_age to at least 604800 (one week); 1209600 or more is common."),
+    "CAA allows current CA": (
+        "Whether the domain's CAA records name the CA that issued the certificate the site serves now. The CA is identified from the certificate itself (its Authority Key Identifier) and CCADB's list of the names each CA recognizes in CAA.",
+        "A CA must check CAA before every issuance (RFC 8659), so when the records no longer name the current CA, often after a move to a new CDN or CA, the next renewal is refused and the site breaks when the certificate expires.",
+        "Add an issue record for the current CA (for example 0 issue \"letsencrypt.org\"), or finish moving the site to a CA the records already allow."),
+    "Wildcard DNS": (
+        "A wildcard record (*.example.com) answers for every name under the domain that has no record of its own. This looks up one random name.",
+        "Every mistyped or made-up name then reaches a server, and a wildcard that points at a service the domain no longer controls hands every name to whoever claims it. Some hosting platforms rely on wildcards on purpose.",
+        "Remove the wildcard record unless something needs it, and publish records only for the names in use."),
     "Dangling CNAME": (
         "A CNAME on the domain or its www form should point at a name that still exists.",
         "When the target was a deleted cloud resource, anyone who re-creates it at the provider can serve content on this domain.",
@@ -409,6 +461,18 @@ _CHECK_TEXT = {
         "Whether the server still accepts TLS 1.0 or 1.1 when a client asks for them.",
         "Both are deprecated (RFC 8996) and fail PCI DSS. A server that accepts them lets an attacker who can interfere with the connection push clients down to the weaker protocol.",
         "Set the server's minimum TLS version to 1.2."),
+    "Obsolete ciphers": (
+        "RC4 and 3DES are old ciphers. This asks the server, in one connection each, whether it will use either.",
+        "RC4 has practical attacks and RFC 7465 forbids it. 3DES has 64-bit blocks, so the Sweet32 attack recovers data from long connections, and it offers 112-bit security, under the 128 bits RFC 9325 asks for. No current browser offers either, so the only clients left using them are ones an attacker steers there.",
+        "Remove RC4 and 3DES from the server's cipher list. Mozilla's intermediate configuration is a good starting point."),
+    "TLS 1.2 CBC ciphers": (
+        "CBC cipher suites encrypt and then authenticate in a way that has allowed padding-oracle attacks (Lucky 13 and its successors). AEAD suites, AES-GCM and ChaCha20-Poly1305, do both at once. This asks, in one connection, whether the server accepts a CBC suite in TLS 1.2.",
+        "RFC 9325 §4.2 says not to use CBC suites unless encrypt-then-MAC is negotiated, and Mozilla's intermediate configuration leaves them out. Every browser released since 2016 supports AEAD suites. TLS 1.3 has only AEAD suites, so this concerns TLS 1.2 connections.",
+        "Offer only ECDHE suites with AES-GCM or ChaCha20-Poly1305 in TLS 1.2, as in Mozilla's intermediate configuration."),
+    "Post-quantum key exchange": (
+        "Hybrid key exchange (X25519MLKEM768, RFC 10024) combines classic elliptic-curve key agreement with ML-KEM, a post-quantum algorithm (NIST FIPS 203). This asks, in one connection, whether the server offers it in TLS 1.3.",
+        "Traffic recorded today could be decrypted once large quantum computers exist. Hybrid key exchange protects it now, and stays as strong as today's key exchange if ML-KEM is ever broken. Current Chrome, Firefox and Safari offer it by default; it is optional for servers.",
+        "Upgrade to a TLS library that supports it (OpenSSL 3.5 or later, BoringSSL, recent Go and Java), or enable it at the CDN. Most turn it on by default."),
     "Forward secrecy": (
         "Whether the server accepts TLS 1.2 key exchanges without forward secrecy, or ciphers without encryption.",
         "With static RSA key exchange, anyone who later obtains the server's private key can decrypt recorded traffic. RFC 9325 says these cipher suites should not be used.",
@@ -1007,6 +1071,91 @@ def _ev_sri(G):
             + _list("Third-party origins", p.get("third_party_origins")))
 
 
+def _ev_vulnerable_libs(G):
+    v = G("versioned_libs").get("vulnerable") or {}
+    out = []
+    for lib in v.get("libraries") or []:
+        rows = []
+        for x in lib.get("vulnerabilities") or []:
+            ids = ", ".join(x.get("cve") or []) or x.get("id") or "no identifier"
+            rows.append(f'{x["severity"].capitalize()}: {ids}' + (f' — {x["summary"]}' if x.get("summary") else ""))
+        out += _list(f'{lib["library"]} {lib["version"]}', rows)
+    if not out:
+        out.append(("note", "Versions are read from script addresses and the page itself. "
+                            "A library bundled into the site's own files is not seen."))
+    out.append(("note", "Vulnerability data: retire.js (github.com/RetireJS/retire.js)."))
+    return out
+
+
+def _ev_third_party_scripts(G):
+    p = G("page_signals")
+    if not p.get("parsed"):
+        return [("note", "The page body is read only with the Deep option.")]
+    return (_kv(("Scripts on the page", p.get("scripts_total")), ("From other sites", p.get("external_scripts")))
+            + _list("Sites the page runs scripts from", p.get("third_party_script_origins")))
+
+
+def _ev_alt_labels(G):
+    a = G("page_signals").get("a11y") or {}
+    return _kv(("Images", a.get("images_total")), ("Images without alt", a.get("images_missing_alt")),
+               ("Form fields", a.get("inputs_total")), ("Fields without a label", a.get("inputs_unlabeled")))
+
+
+def _ev_cache_cookies(G):
+    s = G("server_header")
+    names = [c.get("name") for c in (s.get("cookies") or []) if not c.get("infra")]
+    return _kv(("Cookies set", ", ".join(n for n in names if n)), ("Cache-Control", s.get("cache_control") or "not sent"),
+               ("Expires", s.get("expires")))
+
+
+def _ev_caa_issuer(G):
+    from .audit_checks import ca_caa_names, _caa_issuer_names
+    t, c = G("tls"), G("caa")
+    names, how = ca_caa_names(t)
+    sans = t.get("cert_sans") or t.get("cert_san_names") or []
+    wild = any(str(n).startswith("*.") for n in sans) and c.get("issue_wild")
+    allowed = _caa_issuer_names(c.get("issue_wild") if wild else c.get("issue") or [])
+    return _kv(("Certificate issued by", _t._expand_cert_issuer(t.get("cert_issuer"))),
+               ("Matched by", {"key": "the certificate's Authority Key Identifier",
+                               "name": "the issuer's name"}.get(how)),
+               ("CAA names that CA uses", ", ".join(names or []) or "not in CCADB's list"),
+               ("CAA records allow" + (" (issuewild, for a wildcard certificate)" if wild else ""),
+                ", ".join(sorted(allowed)) or "no CA"),
+               ("Records found at", c.get("inherited_from")))
+
+
+def _ev_wildcard(G):
+    w = G("wildcard_dns")
+    return _kv(("Name looked up", w.get("name")),
+               ("Answer", ", ".join(w.get("addresses") or []) or ("no such name" if w.get("wildcard") is False else None)))
+
+
+def _ev_dmarc_alignment(G):
+    d = G("dmarc")
+    word = {"s": "strict", "r": "relaxed"}
+    return _kv(("DKIM alignment (adkim)", word.get(d.get("adkim"))), ("SPF alignment (aspf)", word.get(d.get("aspf"))),
+               ("Record", d.get("record")))
+
+
+def _ev_mail_certs(G):
+    s = G("starttls_mx")
+    dane = set(G("dane").get("with_tlsa") or [])
+    reason = {"expired": "expired", "not_yet_valid": "not valid yet", "self_signed": "self-signed",
+              "untrusted": "issuer not trusted", "other": "did not validate"}
+    rows = []
+    for host, r in (s.get("results") or {}).items():
+        r = r or {}
+        if not r.get("tls_version"):
+            continue
+        state = ("valid" if r.get("cert_verified")
+                 else reason.get(r.get("cert_verify_reason"), "did not validate")
+                 + (" (DANE TLSA record published)" if host in dane else ""))
+        bits = [state, _t._expand_cert_issuer(r.get("cert_issuer")),
+                f'expires {r["cert_expires"]}' if r.get("cert_expires") else None]
+        rows.append((host, " · ".join(b for b in bits if b)))
+    return [("kv", rows)] if rows else [("note", "Mail servers are probed on port 25 only with the Deep option.")]
+
+
 def _ev_mixed(G):
     p = G("page_signals")
     if not p.get("parsed"):
@@ -1120,9 +1269,17 @@ def _ev_tls_legacy(G):
     l = G("tls_legacy")
     word = {"accepted": "accepted", "refused": "refused", "unreachable": "no answer",
             "unprobed": "not tested (this OpenSSL cannot offer it)"}
+    pq = {"offered": "offered", "not_offered": "not offered", "unreachable": "no answer"}
+    def chose(key):
+        w = word.get(l.get(key))
+        return f'{w} ({l[key + "_suite"]})' if w and l.get(key + "_suite") else w
     return _kv(("TLS 1.0", word.get(l.get("tls1_0"))), ("TLS 1.1", word.get(l.get("tls1_1"))),
                ("Static RSA key exchange", word.get(l.get("static_rsa"))),
-               ("NULL ciphers", word.get(l.get("null_cipher"))))
+               ("NULL ciphers", word.get(l.get("null_cipher"))),
+               ("RC4 ciphers", chose("rc4")), ("3DES ciphers", chose("des3")),
+               ("CBC ciphers in TLS 1.2", chose("cbc")),
+               ("Post-quantum key exchange", (f'{pq.get(l.get("pq"))} ({l["pq_group"]})' if l.get("pq_group")
+                                              else pq.get(l.get("pq")))))
 
 
 def _ev_cert_key(G):
@@ -1226,6 +1383,13 @@ _EVIDENCE = {
     "Mail servers on IPv6": _ev_infra("mx"), "Mail server RPKI": _ev_infra("mx"),
     "HTTPS DNS record": _ev_https_rr,
     "Legacy TLS disabled": _ev_tls_legacy, "Forward secrecy": _ev_tls_legacy,
+    "Obsolete ciphers": _ev_tls_legacy, "TLS 1.2 CBC ciphers": _ev_tls_legacy,
+    "Post-quantum key exchange": _ev_tls_legacy,
+    "Known-vulnerable libraries": _ev_vulnerable_libs, "Third-party scripts": _ev_third_party_scripts,
+    "Image alt text": _ev_alt_labels, "Form labels": _ev_alt_labels,
+    "Cache-Control on cookie responses": _ev_cache_cookies, "Wildcard DNS": _ev_wildcard,
+    "CAA allows current CA": _ev_caa_issuer,
+    "DMARC alignment": _ev_dmarc_alignment, "Mail server certificates": _ev_mail_certs,
     "Certificate key size": _ev_cert_key, "Certificate signature": _ev_cert_key,
     "CSP object-src": _ev_csp, "CSP base-uri": _ev_csp,
     "security.txt location": _ev_security_txt, "security.txt Canonical": _ev_security_txt,
