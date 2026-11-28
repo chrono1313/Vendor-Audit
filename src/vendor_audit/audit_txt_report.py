@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.21"
+__version__ = "3.5.22"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -396,7 +396,7 @@ _CERT_ISSUER_EXPANSIONS = {
     "R3":  "R3 (Let's Encrypt)",
     "R10": "R10 (Let's Encrypt)",
     "R11": "R11 (Let's Encrypt)",
-    # 3.5.21: Let's Encrypt's newer intermediates, as CCADB lists them.
+    # 3.5.22: Let's Encrypt's newer intermediates, as CCADB lists them.
     "R12": "R12 (Let's Encrypt)",
     "R13": "R13 (Let's Encrypt)",
     "R14": "R14 (Let's Encrypt)",
@@ -407,6 +407,8 @@ _CERT_ISSUER_EXPANSIONS = {
     "YE2": "YE2 (Let's Encrypt)",
     "YE3": "YE3 (Let's Encrypt)",
     "YR1": "YR1 (Let's Encrypt)",
+    "YR2": "YR2 (Let's Encrypt)",                # 3.5.22
+    "YR3": "YR3 (Let's Encrypt)",
 }
 
 
@@ -1784,7 +1786,7 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 out.append(_status("warn",
                     "No rua= tag — no aggregate reporting destination set; operator cannot see spoofing attempts or legit-mail rejections", check=chk + "DMARC rua reporting"))
 
-            # 3.5.21: alignment modes (RFC 7489 §3.1); 3.5.19: not for a
+            # 3.5.22: alignment modes (RFC 7489 §3.1); 3.5.19: not for a
             # domain that sends no mail.
             from .audit_checks import dmarc_alignment_outcome
             if dmarc_alignment_outcome(dmarc, spf, results.get(f"{prefix}dkim")):
@@ -2432,7 +2434,7 @@ def _render_dns_section(data):
                 parts.append(_status("pass",
                     f"CAA records published — {len(issuers)} authorised CA{'s' if len(issuers) != 1 else ''}{inh_str}",
                     sub_lines=issuers, check="CAA records"))
-            # 3.5.21: the current certificate's CA.
+            # 3.5.22: the current certificate's CA.
             from .audit_checks import _caa_issuer_outcome, ca_caa_names
             tls_r = r.get("tls") or {}
             co = _caa_issuer_outcome(caa, tls_r)
@@ -2475,7 +2477,7 @@ def _render_dns_section(data):
         if not any(i.get("chain") for i in named.values()):
             parts.append(_status("pass", "No CNAMEs on the domain or its www form", check="Dangling CNAME"))
 
-    # 3.5.21: wildcard records (RFC 4592).
+    # 3.5.22: wildcard records (RFC 4592).
     wild = r.get("wildcard_dns") or {}
     if wild.get("wildcard") is not None:
         parts.append("")
@@ -2669,10 +2671,16 @@ def _landing_host(results, domain):
 def _mismatch_notes(data, san_names):
     """3.4.6: when the bare name's certificate is wrong but the site lives on
     another host, say why a browser may still seem fine."""
+    from .audit_checks import cert_covers_other_form
+    names = ", ".join(san_names[:3]) if san_names else "other names"
+    if cert_covers_other_form(data.audit_domain, san_names):
+        # 3.5.22: Chrome's and Firefox's www workaround.
+        other = next((n for n in san_names if not n.startswith("*.")), names)
+        return [f"https://{data.audit_domain} presents a certificate for {names} only. Chrome and Firefox "
+                f"switch to {other} without a warning; curl and other non-browser clients refuse the connection."]
     landing = _landing_host(data.results, data.audit_domain)
     if not landing:
         return None
-    names = ", ".join(san_names[:3]) if san_names else "other names"
     notes = [f"https://{data.audit_domain} presents a certificate for {names}, so a browser that goes there "
              f"over HTTPS stops at a certificate warning.",
              f"The site itself is at {landing}."]
@@ -2762,7 +2770,7 @@ def _render_tls_section(data):
         elif fo == "unprobed":
             parts.append(_status("info", "Key exchange not tested — this system's OpenSSL cannot offer it",
                                  check="Forward secrecy"))
-        # 3.5.21: hand-built ClientHello probes (tls_hello.py).
+        # 3.5.22: hand-built ClientHello probes (tls_hello.py).
         from .audit_checks import _obsolete_cipher_outcome, _cbc_outcome, _pq_outcome
         oc = _obsolete_cipher_outcome(legacy) if legacy else None
         if oc == "rc4":
@@ -2815,8 +2823,11 @@ def _render_tls_section(data):
             parts.append(_status("pass", "Certificate name matches domain",
                                  note_lines=note, check="Certificate name match"))
         elif names_match is False:
+            from .audit_checks import cert_covers_other_form
+            other_form = cert_covers_other_form(data.audit_domain, san_names)
             parts.append(_status("fail",
-                f"Certificate name mismatch — cert does not cover {data.audit_domain}",
+                f"Certificate name mismatch — cert does not cover {data.audit_domain}"
+                + (" (browsers hide this; other clients fail)" if other_form else ""),
                 note_lines=_mismatch_notes(data, san_names), check="Certificate name match"))
 
         lifetime = tls.get("cert_lifetime_days")
@@ -3279,7 +3290,7 @@ def _render_server_disclosure_section(data):
 # ── Detailed sections: Versioned libraries ──────────────────────────────────
 
 def _render_vulnerable_libraries_lines(data):
-    """3.5.21: library versions with known vulnerabilities (retire.js data)."""
+    """3.5.22: library versions with known vulnerabilities (retire.js data)."""
     vuln = (data.results.get("versioned_libs") or {}).get("vulnerable")
     if vuln is None:
         return []
@@ -3578,7 +3589,7 @@ def _render_browser_security_headers_section(data):
         parts.append(_para("No Set-Cookie headers on this response (cookies set after "
                            "login or by JavaScript are not visible here).", 4))
     elif any(not ck.get("infra") for ck in cookies):
-        # 3.5.21: may shared caches store the response that sets them?
+        # 3.5.22: may shared caches store the response that sets them?
         from .audit_checks import _shared_cacheable
         cc = srv.get("cache_control") or "not sent"
         if _shared_cacheable(srv):
@@ -4009,9 +4020,9 @@ def _render_page_analysis_section(data):
                 "No empty <a> elements"))
 
         parts.append("")
-        para = ("A11y signals are not rated as findings — they are reported for "
-                "awareness only. For a full audit use WebAIM WAVE, "
-                "Axe DevTools, or pa11y.")
+        para = ("Page language, image alt text and form labels are rated; empty buttons and "
+                "links are listed for awareness only. This is a quick read of one page, not an "
+                "accessibility audit: for that use WebAIM WAVE, Axe DevTools, or pa11y.")
         parts.append(_para(para))
 
     return "\n".join(parts)
@@ -4115,7 +4126,7 @@ def _render_starttls_section(data):
     body = _render_starttls_hosts(data)
     if not body:
         return body
-    # 3.5.21: the certificates those servers presented.
+    # 3.5.22: the certificates those servers presented.
     from .audit_checks import _mail_cert_outcome
     starttls = data.results.get("starttls_mx") or {}
     mo = _mail_cert_outcome(starttls, data.results.get("dane") or {})

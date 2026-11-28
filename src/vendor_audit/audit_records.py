@@ -571,6 +571,15 @@ _OUTCOME_TEXT = {
         _CERT_BLOCKED,
         "Check the certificate and its chain (SSL Labs shows exactly what fails), then install a valid "
         "certificate from a public CA with its intermediates."),
+    ("Certificate name match", "other_form_only"): (
+        "The certificate must list every name the site answers on. This one lists the other form of the "
+        "name, www or bare, but not the one the visitor asked for.",
+        "Chrome and Firefox hide this error. When a certificate covers only the other form of the name, they "
+        "switch to it without telling the visitor. They added that as a workaround for sites that put only one "
+        "of the two names on their certificate, usually when they first set up HTTPS. Everything that isn't a "
+        "browser still gets a certificate error: curl, scripts, API and webhook clients, link checkers, email "
+        "security scanners and many apps.",
+        "Reissue the certificate with both the bare name and the www name."),
     ("TLS connection", "no_tls"): (
         "The server does not complete an HTTPS (TLS) connection on port 443.",
         "Without HTTPS every page, password and cookie travels in plain text, readable and changeable by "
@@ -879,6 +888,20 @@ def _ev_cert(G):
                ("Time left", left))
 
 
+def _why_browser_fine(G, t, landing):
+    from .audit_checks import cert_covers_other_form, _tls_host
+    if t.get("cert_names_match") is False and cert_covers_other_form(
+            _tls_host({"_audit_domain": G("_audit_domain") or None, "redirect": G("redirect")}),
+            t.get("cert_san_names")):
+        # 3.5.22: Chrome's and Firefox's www workaround.
+        return ("Chrome and Firefox switch to the name the certificate covers without a warning; "
+                "curl and other non-browser clients refuse the connection")
+    if not landing or G("http_redirect").get("status") != "https_only":
+        return None
+    return ("typing the bare name usually starts on http://, which redirects to the site; "
+            "links and bookmarks to the https:// bare name get the warning")
+
+
 def _ev_cert_names(G):
     t, v = G("tls"), G("cert_variant")
     # 3.4.6: a wrong certificate on the bare name of a site that lives on www.
@@ -891,10 +914,7 @@ def _ev_cert_names(G):
     return (_kv(("Name matches", None if t.get("cert_names_match") is None
                  else _yn(t.get("cert_names_match"))),
                 ("Site lands on", landing),
-                ("Why a browser may look fine", None if not landing
-                 or (G("http_redirect").get("status") != "https_only") else
-                 "typing the bare name usually starts on http://, which redirects to the site; "
-                 "links and bookmarks to the https:// bare name get the warning"),
+                ("Why a browser may look fine", _why_browser_fine(G, t, landing)),
                 ("www / apex coverage", {"covers": "both names are on the certificate",
                                          "missing_variant": "one of the two names is missing",
                                          "no_redirect": None}.get(v.get("outcome"), v.get("outcome"))),

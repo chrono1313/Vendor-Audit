@@ -466,10 +466,39 @@ def test_caa_allows_current_ca():
     check(findings(d).get("CAA allows current CA") == ("medium", "not_allowed"), f"rated: {findings(d).get('CAA allows current CA')}")
 
 
+def test_cert_covers_other_form():
+    """3.5.22: a certificate for only www.<domain> (or only the bare name)
+    is High, not Critical: Chrome and Firefox switch to the covered name."""
+    o = ac.cert_covers_other_form
+    check(o("efjohnson.com", ["www.efjohnson.com"]), "bare name, www on the certificate")
+    check(o("www.example.com", ["example.com"]), "www name, bare on the certificate")
+    check(o("example.com", ["*.example.com"]), "a wildcard covers www")
+    check(not o("example.com", ["shop.example.com"]), "another subdomain is not the other form")
+    check(not o("example.com", ["www.other.com"]), "another domain")
+    base = sample()
+
+    def rated(host, sans):
+        d = dict(base, _audit_domain=host,
+                 tls=dict(base["tls"], cert_names_match=False, cert_san_names=sans, error=None))
+        return d, findings(d).get("Certificate name match")
+    d, got = rated("efjohnson.com", ["www.efjohnson.com"])
+    check(got == ("high", "other_form_only"), f"covers www only: {got}")
+    check(rated("efjohnson.com", ["other.example.net"])[1] == ("critical", "no_match"), "covers neither: critical")
+    from vendor_audit import audit_txt_report as atr
+    text = " ".join(atr.strip_tags(atr.render_detail_sections(
+        atr._ReportData("efjohnson.com", "efjohnson.com", d, "2026-11-28T00:00:00Z", "3.5.22"))).replace("·", " ").split())
+    check("Chrome and Firefox switch to www.efjohnson.com" in text, "the report explains the browsers' workaround")
+    check("stops at a certificate warning" not in text, "and no longer says browsers warn")
+    what, why, fix = audit_records.explanation_for("Certificate name match", "other_form_only")
+    check("workaround" in why and "curl" in why, "its own Why it matters")
+    ev = dict(audit_records.evidence_for("Certificate name match", d)[0][1])
+    check("Chrome and Firefox" in (ev.get("Why a browser may look fine") or ""), f"evidence line: {ev}")
+
+
 TESTS = [test_client_hello_shape, test_probe_replies, test_against_real_openssl, test_cipher_and_pq_ratings,
          test_mail_server_certificates, test_wildcard_dns, test_dmarc_alignment, test_cache_control_on_cookies,
          test_vulnerable_libraries, test_vulnerability_data, test_page_checks, test_new_checks_documented,
-         test_caa_allows_current_ca]
+         test_caa_allows_current_ca, test_cert_covers_other_form]
 
 
 def run():
