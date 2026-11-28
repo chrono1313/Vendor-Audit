@@ -283,6 +283,19 @@ def test_dmarc_alignment():
         d = dict(base, dmarc={"present": True, "policy": "reject", "pct": 100, "sp": None, "rua": [],
                               "ruf": [], "record": "v=DMARC1; p=reject", "adkim": tags[0], "aspf": tags[1]})
         check(findings(d).get("DMARC alignment") == want, f"alignment {tags}: {findings(d).get('DMARC alignment')}")
+    # 3.5.19: a domain that sends no mail (SPF "-all" only, no DKIM key) has nothing to align.
+    rec = {"present": True, "policy": "reject", "pct": 100, "sp": None, "rua": [], "ruf": [],
+           "record": "v=DMARC1; p=reject", "adkim": "r", "aspf": "r"}
+    no_mail = dict(base, dmarc=rec, spf=dict(base["spf"], status="null_sender", record="v=spf1 -all"),
+                   dkim=dict(base.get("dkim") or {}, found=[], checked=["selector1"]))
+    check("DMARC alignment" not in findings(no_mail), "no mail sent: alignment not listed")
+    from vendor_audit import audit_txt_report as atr
+    data = atr._ReportData("example.com", "example.com", no_mail, "2026-11-28T00:00:00Z", "3.5.19")
+    check("Relaxed alignment for" not in atr.strip_tags(atr.render_detail_sections(data)),
+          "no mail sent: no alignment line in the report")
+    signs = dict(no_mail, dkim=dict(no_mail["dkim"], found=["selector1"]))
+    check(findings(signs).get("DMARC alignment") == ("info", "relaxed"),
+          "SPF -all but DKIM-signed mail (sent through a provider): still listed")
 
 
 def test_cache_control_on_cookies():

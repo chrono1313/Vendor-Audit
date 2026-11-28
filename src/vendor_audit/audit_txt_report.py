@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.18"
+__version__ = "3.5.19"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────
@@ -1773,8 +1773,10 @@ def _render_email_block(domain_label, spf, dmarc, mx, results, prefix=""):
                 out.append(_status("warn",
                     "No rua= tag — no aggregate reporting destination set; operator cannot see spoofing attempts or legit-mail rejections", check=chk + "DMARC rua reporting"))
 
-            # 3.5.18: alignment modes (RFC 7489 §3.1).
-            if dmarc.get("adkim") and dmarc.get("aspf"):
+            # 3.5.19: alignment modes (RFC 7489 §3.1); 3.5.19: not for a
+            # domain that sends no mail.
+            from .audit_checks import dmarc_alignment_outcome
+            if dmarc_alignment_outcome(dmarc, spf, results.get(f"{prefix}dkim")):
                 modes = f"adkim={dmarc['adkim']}, aspf={dmarc['aspf']}"
                 if dmarc["adkim"] == "s" and dmarc["aspf"] == "s":
                     out.append(_status("pass", f"Strict alignment ({modes})", check=chk + "DMARC alignment"))
@@ -2419,7 +2421,7 @@ def _render_dns_section(data):
                 parts.append(_status("pass",
                     f"CAA records published — {len(issuers)} authorised CA{'s' if len(issuers) != 1 else ''}{inh_str}",
                     sub_lines=issuers, check="CAA records"))
-            # 3.5.18: the current certificate's CA.
+            # 3.5.19: the current certificate's CA.
             from .audit_checks import _caa_issuer_outcome, ca_caa_names
             tls_r = r.get("tls") or {}
             co = _caa_issuer_outcome(caa, tls_r)
@@ -2462,7 +2464,7 @@ def _render_dns_section(data):
         if not any(i.get("chain") for i in named.values()):
             parts.append(_status("pass", "No CNAMEs on the domain or its www form", check="Dangling CNAME"))
 
-    # 3.5.18: wildcard records (RFC 4592).
+    # 3.5.19: wildcard records (RFC 4592).
     wild = r.get("wildcard_dns") or {}
     if wild.get("wildcard") is not None:
         parts.append("")
@@ -2749,7 +2751,7 @@ def _render_tls_section(data):
         elif fo == "unprobed":
             parts.append(_status("info", "Key exchange not tested — this system's OpenSSL cannot offer it",
                                  check="Forward secrecy"))
-        # 3.5.18: hand-built ClientHello probes (tls_hello.py).
+        # 3.5.19: hand-built ClientHello probes (tls_hello.py).
         from .audit_checks import _obsolete_cipher_outcome, _cbc_outcome, _pq_outcome
         oc = _obsolete_cipher_outcome(legacy) if legacy else None
         if oc == "rc4":
@@ -3266,7 +3268,7 @@ def _render_server_disclosure_section(data):
 # ── Detailed sections: Versioned libraries ──────────────────────────────────
 
 def _render_vulnerable_libraries_lines(data):
-    """3.5.18: library versions with known vulnerabilities (retire.js data)."""
+    """3.5.19: library versions with known vulnerabilities (retire.js data)."""
     vuln = (data.results.get("versioned_libs") or {}).get("vulnerable")
     if vuln is None:
         return []
@@ -3565,7 +3567,7 @@ def _render_browser_security_headers_section(data):
         parts.append(_para("No Set-Cookie headers on this response (cookies set after "
                            "login or by JavaScript are not visible here).", 4))
     elif any(not ck.get("infra") for ck in cookies):
-        # 3.5.18: may shared caches store the response that sets them?
+        # 3.5.19: may shared caches store the response that sets them?
         from .audit_checks import _shared_cacheable
         cc = srv.get("cache_control") or "not sent"
         if _shared_cacheable(srv):
@@ -4102,7 +4104,7 @@ def _render_starttls_section(data):
     body = _render_starttls_hosts(data)
     if not body:
         return body
-    # 3.5.18: the certificates those servers presented.
+    # 3.5.19: the certificates those servers presented.
     from .audit_checks import _mail_cert_outcome
     starttls = data.results.get("starttls_mx") or {}
     mo = _mail_cert_outcome(starttls, data.results.get("dane") or {})
