@@ -381,6 +381,20 @@ def test_page_checks():
           f"other sites' scripts, not the site's own subdomains: {p['third_party_script_origins']}")
     d = dict(base, page_signals=p)
     check(findings(d).get("Third-party scripts") == ("info", "listed"), "listed as info")
+    # 3.5.20: what counts as a label.
+    a11y = lambda html: ac.check_page_security_signals(html, "https://example.com/", "example.com")["a11y"]  # noqa: E731
+    for html, total, unlabeled, what in (
+            ('<label><input type="checkbox" name="d"> Deep</label>', 1, 0, "a label wrapped around the field"),
+            ('<input id="q" name="q"><label for="q">Search</label>', 1, 0, "a label for= after the field"),
+            ('<input name="q" aria-label="Search">', 1, 0, "aria-label"),
+            ('<input name="q" title="Search">', 1, 0, "title"),
+            ('<input name="q" placeholder="Search">', 1, 1, "a placeholder is not a label"),
+            ('<label>Name</label><input name="n">', 1, 1, "a label that wraps nothing labels nothing"),
+            ('<textarea name="t"></textarea><select name="s"></select>', 2, 2, "textarea and select count"),
+            ('<input type="hidden" name="h"><input type="submit" value="Go">', 0, 0, "hidden and submit need none")):
+        got = a11y(html)
+        check((got["inputs_total"], got["inputs_unlabeled"]) == (total, unlabeled),
+              f"{what}: {got['inputs_total']} fields, {got['inputs_unlabeled']} unlabeled; want {total}, {unlabeled}")
     p2 = ac.check_page_security_signals('<script src="/a.js"></script>', "https://example.com/", "example.com")
     check(findings(dict(base, page_signals=p2)).get("Third-party scripts") == ("pass", "none"), "none: pass")
 

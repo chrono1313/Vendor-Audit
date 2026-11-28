@@ -103,7 +103,7 @@ from .audit_checks import (
     check_www_apex_unification,
 )
 
-__version__ = "3.5.19"
+__version__ = "3.5.20"
 
 log = logging.getLogger(__name__)
 
@@ -399,7 +399,7 @@ def run_audit(domain: str, *, ssl_active: bool = False) -> dict:
         # 3.4: CNAMEs of what the user typed and its www form that point
         # at names which no longer exist (subdomain takeover).
         ("dangling_cname",   lambda _d: check_dangling_cname(domain)),
-        # 3.5.19: a wildcard record under what the user typed.
+        # 3.5.20: a wildcard record under what the user typed.
         ("wildcard_dns",     lambda _d: check_wildcard_dns(domain)),
         ("https_rr",         lambda d: check_https_rr(d)),
         # The www/apex-unification probe is keyed off the ORIGINAL input

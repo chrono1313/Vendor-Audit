@@ -313,6 +313,20 @@ def test_downloads():
         appmod._result_cache.pop("dl-test.example", None)
 
 
+def test_own_pages_pass_page_checks():
+    """3.5.20: vendoraudit.org's own pages pass the page checks it runs on
+    others: every form field labelled, every image with alt text, a language."""
+    if _skip():
+        return
+    from vendor_audit.audit_checks import check_page_security_signals
+    for url in ("/", "/learn/", "/learn/spf", "/learn/example-report", "/no-such-page"):
+        html = _request("GET", url).text
+        a = check_page_security_signals(html, "https://vendoraudit.org" + url, "vendoraudit.org")["a11y"]
+        check(a["inputs_unlabeled"] == 0, f"{url}: {a['inputs_unlabeled']} of {a['inputs_total']} form fields unlabelled")
+        check(a["images_missing_alt"] == 0, f"{url}: {a['images_missing_alt']} images without alt")
+        check(a["html_lang_set"], f"{url}: no <html lang>")
+
+
 def test_learn_pages():
     """3.5.14: /learn/ explainer pages, built from the audit's own text:
     every rated check on exactly one page, with every result it can give;
@@ -394,7 +408,7 @@ def run():
     for fn in (test_no_duplicate_definitions, test_routes_registered_once,
                test_workers_guard_connections, test_cache_compressed, test_slow_dns_does_not_stall_other_requests,
                test_csp_styles, test_front_page_counts, test_head, test_fast_clicks_share_one_audit, test_downloads,
-               test_learn_pages):
+               test_learn_pages, test_own_pages_pass_page_checks):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")
