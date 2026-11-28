@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 
-__version__ = "3.5.15"
+__version__ = "3.5.16"
 
 
 # ── Layout constants ─────────────────────────────────────────────────────────

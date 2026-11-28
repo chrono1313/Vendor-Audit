@@ -456,9 +456,11 @@ def index():
 
 
 def sitemap_xml():
-    """sitemap.xml: the front page and every explainer page. /audit pages
+    """sitemap.xml: the front page, every explainer page and the example
+    report (web/example.py). /audit pages
     stay out: they run audits and robots.txt closes them."""
-    urls = [f"{SITE}/", f"{SITE}/learn/"] + [f"{SITE}/learn/{slug}" for slug in PAGES]
+    urls = ([f"{SITE}/", f"{SITE}/learn/", f"{SITE}/learn/example-report"]
+            + [f"{SITE}/learn/{slug}" for slug in PAGES])
     rows = "".join(f"<url><loc>{u}</loc></url>" for u in urls)
     return ('<?xml version="1.0" encoding="UTF-8"?>\n'
             f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{rows}</urlset>\n')

@@ -134,21 +134,29 @@ def render_result(envelope: dict) -> str:
         report_version=results.get("_scan", {}).get("version", "?"),
     )
     records = audit_records.build_records(data)
+    example = bool(envelope.get("example"))
 
-    parts = [_DOC_HEAD.replace("__TITLE__", _h(f"Vendor Audit — {domain}")),
+    if example:
+        head = _DOC_HEAD.replace("<title>__TITLE__</title>",
+                                 f"<title>{_h(_EXAMPLE_TITLE)}</title>\n" + _example_meta(), 1)
+    else:
+        head = _DOC_HEAD.replace("__TITLE__", _h(f"Vendor Audit — {domain}"))
+    parts = [head,
              '<body>',
-             _render_top_bar_html(data, domain),
+             _render_top_bar_html(data, domain, example),
              '<div class="shell">',
              _render_side_nav_html(data, records),
              '<main class="report">',
-             _render_saved_note_html(data, domain)]
+             _render_saved_note_html(data, domain, example)]
+    if example:
+        parts.append(_render_example_banner_html())
     parts.extend(_render_banners_html(data))
     parts.append(_render_overview_html(data, records, domain, audit_domain,
                                        timestamp, duration_ms))
     parts.append(_render_categories_html(data))
     parts.append(_render_checks_table_html(data, records))
     parts.append(_render_reference_html(records))
-    parts.append(_render_footer_html(data, domain))
+    parts.append(_render_footer_html(data, domain, example))
     parts.append('</main>')
     parts.append('</div>')
     parts.append(_render_drawers_html(records))
@@ -211,8 +219,11 @@ def _short(text):
     return re.sub(r"(\s*\([^()]*\))+$", "", head).strip()
 
 
-def _download_hrefs(domain, deep):
+def _download_hrefs(domain, deep, example=False):
     """Site paths of the .md and .html downloads for this result."""
+    if example:
+        from . import example as ex
+        return f"{ex.PATH}.md", f"{ex.PATH}.html"
     q = "?deep=1" if deep else ""
     d = quote(domain)
     return f"/audit/{_h(d)}.md{q}", f"/audit/{_h(d)}.html{q}"
@@ -270,7 +281,7 @@ def _stacked_bar_html(counts, total, label):
 
 # ── Top bar ─────────────────────────────────────────────────────────────────
 
-def _render_top_bar_html(data, domain):
+def _render_top_bar_html(data, domain, example=False):
     """Brand, the audited domain, the audit-another-domain form and the
     .md and .html downloads.
 
@@ -279,9 +290,13 @@ def _render_top_bar_html(data, domain):
     re-submitting the same domain runs a fresh audit.
     """
     deep = bool(data.results.get("_scan", {}).get("deep", False))
-    md_href, html_href = _download_hrefs(domain, deep)
-    checked = " checked" if deep else ""
-    return "\n".join([
+    md_href, html_href = _download_hrefs(domain, deep, example)
+    checked = " checked" if deep and not example else ""
+    # The example's domain is fictional: no "from", so the form is a plain
+    # audit of whatever is typed.
+    from_field = ("" if example else
+                  f'    <input type="hidden" name="from" value="{_h(domain)}">')
+    return "\n".join(line for line in [
         '<header class="top-bar">',
         '  <a class="brand-link" href="/" aria-label="Vendor Audit home">',
         f'    <span class="logo">{_LOGO_SVG}</span>',
@@ -292,7 +307,7 @@ def _render_top_bar_html(data, domain):
         '  <div class="top-actions">',
         '  <form class="inline-audit-form" method="get" action="/audit"'
         ' aria-label="Audit another domain">',
-        f'    <input type="hidden" name="from" value="{_h(domain)}">',
+        from_field,
         '    <input type="text" name="domain" placeholder="example.com"'
         ' aria-label="Domain to audit"'
         ' required autocomplete="off" autocapitalize="off" autocorrect="off"'
@@ -309,7 +324,7 @@ def _render_top_bar_html(data, domain):
         '  </div>',
         '  <!--/site-->',
         '</header>',
-    ])
+    ] if line)
 
 
 # ── Side navigation ─────────────────────────────────────────────────────────
@@ -363,14 +378,50 @@ def _other_tools(data):
 
 # ── Banners ─────────────────────────────────────────────────────────────────
 
-def _render_saved_note_html(data, domain):
+def _render_saved_note_html(data, domain, example=False):
     """The note at the top of a saved copy. Rendered hidden on the site;
     to_standalone() shows it. The link runs a new audit on the site."""
+    if example:
+        from . import example as ex
+        return ('<div class="banner banner-saved" hidden><strong>Saved copy:</strong> '
+                'this file is the Vendor Audit example report as of '
+                f'{_h(_format_timestamp(data.timestamp))} and does not update. '
+                f'<a href="{ex.PATH}">See the current example</a>.</div>')
     deep = bool(data.results.get("_scan", {}).get("deep", False))
     again = f"/audit/result?domain={quote(domain)}" + ("&deep=1" if deep else "")
     return ('<div class="banner banner-saved" hidden><strong>Saved copy:</strong> '
             f'this file shows the scan of {_h(_format_timestamp(data.timestamp))} and does not update. '
             f'<a href="{_h(again)}">Audit {_h(domain)} again</a> for current results.</div>')
+
+
+_EXAMPLE_TITLE = "Example vendor security report | Vendor Audit"
+_EXAMPLE_DESCRIPTION = (
+    "A complete Vendor Audit report for a fictional vendor: email authentication, DNS, routing, "
+    "TLS, HTTP headers and end-of-life software, each finding rated with the fix.")
+
+
+def _example_meta():
+    from . import example as ex
+    url = learn.SITE + ex.PATH
+    return "\n".join([
+        f'<meta name="description" content="{_h(_EXAMPLE_DESCRIPTION)}">',
+        f'<link rel="canonical" href="{_h(url)}">',
+        '<meta property="og:type" content="article">',
+        '<meta property="og:site_name" content="Vendor Audit">',
+        f'<meta property="og:title" content="{_h(_EXAMPLE_TITLE)}">',
+        f'<meta property="og:description" content="{_h(_EXAMPLE_DESCRIPTION)}">',
+        f'<meta property="og:url" content="{_h(url)}">',
+    ])
+
+
+def _render_example_banner_html():
+    """The note at the top of the example report (web/example.py)."""
+    from . import example as ex
+    return ('<div class="banner" role="note"><strong>Example report:</strong> '
+            f'{_h(ex.DOMAIN)} is a fictional vendor and these results are made up. '
+            'The ratings, wording and layout are the live ones, produced by the same code as a real audit. '
+            'Read <a href="/learn/">how each check works</a>'
+            '<!--site-->, or type a domain in the box at the top to audit a real one<!--/site-->.</div>')
 
 
 def _render_banners_html(data):
@@ -918,7 +969,7 @@ def _page_facts(results):
     return rows
 
 
-def _render_footer_html(data, domain):
+def _render_footer_html(data, domain, example=False):
     scan = data.results.get("_scan", {})
     timings = scan.get("check_timings", {})
     slow = sorted(
@@ -927,7 +978,7 @@ def _render_footer_html(data, domain):
         key=lambda kv: -kv[1],
     )[:5]
     deep = bool(scan.get("deep", False))
-    md_href, html_href = _download_hrefs(domain, deep)
+    md_href, html_href = _download_hrefs(domain, deep, example)
 
     out = ['<footer class="report-footer" id="scan">',
            '  <div class="block-head"><h2>Scan details</h2></div>']

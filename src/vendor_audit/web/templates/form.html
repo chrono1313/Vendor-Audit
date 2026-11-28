@@ -212,7 +212,7 @@
 </div>
 <h1>Vendor Audit</h1>
 </a>
-<p class="lede">A passive check of a domain's best-practice alignment.</p>
+<p class="lede">A passive check of a domain's best-practice alignment. <a href="/learn/example-report">See an example report</a>.</p>
 
 <form method="get" action="/audit">
   <input type="text" name="domain" placeholder="example.com"
@@ -249,7 +249,7 @@
   {% set words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"] %}
   <p>The audit runs {{ counts.standard }} checks in {{ words[counts.categories | length] }} categories — {{ counts.categories[:-1] | join(", ") }} and {{ counts.categories[-1] }} — and Deep checks add {{ counts.deep_extra }} more. They cover <a href="/learn/spf">SPF</a>, <a href="/learn/dmarc">DMARC</a>, <a href="/learn/dkim">DKIM</a>, <a href="/learn/mx">MX</a>, <a href="/learn/mta-sts">MTA-STS</a>, <a href="/learn/tls-rpt">TLS-RPT</a>, <a href="/learn/dnssec">DNSSEC</a>, <a href="/learn/caa">CAA</a>, <a href="/learn/rpki">RPKI</a>, <a href="/learn/ipv6">IPv6</a>, <a href="/learn/tls">TLS versions and certificates</a>, <a href="/learn/hsts">HSTS</a>, <a href="/learn/http-versions">HTTP/2 and HTTP/3</a>, <a href="/learn/security-headers">security headers</a>, <a href="/learn/cookies">cookies</a> and <a href="/learn/security-txt">security.txt</a>, each against a published standard, plus an <a href="/learn/end-of-life">end-of-life check</a> for every operating system, server or library version detected. Checks that don't apply are skipped, such as mail checks for a domain that receives no mail. Each finding is rated Critical, High, Medium or Low. Optional practices are listed as informational and are never counted.</p>
 
-  <p><a href="/learn/">How each check works</a>: what it looks for, why it matters, the standard behind it, and how to fix what fails.</p>
+  <p><a href="/learn/">How each check works</a>: what it looks for, why it matters, the standard behind it, and how to fix what fails. The <a href="/learn/example-report">example report</a> shows a full audit of a fictional vendor.</p>
 
   <h2>How it checks</h2>
 

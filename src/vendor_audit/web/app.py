@@ -9,6 +9,8 @@ The web layer wraps the audit library in a small HTTP service:
   GET  /healthz                — liveness probe (no audit)
   GET  /robots.txt             — front page open to crawlers, /audit closed
   GET  /learn/                 — index of the explainer pages (web/learn.py)
+  GET  /learn/example-report   — example report for a fictional vendor
+                                 (web/example.py), plus .md and .html
   GET  /learn/<page>           — explainer page for one topic
   GET  /sitemap.xml            — the front page and the explainer pages
 
@@ -64,7 +66,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .. import audit, audit_checks, audit_txt_report, netguard
-from . import learn, render_html
+from . import example, learn, render_html
 from .validate import ValidationError, validate_domain_input
 
 log = logging.getLogger("vendor_audit.web")
@@ -635,7 +637,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # consistent.
         path = request.url.path
         is_result_page = (
-            path == "/audit/result" or path == "/static/result.js"
+            path in ("/audit/result", example.PATH) or path == "/static/result.js"
         )
         if is_result_page:
             script_src = "script-src 'self'"
@@ -749,6 +751,32 @@ async def learn_index(request: Request):
 @app.get("/sitemap.xml", include_in_schema=False)
 async def sitemap():
     return Response(content=learn.sitemap_xml(), media_type="application/xml")
+
+
+# The example report (web/example.py). Fixed sample results, rendered by the
+# live code on every request, so it always shows the current ratings and
+# wording. Registered before /learn/{topic}, which would match these paths.
+@app.get(example.PATH, response_class=HTMLResponse)
+@limiter.limit(LIMIT_FORM)
+async def example_report(request: Request):
+    return HTMLResponse(render_html.render_result(example.envelope()).replace("<!--AGO-->", ""))
+
+
+@app.get(example.PATH + ".md", response_class=PlainTextResponse)
+@limiter.limit(LIMIT_FORM)
+async def example_report_md(request: Request):
+    return PlainTextResponse(
+        content=example.markdown(), media_type=_MD_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{example.FILENAME}.md"'})
+
+
+@app.get(example.PATH + ".html", response_class=HTMLResponse)
+@limiter.limit(LIMIT_FORM)
+async def example_report_html(request: Request):
+    page = render_html.render_result(example.envelope())
+    return HTMLResponse(
+        content=render_html.to_standalone(page, SERVICE_URL, _FAVICON_SVG),
+        headers={"Content-Disposition": f'attachment; filename="{example.FILENAME}.html"'})
 
 
 @app.get("/learn/{topic}", response_class=HTMLResponse)

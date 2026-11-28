@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.15"
+__version__ = "3.5.16"
 
 # Every request the audit sends names the tool and where to find out about
 # it, so an operator who sees it in their logs can tell who is checking

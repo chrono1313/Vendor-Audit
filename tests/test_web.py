@@ -160,7 +160,8 @@ def _pages():
     from test_findings import sample
     out = []
     for name, url in (("form", "/"), ("error", "/no-such-page"), ("bad input", "/audit/result?domain=not a domain"),
-                      ("learn", "/learn/spf"), ("learn index", "/learn/"), ("learn eol", "/learn/end-of-life")):
+                      ("learn", "/learn/spf"), ("learn index", "/learn/"), ("learn eol", "/learn/end-of-life"),
+                      ("example report", "/learn/example-report")):
         r = _request("GET", url)
         out.append((name, r.text, r.headers.get("content-security-policy", "")))
     d = sample(); d["_scan"] = {"deep": True, "version": "3.4.4"}
@@ -363,6 +364,21 @@ def test_learn_pages():
     links = set(re.findall(r'href="(/learn/[^"#]*)"', front))
     check(len(links) >= 15 and all(_request("GET", u).status_code == 200 for u in links),
           f"the front page links the guides, and every link works: {sorted(links)}")
+    ex = _request("GET", "/learn/example-report")
+    check(ex.status_code == 200 and "script-src 'self'" in ex.headers.get("content-security-policy", "")
+          and '<script src="/static/result.js' in ex.text and "<!--AGO-->" not in ex.text,
+          "example report: served, with its script allowed")
+    check("<loc>https://vendoraudit.org/learn/example-report</loc>" in sm.text, "sitemap lists the example report")
+    check('href="/learn/example-report"' in front and 'href="/learn/example-report"' in ix.text,
+          "the front page and /learn/ link the example report")
+    md = _request("GET", "/learn/example-report.md")
+    check(md.status_code == 200 and md.text.startswith("# Vendor Audit — sample-vendor.example")
+          and 'filename="vendor-audit-example-report.md"' in md.headers.get("content-disposition", ""),
+          "example report .md download")
+    saved = _request("GET", "/learn/example-report.html")
+    check(saved.status_code == 200 and "<script>" in saved.text and "See the current example" in saved.text
+          and 'filename="vendor-audit-example-report.html"' in saved.headers.get("content-disposition", ""),
+          "example report .html download")
     sys.path.insert(0, os.path.dirname(__file__))
     from test_findings import sample
     page = appmod.render_html.render_result({"ok": True, "domain": "example.com", "audit_domain": "example.com",
