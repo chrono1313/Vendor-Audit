@@ -6,7 +6,8 @@ already has, so the pages can't drift from what the audit checks and says:
   - the topic explanation behind the report's "What this means" section
     (audit_txt_report.EXPLANATIONS: what, why, fix, details)
   - every check in that topic, in rubric order (audit_records.topic_for),
-    with its what / why / fix (audit_records._CHECK_TEXT), the standard it
+    with its what / why / fix (audit_records.explanation_for, the text the
+    report's detail panel shows, and each result's own text), the standard it
     cites (audit_records._STANDARD, linked), and every result it can give
     with its rating and the exact wording the report uses (rubric.json)
 
@@ -350,13 +351,20 @@ def codeify(text):
     return Markup(re.sub(r"&#34;(<code>[^<]*</code>)&#34;", r"\1", html))
 
 
-def _results(label):
-    seen = []
-    for severity, text in audit_checks.RUBRIC["findings"][label].values():
+def _results(label, general):
+    """Each distinct result, with the text written for it where it has its
+    own (3.5.23): only the parts that differ from the check's general text."""
+    seen, when = [], {}
+    for outcome, (severity, text) in audit_checks.RUBRIC["findings"][label].items():
         if (severity, text) not in seen:
             seen.append((severity, text))
+        own = audit_records.outcome_explanation(label, outcome)
+        if own and (severity, text) not in when:
+            when[(severity, text)] = [(word, codeify(part)) for word, part, gen in
+                                      zip(("What it means", "Why it matters", "How to fix it"), own, general)
+                                      if part and part != gen]
     seen.sort(key=lambda r: _SEVERITY_ORDER.index(r[0]))
-    return [{"severity": s, "label": _SEVERITY_LABEL[s], "text": t} for s, t in seen]
+    return [{"severity": s, "label": _SEVERITY_LABEL[s], "text": t, "when": when.get((s, t))} for s, t in seen]
 
 
 def _topics(slug):
@@ -386,11 +394,15 @@ def url_for_topic(topic):
 
 
 def _check(label):
-    what, why, fix = audit_records._CHECK_TEXT.get(label, (None, None, None))
+    # 3.5.23: the same text the report's detail panel shows, plus each
+    # result's own text under it. A check with no text of its own uses its
+    # topic's, which the page already shows above the checks.
+    what, why, fix = audit_records.check_explanation(label) or (None, None, None)
     return {"name": label, "anchor": audit_records.slug(label),
             "standard": standard_html(audit_records._STANDARD.get(label)),
             "what": codeify(what) if what else None, "why": codeify(why) if why else None,
-            "fix": codeify(fix) if fix else None, "results": _results(label)}
+            "fix": codeify(fix) if fix else None,
+            "results": _results(label, audit_records.explanation_for(label))}
 
 
 def _product_lists():

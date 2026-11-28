@@ -327,6 +327,53 @@ def test_own_pages_pass_page_checks():
         check(a["html_lang_set"], f"{url}: no <html lang>")
 
 
+def test_learn_pages_show_result_text():
+    """3.5.23: the learn pages show the same explanations as the report's
+    detail panel, including the text written for a single result. Text added
+    for one result fails here until its learn page shows it."""
+    if _skip():
+        return
+    import html as _html
+    import inspect
+    import re
+    from vendor_audit import audit_records as ar
+    from vendor_audit.web import learn
+    src = inspect.getsource(learn)
+    check("_CHECK_TEXT" not in src.replace("audit_records._CHECK_TEXT)", "") and "_OUTCOME_TEXT" not in src,
+          "learn.py reads explanations through audit_records.explanation_for / outcome_explanation only")
+
+    def squash(t):
+        return re.sub(r"\s+", "", _html.unescape(t))
+
+    def shown(part):
+        """The text as the page sets it: code formatting, quotes dropped."""
+        return squash(re.sub(r"<[^>]+>", "", str(learn.codeify(part))))
+
+    def text(url):
+        return squash(re.sub(r"<[^>]+>", "", _request("GET", url).text))
+
+    pages = {}
+    for (label, outcome), (what, why, fix) in ar._OUTCOME_TEXT.items():
+        url = learn.url_for_check(label)
+        check(url, f"{label} has a learn page")
+        if not url:
+            continue
+        path = url.split("vendoraudit.org", 1)[1].split("#", 1)[0]
+        body = pages.setdefault(path, text(path))
+        general = ar.explanation_for(label)
+        for part, gen in zip((what, why, fix), general):
+            if part and part != gen:
+                check(shown(part) in body, f"{path}: {label} / {outcome} text missing: {part[:60]}…")
+    for label in [lb for lbs in learn.checks_by_page().values() for lb in lbs]:
+        own = ar.check_explanation(label)
+        url = learn.url_for_check(label)
+        path = url.split("vendoraudit.org", 1)[1].split("#", 1)[0]
+        body = pages.setdefault(path, text(path))
+        for part in own or ():
+            if part:
+                check(shown(part) in body, f"{path}: {label}'s text differs from the report's: {part[:60]}…")
+
+
 def test_learn_pages():
     """3.5.14: /learn/ explainer pages, built from the audit's own text:
     every rated check on exactly one page, with every result it can give;
@@ -408,7 +455,7 @@ def run():
     for fn in (test_no_duplicate_definitions, test_routes_registered_once,
                test_workers_guard_connections, test_cache_compressed, test_slow_dns_does_not_stall_other_requests,
                test_csp_styles, test_front_page_counts, test_head, test_fast_clicks_share_one_audit, test_downloads,
-               test_learn_pages, test_own_pages_pass_page_checks):
+               test_learn_pages, test_own_pages_pass_page_checks, test_learn_pages_show_result_text):
         before = len(_failures)
         fn()
         print(f"  {'ok  ' if len(_failures) == before else 'FAIL'} {fn.__name__}")

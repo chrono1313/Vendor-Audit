@@ -274,7 +274,8 @@ _CHECK_TEXT = {
         "Renew the certificate now, then automate renewal so it happens well before expiry."),
     "Certificate name match": (
         "The certificate must list the name the visitor asked for.",
-        "When it does not, browsers show a full-page warning instead of the site.",
+        "When it does not, clients refuse the connection, and browsers show a full-page warning instead of the "
+        "site, except when the certificate covers the other form of the name (www or bare).",
         "Reissue the certificate with every name the site answers on."),
     "Cert covers www variant": (
         "The certificate should cover both the bare domain and its www form.",
@@ -586,6 +587,19 @@ _OUTCOME_TEXT = {
         "anyone on the network path, and browsers mark the site Not Secure.",
         "Enable HTTPS on port 443 with a certificate from a public CA, then redirect HTTP to HTTPS."),
 }
+
+
+def check_explanation(label):
+    """3.5.23: (what, why, fix) written for this check, or None when it uses
+    its topic's text."""
+    return _CHECK_TEXT.get(_base_label(label))
+
+
+def outcome_explanation(label, outcome):
+    """3.5.23: (what, why, fix) written for one result of a check, or None
+    when the result uses the check's own text. The report panel and the
+    learn pages both go through this and explanation_for()."""
+    return _OUTCOME_TEXT.get((_base_label(label), outcome))
 
 
 def explanation_for(label, outcome=None):

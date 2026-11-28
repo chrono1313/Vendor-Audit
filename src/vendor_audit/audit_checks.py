@@ -36,7 +36,7 @@ at startup. See vendor_audit.py for the full versioning policy.
 """
 from __future__ import annotations
 
-__version__ = "3.5.22"
+__version__ = "3.5.23"
 
 # Every request the audit sends names the tool and where to find out about
 # it, so an operator who sees it in their logs can tell who is checking
@@ -926,7 +926,7 @@ def _parse_dmarc_record(record):
     sp     = None  # absent means subdomain inherits p=
     rua    = []    # aggregate report destinations (RFC 7489 §6.2)
     ruf    = []    # forensic report destinations (less common)
-    adkim  = "r"   # 3.5.22: alignment modes, relaxed unless set (RFC 7489 §6.3)
+    adkim  = "r"   # 3.5.23: alignment modes, relaxed unless set (RFC 7489 §6.3)
     aspf   = "r"
     for part in record.split(";"):
         part = part.strip()
@@ -2559,7 +2559,7 @@ def check_https_rr(domain):
 
 
 def check_wildcard_dns(domain):
-    """3.5.22: does a name that can't exist under the domain resolve?
+    """3.5.23: does a name that can't exist under the domain resolve?
 
     Looks up one random label (A and AAAA) under the domain. An answer
     means a wildcard record (RFC 4592): every name under the domain
@@ -2706,7 +2706,7 @@ def _tls_host(results):
 
 
 def cert_covers_other_form(domain, names):
-    """3.5.22: True when a certificate that doesn't cover `domain` covers
+    """3.5.23: True when a certificate that doesn't cover `domain` covers
     its other form: www.<domain> for a bare name, the bare name for www.<…>.
     Chrome and Firefox then switch to that name instead of warning."""
     d = (domain or "").lower().rstrip(".")
@@ -2828,7 +2828,7 @@ def _cert_key_info(der):
 
 
 def _cert_aki(der):
-    """3.5.22: the Authority Key Identifier (RFC 5280 §4.2.1.1) of a DER
+    """3.5.23: the Authority Key Identifier (RFC 5280 §4.2.1.1) of a DER
     certificate, as upper-case hex: the Subject Key Identifier of the CA
     certificate that issued it. None when it has none."""
     _t, cs, ce = _der(der, 0)
@@ -2922,7 +2922,7 @@ def _cert_failure(domain, port, err):
 #   TLS 1.0 only, TLS 1.1 only (RFC 8996 deprecates both),
 #   TLS 1.2 with only static-RSA key exchange (no forward secrecy),
 #   TLS 1.2 with only NULL ciphers (no encryption).
-# OpenSSL 3 can no longer offer RC4 or 3DES at all; since 3.5.22 those are
+# OpenSSL 3 can no longer offer RC4 or 3DES at all; since 3.5.23 those are
 # asked with hand-built ClientHellos (tls_hello.py), as are CBC cipher suites
 # in TLS 1.2 and post-quantum key exchange. Each probe is one connection with a 1.5-second cap,
 # run in parallel; a server that drops the handshake silently costs at most
@@ -2987,7 +2987,7 @@ def check_tls_legacy(domain, port=443):
     "accepted", "refused", "unreachable", "unprobed"; {"rc4", "des3", "cbc"},
     each "accepted", "refused" or "unreachable", with "<key>_suite" naming
     the suite the server chose; and "pq": "offered", "not_offered" or
-    "unreachable", with "pq_group" naming the group (3.5.22)."""
+    "unreachable", with "pq_group" naming the group (3.5.23)."""
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
@@ -2998,7 +2998,7 @@ def check_tls_legacy(domain, port=443):
             "static_rsa":  _probe_context(V.TLSv1_2, V.TLSv1_2, "kRSA:@SECLEVEL=0"),
             "null_cipher": _probe_context(V.TLSv1_2, V.TLSv1_2, "eNULL:@SECLEVEL=0"),
         }
-    # 3.5.22: hand-built ClientHellos (tls_hello.py) for what OpenSSL 3 and
+    # 3.5.23: hand-built ClientHellos (tls_hello.py) for what OpenSSL 3 and
     # Python's ssl can't offer: RC4, 3DES, and the key-exchange group. One
     # connection each, alongside the four above.
     raw = {
@@ -3096,7 +3096,7 @@ def check_tls(domain, port=443):
                 try:
                     der = ssock.getpeercert(binary_form=True)
                     result.update(_cert_key_info(der))
-                    result["cert_aki"] = _cert_aki(der)     # 3.5.22: which CA certificate issued it
+                    result["cert_aki"] = _cert_aki(der)     # 3.5.23: which CA certificate issued it
                 except Exception:       # noqa: BLE001 — an odd certificate, not a TLS failure
                     pass
                 if cert:
@@ -5440,7 +5440,7 @@ def check_versioned_libraries(html: str) -> dict:
             "vulnerable": check_vulnerable_libraries(html, raw_hits)}
 
 
-# ── Known-vulnerable libraries (3.5.22) ──────────────────────────────────────
+# ── Known-vulnerable libraries (3.5.23) ──────────────────────────────────────
 # library_vulns.json is built from retire.js by tools/update_vuln_data.py.
 # Versions come from two places, both already in hand: the libraries the
 # patterns above found, and retire.js's own patterns matched against each
@@ -6457,7 +6457,7 @@ class _DeepHTMLParser(HTMLParser):
         self._anchor_text   = []
         self._labels        = set()  # all `for=` attribute values
         self._inputs_with_id = []     # input ids that need a matching label
-        self._label_depth   = 0      # 3.5.22: inside <label>…</label> (implicit label)
+        self._label_depth   = 0      # 3.5.23: inside <label>…</label> (implicit label)
 
     def handle_starttag(self, tag, attrs):
         a = dict((k.lower(), (v or "").strip()) for k, v in attrs)
@@ -6500,7 +6500,7 @@ class _DeepHTMLParser(HTMLParser):
             if tag == "input" and a.get("type", "text").lower() in ("hidden", "submit", "button", "reset", "image"):
                 return  # not a form field that needs a label
             self.inputs_total += 1
-            # 3.5.22: an accessible name from aria-label / aria-labelledby /
+            # 3.5.23: an accessible name from aria-label / aria-labelledby /
             # title, or a <label> wrapped around the field (HTML §4.10.4),
             # counts; a placeholder does not. select and textarea count too.
             if a.get("aria-label") or a.get("aria-labelledby") or a.get("title") or self._label_depth:
@@ -6679,7 +6679,7 @@ def check_page_security_signals(html, page_url, audit_domain):
         "external_scripts":     len(external_scripts),
         "external_styles":      len(external_styles),
         "third_party_origins":  sorted(third_party_origins),
-        # 3.5.22: the other sites the page runs scripts from.
+        # 3.5.23: the other sites the page runs scripts from.
         "third_party_script_origins": sorted({_origin_of(x["src"]) for x in external_scripts} - {None, ""}),
         "sri_protected":        sri_protected,
         "sri_external_total":   external_total,
@@ -6742,7 +6742,7 @@ def check_starttls_mx(mx_entries):
     many residential ISPs and cloud providers — partial results are normal.
 
     Returns a dict mx_host -> {tls_version, cert_subject, cert_issuer,
-    cert_expires, cert_lifetime_days, error}. Since 3.5.22 also
+    cert_expires, cert_lifetime_days, error}. Since 3.5.23 also
     cert_verified (the chain validated against the system CAs and the
     dates are current; the name is not checked), cert_verify_reason when it
     didn't, and cert_remaining_pct.
@@ -6795,7 +6795,7 @@ def check_starttls_mx(mx_entries):
                     ver = ssl_sock.version() if hasattr(ssl_sock, "version") else None
                     cert = ssl_sock.getpeercert() if hasattr(ssl_sock, "getpeercert") else None
                     if not verify and hasattr(ssl_sock, "getpeercert"):
-                        # 3.5.22: unverified, getpeercert() is empty; read the
+                        # 3.5.23: unverified, getpeercert() is empty; read the
                         # dates and names from the certificate itself.
                         der = ssl_sock.getpeercert(binary_form=True)
                         cert = {"_der": _cert_details(der)} if der else None
@@ -6941,7 +6941,7 @@ def _forward_secrecy_outcome(legacy):
     return None
 
 
-# ── CAA and the current certificate's CA (3.5.22) ────────────────────────────
+# ── CAA and the current certificate's CA (3.5.23) ────────────────────────────
 # caa_identifiers.json is built from CCADB by tools/update_caa_data.py.
 _CAA_IDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "caa_identifiers.json")
 with open(_CAA_IDS_PATH, encoding="utf-8") as _f:
@@ -6991,7 +6991,7 @@ def _caa_issuer_outcome(caa, tls):
 
 
 def _mail_cert_outcome(starttls_mx, dane):
-    """3.5.22: the certificates the mail servers presented over STARTTLS.
+    """3.5.23: the certificates the mail servers presented over STARTTLS.
 
     "invalid" when one failed verification (expired, self-signed, unknown
     CA) on a server with no TLSA record (DANE authenticates its own way,
@@ -7014,7 +7014,7 @@ def _mail_cert_outcome(starttls_mx, dane):
 
 
 def _shared_cacheable(srv):
-    """3.5.22: may a shared cache store this response (RFC 9111 §3, §5.2.2)?
+    """3.5.23: may a shared cache store this response (RFC 9111 §3, §5.2.2)?
     Only explicit permission counts: public, s-maxage, max-age above 0, or
     an Expires date. private or no-store forbids it; no-cache makes every
     reuse wait for the origin, so the cookie isn't handed to someone else."""
@@ -7045,7 +7045,7 @@ def _shared_cacheable(srv):
 
 
 def dmarc_alignment_outcome(dmarc, spf, dkim):
-    """3.5.22: "strict", "mixed" or "relaxed", or None when the domain
+    """3.5.23: "strict", "mixed" or "relaxed", or None when the domain
     sends no mail. Alignment only matters for mail that passes SPF or DKIM;
     a domain whose SPF is just "v=spf1 -all" and that has no DKIM key at
     the selectors checked has none (RFC 7489 §3.1, RFC 7208 §8.4)."""
@@ -7058,7 +7058,7 @@ def dmarc_alignment_outcome(dmarc, spf, dkim):
 
 
 def _obsolete_cipher_outcome(legacy):
-    """3.5.22: RC4 (RFC 7465: must not) is worse than 3DES (RFC 9325 §4.1:
+    """3.5.23: RC4 (RFC 7465: must not) is worse than 3DES (RFC 9325 §4.1:
     112-bit, should not); None when the probes couldn't tell."""
     rc4, des3 = legacy.get("rc4"), legacy.get("des3")
     if rc4 == "accepted":
@@ -7071,12 +7071,12 @@ def _obsolete_cipher_outcome(legacy):
 
 
 def _cbc_outcome(legacy):
-    """3.5.22: CBC suites in TLS 1.2 (RFC 9325 §4.2)."""
+    """3.5.23: CBC suites in TLS 1.2 (RFC 9325 §4.2)."""
     return {"accepted": "cbc", "refused": "aead_only"}.get(legacy.get("cbc"))
 
 
 def _pq_outcome(legacy):
-    """3.5.22: hybrid post-quantum key exchange offered in TLS 1.3."""
+    """3.5.23: hybrid post-quantum key exchange offered in TLS 1.3."""
     return {"offered": "offered", "not_offered": "not_offered"}.get(legacy.get("pq"))
 
 
@@ -7331,7 +7331,7 @@ def _score_email(spf, dmarc, mx, pts, prefix="", dkim=None):
         if present:
             rua = dmarc.get("rua") or []
             _p("DMARC rua reporting", "present" if rua else "missing")
-            # 3.5.22: identifier alignment modes (RFC 7489 §3.1).
+            # 3.5.23: identifier alignment modes (RFC 7489 §3.1).
             outcome = dmarc_alignment_outcome(dmarc, spf, dkim)
             if outcome:
                 _p("DMARC alignment", outcome)
@@ -7559,7 +7559,7 @@ def _collect_outcomes(results):
             outcome = _forward_secrecy_outcome(legacy)
             if outcome:
                 _p("Forward secrecy", outcome)
-            # 3.5.22: weak ciphers and post-quantum key exchange (tls_hello.py).
+            # 3.5.23: weak ciphers and post-quantum key exchange (tls_hello.py).
             for label, fn in (("Obsolete ciphers", _obsolete_cipher_outcome),
                               ("TLS 1.2 CBC ciphers", _cbc_outcome),
                               ("Post-quantum key exchange", _pq_outcome)):
@@ -7815,7 +7815,7 @@ def _collect_outcomes(results):
             _p("CAA records", "with_iodef" if caa.get("iodef") else "present")
         else:
             _p("CAA records", "missing")
-    # 3.5.22: do those records still allow the CA that issued the current certificate?
+    # 3.5.23: do those records still allow the CA that issued the current certificate?
     outcome = _caa_issuer_outcome(caa, tls) if not no_web_presence else None
     if outcome:
         _p("CAA allows current CA", outcome)
@@ -7863,7 +7863,7 @@ def _collect_outcomes(results):
     if ends and any(e != "error" for e in ends):
         _p("Dangling CNAME", "dangling" if dangling.get("dangling") else "none")
 
-    # 3.5.22: wildcard records (RFC 4592).
+    # 3.5.23: wildcard records (RFC 4592).
     wild = results.get("wildcard_dns") or {}
     if wild.get("wildcard") is not None:
         _p("Wildcard DNS", "wildcard" if wild["wildcard"] else "none")
@@ -8039,7 +8039,7 @@ def _collect_outcomes(results):
             else:
                 worst = "unprobed"
             _p("STARTTLS-MX", worst)
-            # 3.5.22: the certificates those servers presented.
+            # 3.5.23: the certificates those servers presented.
             outcome = _mail_cert_outcome(starttls_mx, results.get("dane") or {})
             if outcome:
                 _p("Mail server certificates", outcome)
@@ -8162,7 +8162,7 @@ def _collect_outcomes(results):
                         invalid.append(ck["name"])
             _p("Cookie name prefixes", "invalid_prefix" if invalid else "valid")
         # If no prefixed cookies exist, we don't score — possible=0 in rubric
-        # 3.5.22: may shared caches store the response that sets them?
+        # 3.5.23: may shared caches store the response that sets them?
         if cookies:
             _p("Cache-Control on cookie responses",
                "shared_cacheable" if _shared_cacheable(srv) else "not_shared")
@@ -8212,7 +8212,7 @@ def _collect_outcomes(results):
         a11y = page.get("a11y") or {}
         if "html_lang_set" in a11y:
             _p("Page language declared", "set" if a11y["html_lang_set"] else "missing")
-        # 3.5.22: images, form fields and other sites' scripts.
+        # 3.5.23: images, form fields and other sites' scripts.
         if a11y.get("images_total"):
             _p("Image alt text", "missing" if a11y.get("images_missing_alt") else "all")
         if a11y.get("inputs_total"):
@@ -8237,7 +8237,7 @@ def _collect_outcomes(results):
     # row in the breakdown, and they all map to the Website category via
     # the prefix-aware category lookup in audit_render.
     vlibs = (results.get("versioned_libs") or {}).get("libraries") or []
-    # 3.5.22: library versions with known vulnerabilities (retire.js data).
+    # 3.5.23: library versions with known vulnerabilities (retire.js data).
     vuln = (results.get("versioned_libs") or {}).get("vulnerable")
     if vuln is not None and not no_web_presence:
         _p("Known-vulnerable libraries", vuln.get("worst") or "none")
@@ -8422,7 +8422,7 @@ _DNS_BASED_WEB_CHECKS = {"HTTPS DNS record", "www and apex resolve"}
 # Everything else in rubric.json runs on every scan where it applies.
 DEEP_ONLY_CHECKS = {"DANE TLSA on MX", "STARTTLS-MX", "Subresource Integrity",
                     "Mixed content (in-page)", "Page language declared",
-                    # 3.5.22
+                    # 3.5.23
                     "Mail server certificates", "Third-party scripts", "Image alt text", "Form labels"}
 SSL_ONLY_CHECKS = {"SSL Labs grade"}
 

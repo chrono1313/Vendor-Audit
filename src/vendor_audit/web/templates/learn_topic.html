@@ -94,6 +94,9 @@
     display: grid; grid-template-columns: 5.2rem 1fr; gap: 0.6rem;
     padding: 0.45rem 0; border-top: 1px solid var(--border-soft); font-size: 0.95rem;
   }
+  .when { display: block; margin-top: 0.35rem; color: var(--muted); font-size: 0.92rem; }
+  .when-part { display: block; margin-top: 0.25rem; }
+  .when b { color: var(--muted); font-weight: 600; }
   .sev {
     justify-self: start; padding: 0.05rem 0.5rem; border-radius: 6px;
     font-size: 0.78rem; font-weight: 600; white-space: nowrap; height: fit-content;
@@ -175,7 +178,8 @@
   {% if c.why %}<p class="kv"><b>Why it matters.</b> {{ c.why }}</p>{% endif %}
   {% if c.fix %}<p class="kv"><b>How to fix it.</b> {{ c.fix }}</p>{% endif %}
   <ul class="results">
-    {% for r in c.results %}<li><span class="sev sev-{{ r.severity }}">{{ r.label }}</span><span>{{ r.text }}</span></li>
+    {% for r in c.results %}<li><span class="sev sev-{{ r.severity }}">{{ r.label }}</span><span>{{ r.text }}{% if r.when %}
+      <span class="when">{% for word, part in r.when %}<span class="when-part"><b>{{ word }}.</b> {{ part }}</span>{% endfor %}</span>{% endif %}</span></li>
     {% endfor %}
   </ul>
 </section>

@@ -78,7 +78,7 @@ Minimum Python version: 3.8+
 """
 from __future__ import annotations
 
-__version__ = "3.5.22"
+__version__ = "3.5.23"
 
 import os
 import sys
